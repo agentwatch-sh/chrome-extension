@@ -1,0 +1,11 @@
+# Per-machine account pin; never committed.
+.envrc
+.env
+.env.local
+.direnv/
+
+node_modules/
+dist/
+*.zip
+*.crx
+*.pem
