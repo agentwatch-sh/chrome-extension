@@ -20,6 +20,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 # The page area starts below the tab strip and the toolbar (Chromium 156,
@@ -461,6 +462,47 @@ class Live:
                    errors=counts.get("errors"), worker_saw_restore=len(sw_restore),
                    page_after=(after or {}).get("local"))
 
+    def sw_removed(self) -> None:
+        """A removed host's service worker and a link to that host (final review I1).
+
+        The worker of www.sw.localhost registers while sw.localhost is on the
+        list, the tab moves to an allowed page with a link to the sw host, the
+        list drops sw.localhost, and the driver clicks the link. The block
+        holds only if the navigation fails with ERR_BLOCKED_BY_CLIENT (a
+        `blocked` event) and the worker never answers it (no sw-fetch or
+        sw-page log, no request for the page).
+        """
+        keep = sorted(set(self.ctl(op="daemon_state")["allow"]) - {"sw.localhost"} | {"s1.localhost"})
+        a0 = self.allow(sorted(set(keep) | {"sw.localhost"}))
+        m = self.ctl.mark()
+        self.agent.goto(self.site("sw", "/sw"))
+        ready = self.ctl.wait(m, 20, kind="page", page_kind="sw-ready", host="www.sw.localhost")
+        m1 = self.ctl.mark()
+        self.agent.goto(self.site("sw", "/sw-plain?via=listed"))
+        answered = self.ctl.wait(m1, 15, kind="page", page_kind="sw-page", host="www.sw.localhost")
+        m2 = self.ctl.mark()
+        self.agent.goto(self.site("s1", "/link?to=" + urllib.parse.quote(self.site("sw", "/sw-plain?via=removed"), safe="")))
+        link_ready = self.ctl.wait(m2, 15, kind="page", page_kind="link-ready", host="www.s1.localhost")
+        a1 = self.allow(keep)
+        time.sleep(1.0)
+        m3 = self.ctl.mark()
+        self.agent.click(300, PAGE_TOP + 70)
+        blocked = self.ctl.wait(m3, 10, kind="blocked", host="www.sw.localhost")
+        time.sleep(2.0)
+        evs = self.ctl.events(m3)
+        worker = [e.get("page_kind") for e in evs if e["kind"] == "page" and e["host"] == "www.sw.localhost"
+                  and e.get("page_kind") in ("sw-fetch", "sw-page")]
+        direct = [e["path"] for e in evs if e["kind"] == "req" and e["host"] == "www.sw.localhost" and e["path"] != "/__log"]
+        self.agent.shot("sw-removed-click")
+        setup = bool(a0.get("ok") and ready and answered and link_ready and a1.get("ok"))
+        self.r.add("setup: the worker answers while listed; the list then drops its host", setup,
+                   "page log (sw-ready, sw-page, link-ready); receiver answers",
+                   controlled=(ready or {}).get("controlled"), add=a0.get("data"), remove=a1.get("data"))
+        self.r.add("a removed host's service worker does not answer a link navigation (the block holds)",
+                   setup and bool(blocked) and not worker and not direct,
+                   "receiver blocked event; the worker's own log; server request log",
+                   blocked=bool(blocked), worker_logs=worker, requests=direct)
+
     def big(self, mib: int) -> None:
         name = "big%d" % mib
         m = self.ctl.mark()
@@ -492,7 +534,7 @@ class Live:
 
 
 CASES = ["link", "stub_refusals", "static_block", "agent_old_state", "add_box", "operator_setup", "popup_before_login",
-         "box_login", "send_s1", "nav_cases", "allowlist_change", "service_worker", "big30", "big33"]
+         "box_login", "send_s1", "nav_cases", "allowlist_change", "service_worker", "sw_removed", "big30", "big33"]
 
 
 def main() -> int:

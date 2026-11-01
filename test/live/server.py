@@ -630,6 +630,15 @@ self.addEventListener('fetch', (e) => {
 });
 """
 
+# One big link at the place of the nav page's link block, so the driver
+# clicks the same spot. A user's click on a link is a renderer-initiated
+# navigation, which a site's service worker may answer.
+LINK_HTML = r"""<!doctype html><html><head><meta charset="utf-8"><title>link</title>
+<style>body{margin:0;font:28px sans-serif}.blk{position:absolute;left:0;top:0;width:560px;height:140px;display:block;
+border:2px solid #333;box-sizing:border-box;padding:20px;background:#eef;color:#000}</style>
+<script>__COMMON__</script></head><body><a id="link" class="blk" href="__TO__">link</a>
+<script>awLog('link-ready', {});</script></body></html>"""
+
 SW_PLAIN_JS = r"""
 localStorage.setItem('sw_key', 'made-up-sw');
 awLog('sw-plain-done', {local: localStorage.length});
@@ -956,6 +965,9 @@ def make_handler(world: World) -> type:
             if p == "/meta":
                 to = html.escape(q.get("to", "/page"), quote=True)
                 return self._send(200, '<!doctype html><meta http-equiv="refresh" content="0;url=%s">meta' % to)
+            if p == "/link":
+                to = html.escape(q.get("to", "/page"), quote=True)
+                return self._send(200, common(LINK_HTML).replace("__TO__", to))
             if p == "/sw":
                 return self._send(200, common(SW_PAGE_HTML))
             if p == "/sw.js":

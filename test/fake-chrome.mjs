@@ -133,6 +133,9 @@ export function makeFakeChrome() {
     declarativeNetRequest: {
       updateDynamicRules: rec("declarativeNetRequest.updateDynamicRules", async () => {}),
     },
+    browsingData: {
+      remove: rec("browsingData.remove", async () => {}),
+    },
     tabs: {
       query: rec("tabs.query", async () => fake.tabs_.map((t) => ({ ...t }))),
       get: rec("tabs.get", async (tabId) => {

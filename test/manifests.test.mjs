@@ -45,7 +45,7 @@ test("receiver manifest", () => {
   assert.equal(typeof receiver.description, "string");
   assert.deepEqual(receiver.permissions, [
     "cookies", "scripting", "tabs", "webNavigation",
-    "declarativeNetRequest", "nativeMessaging", "debugger",
+    "declarativeNetRequest", "nativeMessaging", "debugger", "browsingData",
   ]);
   assert.deepEqual(receiver.host_permissions, ["<all_urls>"]);
   assert.deepEqual(receiver.declarative_net_request.rule_resources, [

@@ -128,7 +128,11 @@ the receiver at all (measured), and then nothing blocks.
   host still load. When the list changes, the receiver closes the tabs whose
   site left it, and it reports each blocked navigation (the host only) to the
   daemon. An entry that is not a valid host is refused and counted in the
-  answer; the valid entries of the same list still apply.
+  answer; the valid entries of the same list still apply. A site's service
+  worker answers a navigation before the block sees it (measured), so when
+  the list loses a site, the receiver removes every service worker of the
+  profile before it closes the tabs; the sites that stay register theirs
+  again on their next visit.
 
 ### Its permissions, and why
 
@@ -141,6 +145,7 @@ the receiver at all (measured), and then nothing blocks.
 | `declarativeNetRequest` | the allowlist block |
 | `nativeMessaging` | the link to the agentwatch daemon |
 | `debugger` | to serve the restore page from the extension (the site never sees that request) and to bypass the site's service worker during the import |
+| `browsingData` | to remove the service workers when a site leaves the allowlist: a worker would otherwise answer a navigation to its host past the block |
 | host permission `<all_urls>` | the allowlist changes at run time, and an optional permission would need a click in a Chrome that nobody watches |
 
 ## What is not moved
@@ -162,6 +167,10 @@ the receiver at all (measured), and then nothing blocks.
 - **Page storage of the current tab's origin only.** A site that keeps its
   sign-in in the page storage of another subdomain needs a send from a tab of
   that subdomain too.
+- **Back after a removal (stage 2).** A tab whose back/forward cache still
+  holds a page of a site that left the allowlist may go Back to that page with
+  no request, so no block. The receiver closes the tabs of a removed site, but
+  another tab's history can still hold such a page.
 
 ## Development
 

@@ -73,6 +73,8 @@ The test sites:
   `www.off2.localhost`), script, image and fetch on the allowed page.
 - `www.sw.localhost`: a service worker that answers every navigation with its
   own page and logs each path that it sees.
+- `/link?to=<url>` (on any test site): one big link to `<url>`, at the place of
+  the nav page's link block, so the driver clicks the same spot.
 - `www.big30.localhost` and `www.big33.localhost`: an IndexedDB database of 30
   or 33 records of 1 MiB each.
 
@@ -139,6 +141,20 @@ run folder: **55 checks, 54 passed, 1 failed**. The one failure is a contract it
 | a 30 MiB send imports | pass | box-send (bytes, import answer) and the agent page's IndexedDB count |
 | a 33 MiB send is refused in the sender, naming the database | pass | server log has no send POST; screenshot of the popup's text (read by eye) |
 
+Final-review case I1 (`sw_removed`), run alone on the same day with `run.sh up`, then the cases
+`link sw_removed`, then `run.sh down`. The case lists `sw.localhost`, lets the worker of
+`www.sw.localhost` register and answer a navigation, moves the tab to an allowed page
+(`www.s1.localhost/link`) with a link to `www.sw.localhost/sw-plain`, drops `sw.localhost` from the
+list, and clicks the link:
+
+| Receiver | Result | How measured |
+| --- | --- | --- |
+| before the fix (head `650d624`) | **FAIL: the removed host's worker answered the link** | no receiver `blocked` event; the worker's own log (`sw-fetch`, `sw-page`); screenshot shows the worker's page at `sw.localhost:8771/sw-plain` |
+| with the fix (`browsingData`: every service worker removed when the list loses an entry) | pass | receiver `blocked` event for `www.sw.localhost`; no worker log; no request for the page; screenshot shows "www.sw.localhost is blocked", `ERR_BLOCKED_BY_CLIENT` |
+
+The setup check of the case passed in both runs (the worker controlled the page and answered a
+navigation while its host was listed).
+
 Also measured by hand on the same day (`RECEIVER=<folder> test/live/run.sh up`, then the cases `link` and
 `static_block`):
 
@@ -174,6 +190,13 @@ contracts as written.
    keep the folder writable, and treat a missing hello as a failed start.
 4. **C6 step 2:** `Network.setBypassServiceWorker` works only after
    `Network.enable` (the receiver now sends both).
+5. **C5: a site's service worker answers a navigation before DNR sees it.**
+   After its host left the allowlist, a link to that host loaded the worker's
+   own page; the static block rule did not stop it (case `sw_removed`). The
+   receiver now holds the `browsingData` permission and removes every service
+   worker of the profile whenever the list loses an entry (and on the first
+   `set_allowlist` after its own worker starts), before it closes the tabs. A
+   failed removal fails the `set_allowlist` call.
 
 The live test also found three bugs in the extensions, fixed with unit tests:
 

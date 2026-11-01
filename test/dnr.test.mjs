@@ -100,3 +100,47 @@ test("a tab already gone is not an error and is not counted", async () => {
   const r = await applyAllowlist(f.chrome, ["a.example"]);
   assert.deepEqual(r, { rules: 1, closed: 1, refused: 0 });
 });
+
+// I1 (measured live: a removed host's service worker answered a link to it,
+// past DNR): every service worker goes whenever the list loses an entry.
+test("a shrinking list removes every service worker before the tabs close; a growing one does not", async () => {
+  const f = makeFakeChrome();
+  f.setTabs([{ id: 1, windowId: 1, url: "https://a.example/" }, { id: 2, windowId: 1, url: "https://c.example/" }]);
+  const removals = () => f.callsTo("browsingData.remove");
+  // The first call after a worker start counts as a shrink.
+  await applyAllowlist(f.chrome, ["a.example", "b.example"]);
+  assert.deepEqual(removals(), [[{}, { serviceWorkers: true }]]);
+  const order = f.calls.map(([p]) => p).filter((p) => ["declarativeNetRequest.updateDynamicRules", "browsingData.remove", "tabs.remove"].includes(p));
+  assert.deepEqual(order, ["declarativeNetRequest.updateDynamicRules", "browsingData.remove", "tabs.remove"]);
+  // Same list, a longer list: no removal.
+  await applyAllowlist(f.chrome, ["a.example", "b.example"]);
+  await applyAllowlist(f.chrome, ["a.example", "b.example", "d.example"]);
+  assert.equal(removals().length, 1);
+  // An entry gone (also one replaced by a wider entry, or by an invalid one): removal.
+  await applyAllowlist(f.chrome, ["a.example", "d.example"]);
+  assert.equal(removals().length, 2);
+  await applyAllowlist(f.chrome, ["a.example", "d.example", "BAD"]);
+  assert.equal(removals().length, 2);
+  await applyAllowlist(f.chrome, ["example", "a.example"]);
+  assert.equal(removals().length, 3);
+  // Another worker start (another chrome object) starts with a removal again.
+  const g = makeFakeChrome();
+  await applyAllowlist(g.chrome, ["a.example"]);
+  assert.equal(g.callsTo("browsingData.remove").length, 1);
+});
+
+test("a failed service worker removal still closes the tabs, fails the call, and is tried again", async () => {
+  const f = makeFakeChrome();
+  f.setTabs([{ id: 1, windowId: 1, url: "https://a.example/" }, { id: 2, windowId: 1, url: "https://c.example/" }]);
+  f.impl["browsingData.remove"] = async () => { throw new Error("no"); };
+  await assert.rejects(applyAllowlist(f.chrome, ["a.example"]), (e) => e.message === "service worker removal failed");
+  assert.deepEqual(f.callsTo("tabs.remove").map((a) => a[0]), [2]);
+  assert.equal(f.callsTo("declarativeNetRequest.updateDynamicRules").length, 1);
+  // The next call, even one that only grows the list, removes again.
+  delete f.impl["browsingData.remove"];
+  const r = await applyAllowlist(f.chrome, ["a.example", "b.example"]);
+  assert.equal(f.callsTo("browsingData.remove").length, 2);
+  assert.equal(r.rules, 1);
+  await applyAllowlist(f.chrome, ["a.example", "b.example", "e.example"]);
+  assert.equal(f.callsTo("browsingData.remove").length, 2);
+});
