@@ -3,21 +3,27 @@ import { PartJoiner } from "./wire.js";
 
 const HOST_NAME = "sh.agentwatch.browser";
 const MAX_DELAY_MS = 30000;
+// The daemon waits 10 s (ping, set_allowlist) and 120 s (import); answer just before.
+const TIMEOUT_MS = { import: 115000 };
+const DEFAULT_TIMEOUT_MS = 9000;
 
 export class ReceiverLink {
   #chrome;
   #handlers;
   #setTimer;
+  #clearTimer;
+  #generation = 0;
   #port = null;
   #joiner = new PartJoiner();
   #queue = [];
   #running = false;
   #delay = 1000;
 
-  constructor(chrome, handlers, { setTimer = (fn, ms) => setTimeout(fn, ms) } = {}) {
+  constructor(chrome, handlers, { setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = (h) => clearTimeout(h) } = {}) {
     this.#chrome = chrome;
     this.#handlers = handlers;
     this.#setTimer = setTimer;
+    this.#clearTimer = clearTimer;
   }
 
   start() {
@@ -47,8 +53,11 @@ export class ReceiverLink {
       this.#onMessage(msg);
     });
     port.onDisconnect.addListener(() => {
+      void this.#chrome.runtime.lastError; // read it, so Chrome logs no unchecked error
       if (this.#port !== port) return;
       this.#port = null;
+      this.#generation += 1;
+      this.#queue = [];
       const ms = this.#delay;
       this.#delay = Math.min(this.#delay * 2, MAX_DELAY_MS);
       this.#setTimer(() => this.#connect(), ms);
@@ -71,19 +80,34 @@ export class ReceiverLink {
     }
   }
 
+  #withTimeout(promise, op) {
+    let handle;
+    const timeout = new Promise((_, reject) => {
+      const ms = Object.hasOwn(TIMEOUT_MS, op) ? TIMEOUT_MS[op] : DEFAULT_TIMEOUT_MS;
+      handle = this.#setTimer(() => reject(new Error("timeout")), ms);
+    });
+    const done = Promise.resolve(promise);
+    done.catch(() => {}); // a late failure after the timeout is ignored
+    return Promise.race([done, timeout]).finally(() => this.#clearTimer(handle));
+  }
+
   async #drain() {
     if (this.#running) return;
     this.#running = true;
     try {
       while (this.#queue.length > 0) {
         const req = this.#queue.shift();
+        const gen = this.#generation;
+        const reply = (msg) => {
+          if (gen === this.#generation) this.send(msg);
+        };
         try {
           const handler = Object.hasOwn(this.#handlers, req.op) ? this.#handlers[req.op] : null;
           if (typeof handler !== "function") throw new Error("unknown op");
-          const data = await handler(req);
-          this.send({ t: "res", id: req.id, ok: true, data });
+          const data = await this.#withTimeout(handler(req), req.op);
+          reply({ t: "res", id: req.id, ok: true, data });
         } catch (e) {
-          this.send({ t: "res", id: req.id, ok: false, error: String(e && e.message ? e.message : "request failed") });
+          reply({ t: "res", id: req.id, ok: false, error: String(e && e.message ? e.message : "request failed") });
         }
       }
     } finally {

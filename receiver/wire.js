@@ -26,8 +26,10 @@ export class PartJoiner {
   #id = null;
   #n = 0;
   #slices = new Map();
+  #dropped = null;
 
-  #drop() {
+  #drop(bad = false) {
+    if (bad) this.#dropped = this.#id;
     this.#id = null;
     this.#n = 0;
     this.#slices = new Map();
@@ -36,14 +38,16 @@ export class PartJoiner {
   // Returns the parsed request when the last part of an id arrives, else null.
   push(part) {
     if (!part || typeof part.id !== "string") return null;
+    if (part.id === this.#dropped) return null;
     if (part.id !== this.#id) {
+      this.#dropped = null;
       this.#drop();
       this.#id = part.id;
       this.#n = part.n;
     }
     const { seq, n, b64 } = part;
     if (!Number.isInteger(n) || n < 1 || n !== this.#n || !Number.isInteger(seq) || seq < 0 || seq >= n || typeof b64 !== "string") {
-      this.#drop();
+      this.#drop(true);
       return null;
     }
     let slice;
@@ -52,7 +56,7 @@ export class PartJoiner {
       slice = new Uint8Array(bin.length);
       for (let i = 0; i < bin.length; i++) slice[i] = bin.charCodeAt(i);
     } catch {
-      this.#drop();
+      this.#drop(true);
       return null;
     }
     this.#slices.set(seq, slice);

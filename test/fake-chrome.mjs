@@ -36,6 +36,10 @@ export function makeFakeChrome() {
   };
   const chrome = {
     runtime: {
+      get lastError() {
+        calls.push(["runtime.lastError", []]);
+        return undefined;
+      },
       connectNative: rec("runtime.connectNative", () => {
         // A fresh port per connect, so a test can fire a disconnect on the old one.
         const p = Object.create(port, {

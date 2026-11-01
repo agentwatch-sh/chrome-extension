@@ -50,6 +50,14 @@ export async function applyAllowlist(chrome, domains) {
       await chrome.tabs.create({ windowId, url: "about:blank", active: false });
     }
   }
-  if (doomed.length > 0) await chrome.tabs.remove(doomed.map((t) => t.id));
-  return { rules: rule ? 1 : 0, closed: doomed.length };
+  let closed = 0;
+  for (const t of doomed) {
+    try {
+      await chrome.tabs.remove(t.id);
+      closed += 1;
+    } catch {
+      // The tab is already gone.
+    }
+  }
+  return { rules: rule ? 1 : 0, closed };
 }

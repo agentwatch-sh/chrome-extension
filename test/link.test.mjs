@@ -10,7 +10,8 @@ function setup(handlers = {}) {
   const f = makeFakeChrome();
   const timers = [];
   const setTimer = (fn, ms) => timers.push({ fn, ms });
-  const link = new ReceiverLink(f.chrome, { ping: async () => ({}), set_allowlist: async () => ({ rules: 1, closed: 0 }), import: async () => ({}), ...handlers }, { setTimer });
+  const clears = [];
+  const link = new ReceiverLink(f.chrome, { ping: async () => ({}), set_allowlist: async () => ({ rules: 1, closed: 0 }), import: async () => ({}), ...handlers }, { setTimer, clearTimer: (h) => clears.push(h) });
   link.start();
   return { f, link, timers };
 }
@@ -100,4 +101,59 @@ test("blocked main-frame navigations post the host only", () => {
   ev.fire({ frameId: 3, tabId: 4, url: "https://evil.example/", error: "net::ERR_BLOCKED_BY_CLIENT" });
   ev.fire({ frameId: 0, tabId: 4, url: "https://evil.example/", error: "net::ERR_FAILED" });
   assert.deepEqual(sent, [{ t: "blocked", tab: 4, host: "evil.example" }]);
+});
+
+test("a never-settling handler times out at 9 s and the next request runs", async () => {
+  const { f, timers } = setup({ ping: () => new Promise(() => {}) });
+  const port = f.ports[0];
+  sendReq(port, { t: "req", id: "a", op: "ping" });
+  sendReq(port, { t: "req", id: "b", op: "set_allowlist", domains: [] });
+  await tick();
+  assert.equal(timers.at(-1).ms, 9000);
+  timers.at(-1).fn();
+  await tick();
+  await tick();
+  assert.deepEqual(port.posted.filter((m) => m.t === "res"), [
+    { t: "res", id: "a", ok: false, error: "timeout" },
+    { t: "res", id: "b", ok: true, data: { rules: 1, closed: 0 } },
+  ]);
+});
+
+test("import gets 115 s", async () => {
+  const { f, timers } = setup({ import: () => new Promise(() => {}) });
+  sendReq(f.ports[0], { t: "req", id: "i", op: "import", state: {} });
+  await tick();
+  assert.equal(timers.at(-1).ms, 115000);
+});
+
+test("a late result after the timeout is ignored", async () => {
+  let late;
+  const { f, timers } = setup({ ping: () => new Promise((r) => (late = r)) });
+  const port = f.ports[0];
+  sendReq(port, { t: "req", id: "a", op: "ping" });
+  await tick();
+  timers.at(-1).fn();
+  await tick();
+  late({});
+  await tick();
+  assert.equal(port.posted.filter((m) => m.t === "res").length, 1);
+});
+
+test("a disconnect reads lastError, drops queued requests and mutes the in-flight answer", async () => {
+  let release;
+  const order = [];
+  const { f } = setup({
+    ping: async (r) => { order.push(r.id); await new Promise((x) => (release = x)); return {}; },
+  });
+  const port = f.ports[0];
+  sendReq(port, { t: "req", id: "a", op: "ping" });
+  sendReq(port, { t: "req", id: "b", op: "ping" });
+  await tick();
+  port.fireDisconnect();
+  assert.ok(f.callsTo("runtime.lastError").length >= 1);
+  release();
+  await tick();
+  await tick();
+  assert.deepEqual(order, ["a"]);
+  assert.equal(port.posted.filter((m) => m.t === "res").length, 0);
 });

@@ -67,3 +67,16 @@ test("the shared vector splits and joins exactly", () => {
   for (const p of v.parts) out = j.push(p);
   assert.deepEqual(out, v.request);
 });
+
+test("after a bad part the later parts of that id never produce a request; a fresh id joins", () => {
+  const j = new PartJoiner();
+  const bad = splitParts("bad", big());
+  assert.equal(j.push(bad[0]), null);
+  assert.equal(j.push({ ...bad[1], b64: "!!!" }), null);
+  assert.equal(j.push(bad[2]), null);
+  assert.equal(j.push(bad[0]), null);
+  assert.equal(j.push(bad[1]), null);
+  assert.equal(j.push(bad[2]), null);
+  const fresh = splitParts("fresh", { t: "req", id: "f", op: "ping" });
+  assert.deepEqual(j.push(fresh[0]), { t: "req", id: "f", op: "ping" });
+});
