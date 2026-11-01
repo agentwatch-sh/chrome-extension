@@ -15,8 +15,13 @@ function copyPartition(pk) {
   return out;
 }
 
+// One cookie in Chrome's store: name, domain, path and the whole partition
+// key. Two partitioned cookies that differ only in hasCrossSiteAncestor are
+// two cookies.
 export function cookieKey(c) {
-  return [c.name, c.domain.toLowerCase(), c.path, c.partitionKey?.topLevelSite ?? ""].join("\u0000");
+  const pk = c.partitionKey;
+  const ancestor = pk?.hasCrossSiteAncestor === undefined ? "" : String(pk.hasCrossSiteAncestor);
+  return [c.name, c.domain.toLowerCase(), c.path, pk?.topLevelSite ?? "", ancestor].join("\u0000");
 }
 
 export function toSetDetails(c) {

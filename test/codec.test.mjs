@@ -150,3 +150,40 @@ test("malformed input throws UnsupportedValue", () => {
     assert.throws(() => decode(bad), (err) => err instanceof UnsupportedValue, JSON.stringify(bad));
   }
 });
+
+// M11: a structured clone keeps shared references, so a small stored value
+// can encode as a huge tree. The budget stops it.
+test("a budget turns a value whose encoding passes it into TooLarge", async () => {
+  let x = { leaf: "made-up" };
+  for (let i = 0; i < 40; i++) x = [x, x]; // 2^40 leaves as a tree
+  const t0 = Date.now();
+  assert.deepEqual(await encode(x, { budget: 100000 }), { t: "unsupported", c: "TooLarge" });
+  assert.ok(Date.now() - t0 < 5000);
+  assert.throws(() => decode({ t: "unsupported", c: "TooLarge" }), UnsupportedValue);
+});
+
+test("a budget charges a blob or a buffer before it reads the bytes", async () => {
+  let read = false;
+  const blob = new Blob([new Uint8Array(3000)]);
+  const orig = blob.arrayBuffer.bind(blob);
+  blob.arrayBuffer = () => {
+    read = true;
+    return orig();
+  };
+  assert.deepEqual(await encode({ b: blob }, { budget: 2000 }), { t: "unsupported", c: "TooLarge" });
+  assert.equal(read, false);
+  assert.deepEqual(await encode(new Uint8Array(3000).buffer, { budget: 3999 }), { t: "unsupported", c: "TooLarge" });
+  assert.equal((await encode(new Uint8Array(3000).buffer, { budget: 5000 })).t, "ab");
+  assert.deepEqual(await encode("y".repeat(5000), { budget: 4000 }), { t: "unsupported", c: "TooLarge" });
+});
+
+test("within the budget the encoding is the same as without one", async () => {
+  const shared = { s: "made-up", n: [1, 2n, new Date(5)] };
+  const v = { a: [shared, shared], m: new Map([[1, new Set(["x"])]]), r: /a/g, u: new Uint8Array([1, 2]) };
+  const free = await encode(v);
+  assert.deepEqual(await encode(v, { budget: 1e6 }), free);
+  // The budget is a lower bound of the JSON size: a value that fits is never refused.
+  const size = JSON.stringify(free).length;
+  assert.deepEqual(await encode(v, { budget: size }), free);
+  assert.deepEqual(await encode(v, {}), free);
+});

@@ -57,6 +57,14 @@ test("cookieKey and dedupe", () => {
   assert.deepEqual(dedupe([a, c, b]), [a, c]);
 });
 
+test("cookieKey tells partitioned cookies apart by hasCrossSiteAncestor", () => {
+  const pk = (x) => ({ ...base, partitionKey: { topLevelSite: "https://x.example", hasCrossSiteAncestor: x } });
+  assert.notEqual(cookieKey(pk(false)), cookieKey(pk(true)));
+  assert.notEqual(cookieKey(pk(undefined)), cookieKey(pk(false)));
+  assert.equal(cookieKey(pk(true)), cookieKey({ ...pk(true), value: "other" }));
+  assert.deepEqual(dedupe([pk(false), pk(true), pk(false)]), [pk(false), pk(true)]);
+});
+
 test("cookieKey lowercases the domain", () => {
   assert.equal(cookieKey({ ...base, domain: "A.Example" }), cookieKey({ ...base, domain: "a.example" }));
 });

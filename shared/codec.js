@@ -1,8 +1,8 @@
 // Tagged value codec for page storage (IndexedDB keys and values). Classic
 // script: it sets globalThis.agentwatchCodec and exports nothing else. Loaded
 // by a Node test, by chrome.scripting.executeScript in a page's isolated world
-// and by a module service worker. encode is async, decode is sync.
-// No error text carries a stored value.
+// and by a module service worker. encode(value, {budget}) is async, decode is
+// sync. No error text carries a stored value.
 (() => {
   class UnsupportedValue extends Error {
     constructor(message) {
@@ -61,14 +61,51 @@
   const hasBlob = typeof Blob === "function";
   const hasFile = typeof File === "function";
 
-  async function encode(v, path = new Set()) {
+  // The optional budget (opts.budget, in bytes) bounds the encoded output: a
+  // value whose encoding would pass it encodes as {t: "unsupported", c:
+  // "TooLarge"} as a whole. A value that shares one object many times (a
+  // structured clone keeps shared references; the encoding is a tree) cannot
+  // grow past it. The cost of each node is a lower bound of its JSON size, and
+  // a blob or a buffer is charged before its bytes are read. Without a budget
+  // nothing is counted.
+  class OverBudget {}
+  const b64Length = (n) => Math.ceil(n / 3) * 4;
+  const NODE = 12; // {"t":"x","v":} and a separator, at least
+
+  function charge(meter, n) {
+    if (meter === null) return;
+    meter.left -= n;
+    if (meter.left < 0) throw new OverBudget();
+  }
+
+  async function encode(v, opts) {
+    const budget = opts && typeof opts.budget === "number" ? opts.budget : null;
+    const meter = budget === null ? null : { left: budget };
+    try {
+      return await enc(v, new Set(), meter);
+    } catch (e) {
+      if (e instanceof OverBudget) return { t: "unsupported", c: "TooLarge" };
+      throw e;
+    }
+  }
+
+  async function enc(v, path, meter) {
+    charge(meter, NODE);
     if (v === undefined) return { t: "undef" };
-    if (v === null || typeof v === "boolean" || typeof v === "string") return { t: "j", v };
+    if (v === null || typeof v === "boolean") return { t: "j", v };
+    if (typeof v === "string") {
+      charge(meter, v.length);
+      return { t: "j", v };
+    }
     if (typeof v === "number") {
       if (Object.is(v, -0)) return { t: "num", v: "-0" };
       return Number.isFinite(v) ? { t: "j", v } : { t: "num", v: String(v) };
     }
-    if (typeof v === "bigint") return { t: "big", v: v.toString() };
+    if (typeof v === "bigint") {
+      const s = v.toString();
+      charge(meter, s.length);
+      return { t: "big", v: s };
+    }
     if (typeof v === "function") return { t: "unsupported", c: "Function" };
     if (typeof v === "symbol") return { t: "unsupported", c: "Symbol" };
     if (v instanceof Date) {
@@ -76,20 +113,29 @@
       return { t: "date", v: Number.isNaN(ms) ? null : ms };
     }
     if (hasBlob && v instanceof Blob) {
+      charge(meter, b64Length(v.size) + v.type.length);
       const out = { t: "blob", type: v.type, v: toB64(new Uint8Array(await v.arrayBuffer())) };
       if (hasFile && v instanceof File) {
+        charge(meter, v.name.length);
         out.name = v.name;
         out.lastModified = v.lastModified;
       }
       return out;
     }
-    if (v instanceof ArrayBuffer) return { t: "ab", v: toB64(new Uint8Array(v)) };
+    if (v instanceof ArrayBuffer) {
+      charge(meter, b64Length(v.byteLength));
+      return { t: "ab", v: toB64(new Uint8Array(v)) };
+    }
     if (ArrayBuffer.isView(v)) {
       const c = viewName(v);
       if (c === null) return { t: "unsupported", c: ctorName(v) };
+      charge(meter, b64Length(v.byteLength));
       return { t: "view", c, v: toB64(new Uint8Array(v.buffer, v.byteOffset, v.byteLength)) };
     }
-    if (v instanceof RegExp) return { t: "re", s: v.source, f: v.flags };
+    if (v instanceof RegExp) {
+      charge(meter, v.source.length + v.flags.length);
+      return { t: "re", s: v.source, f: v.flags };
+    }
     const proto = Object.getPrototypeOf(v);
     const plain = proto === Object.prototype || proto === null;
     if (!(v instanceof Map || v instanceof Set || Array.isArray(v) || plain)) {
@@ -101,23 +147,24 @@
     try {
       if (v instanceof Map) {
         const a = [];
-        for (const [k, x] of v) a.push([await encode(k, path), await encode(x, path)]);
+        for (const [k, x] of v) a.push([await enc(k, path, meter), await enc(x, path, meter)]);
         return { t: "map", v: a };
       }
       if (v instanceof Set) {
         const a = [];
-        for (const x of v) a.push(await encode(x, path));
+        for (const x of v) a.push(await enc(x, path, meter));
         return { t: "set", v: a };
       }
       if (Array.isArray(v)) {
         const a = [];
-        for (let i = 0; i < v.length; i++) a.push(await encode(v[i], path));
+        for (let i = 0; i < v.length; i++) a.push(await enc(v[i], path, meter));
         return { t: "arr", v: a };
       }
       const o = {};
       for (const k of Object.keys(v)) {
+        charge(meter, k.length + 3);
         Object.defineProperty(o, k, {
-          value: await encode(v[k], path), writable: true, enumerable: true, configurable: true,
+          value: await enc(v[k], path, meter), writable: true, enumerable: true, configurable: true,
         });
       }
       return { t: "obj", v: o };
