@@ -1,20 +1,46 @@
 // A small fake of the chrome APIs the receiver uses. Every call is recorded in
-// fake.calls as [apiPath, args]. Later tasks add cookies, debugger and scripting.
+// fake.calls as [apiPath, args]. A test replaces one API's behaviour with
+// fake.impl[apiPath] = (...args) => result.
+//
+// The fake models one browser behaviour for the restore page: when
+// fake.autoNavigate is true (the default), tabs.update fires
+// debugger.onEvent "Fetch.requestPaused" for the new URL, and a later
+// "Fetch.fulfillRequest" for that request fires webNavigation.onCompleted.
 
 function makeEvent() {
   const listeners = [];
   return {
     addListener: (fn) => listeners.push(fn),
-    fire: (...args) => listeners.map((fn) => fn(...args)),
+    removeListener: (fn) => {
+      const i = listeners.indexOf(fn);
+      if (i >= 0) listeners.splice(i, 1);
+    },
+    hasListener: (fn) => listeners.includes(fn),
+    fire: (...args) => listeners.slice().map((fn) => fn(...args)),
     listeners,
   };
 }
 
+const later = (fn) => setTimeout(fn, 0);
+
 export function makeFakeChrome() {
   const calls = [];
+  const fake = {
+    calls,
+    ports: [],
+    tabs_: [],
+    cookies_: [],
+    impl: {},
+    autoNavigate: true,
+    paused: new Map(), // requestId -> {tabId, url}
+    pageResult: { local: 0, session: 0, idb_databases: 0, idb_records: 0, cache_entries: 0, errors: [] },
+    manifest: { version: "0.1.0" },
+    chrome: null,
+  };
   const rec = (path, impl) => (...args) => {
     calls.push([path, args]);
-    return impl ? impl(...args) : undefined;
+    const f = Object.hasOwn(fake.impl, path) ? fake.impl[path] : impl;
+    return f ? f(...args) : undefined;
   };
   const port = {
     posted: [],
@@ -27,13 +53,7 @@ export function makeFakeChrome() {
     fireMessage: (msg) => port.onMessage.fire(msg),
     fireDisconnect: () => port.onDisconnect.fire(port),
   };
-  const fake = {
-    calls,
-    ports: [],
-    tabs_: [],
-    manifest: { version: "0.1.0" },
-    chrome: null,
-  };
+  let requestSeq = 0;
   const chrome = {
     runtime: {
       get lastError() {
@@ -65,14 +85,59 @@ export function makeFakeChrome() {
       query: rec("tabs.query", async () => fake.tabs_.map((t) => ({ ...t }))),
       remove: rec("tabs.remove", async () => {}),
       create: rec("tabs.create", async (props) => ({ id: 900 + calls.length, ...props })),
+      update: rec("tabs.update", async (tabId, props) => {
+        if (fake.autoNavigate) fake.pauseRequest(tabId, props.url);
+        return { id: tabId, ...props };
+      }),
+    },
+    cookies: {
+      // Without partitionKey: unpartitioned cookies only. With partitionKey {}:
+      // every cookie, so the two reads overlap (as in Chrome).
+      getAll: rec("cookies.getAll", async (filter) =>
+        fake.cookies_.filter((c) => (filter.partitionKey ? true : !c.partitionKey)).map((c) => ({ ...c }))),
+      set: rec("cookies.set", async (details) => ({ ...details })),
+      remove: rec("cookies.remove", async (details) => ({ ...details })),
+    },
+    debugger: {
+      attach: rec("debugger.attach", async () => {}),
+      detach: rec("debugger.detach", async () => {}),
+      sendCommand: rec("debugger.sendCommand", async (target, method, params) => {
+        if (method === "Fetch.fulfillRequest" && fake.paused.has(params.requestId)) {
+          const { tabId, url } = fake.paused.get(params.requestId);
+          later(() => chrome.webNavigation.onCompleted.fire({ tabId, frameId: 0, url }));
+        }
+        return {};
+      }),
+      onEvent: makeEvent(),
+      onDetach: makeEvent(),
+    },
+    scripting: {
+      executeScript: rec("scripting.executeScript", async (injection) => {
+        const isPageState = typeof injection.func === "function" && injection.func.name === "replacePageState";
+        return [{ frameId: 0, result: isPageState ? structuredClone(fake.pageResult) : undefined }];
+      }),
     },
     webNavigation: {
       onErrorOccurred: makeEvent(),
+      onCompleted: makeEvent(),
     },
   };
   fake.chrome = chrome;
   fake.setTabs = (tabs) => {
     fake.tabs_ = tabs;
+  };
+  fake.pauseRequest = (tabId, url) => {
+    requestSeq += 1;
+    const requestId = "rq" + requestSeq;
+    fake.paused.set(requestId, { tabId, url });
+    later(() =>
+      chrome.debugger.onEvent.fire({ tabId }, "Fetch.requestPaused", {
+        requestId,
+        request: { url, method: "GET" },
+        frameId: "F" + tabId,
+        resourceType: "Document",
+      }));
+    return requestId;
   };
   fake.callsTo = (path) => calls.filter(([p]) => p === path).map(([, a]) => a);
   return fake;
