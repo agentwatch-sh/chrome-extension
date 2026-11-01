@@ -27,6 +27,14 @@ test("sender manifest", () => {
   assert.deepEqual(sender.background, { service_worker: "sw.js", type: "module" });
   assert.equal(typeof sender.key, "string");
   assert.ok(existsSync(new URL("../sender/sw.js", import.meta.url)));
+  for (const n of ["16", "32", "48", "128"]) {
+    assert.equal(sender.icons[n], `icons/icon-${n}.png`);
+    assert.equal(sender.action.default_icon[n], `icons/icon-${n}.png`);
+    assert.ok(existsSync(new URL("../sender/" + sender.icons[n], import.meta.url)));
+  }
+  for (const f of ["popup.html", "popup.js", "popup.css", "options.html", "options.js", "send.js", "read-page.js"]) {
+    assert.ok(existsSync(new URL("../sender/" + f, import.meta.url)), f);
+  }
 });
 
 test("receiver manifest", () => {

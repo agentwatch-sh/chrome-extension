@@ -33,6 +33,11 @@ export function makeFakeChrome() {
     impl: {},
     autoNavigate: true,
     paused: new Map(), // requestId -> {tabId, url}
+    storage_: { local: {}, session: {} },
+    permissions_: { origins: [], permissions: [] },
+    partitionKey: undefined, // reply of cookies.getPartitionKey, or undefined for none
+    pageRead: { storage: { local: {}, session: {}, idb: [], caches: [] }, skipped: [] },
+    permissionAnswer: true,
     pageResult: { local: 0, session: 0, idb_databases: 0, idb_records: 0, cache_entries: 0, errors: [] },
     manifest: { version: "0.1.0" },
     chrome: null,
@@ -54,6 +59,28 @@ export function makeFakeChrome() {
     fireDisconnect: () => port.onDisconnect.fire(port),
   };
   let requestSeq = 0;
+  // A storage area. get(keys) takes a string, a list or null; set() fires
+  // chrome.storage.onChanged with {key: {oldValue, newValue}}, "<area>".
+  function makeArea(name) {
+    return {
+      get: rec("storage." + name + ".get", async (keys) => {
+        const data = fake.storage_[name];
+        if (keys === null || keys === undefined) return structuredClone(data);
+        const list = typeof keys === "string" ? [keys] : Array.isArray(keys) ? keys : Object.keys(keys);
+        const out = {};
+        for (const k of list) if (Object.hasOwn(data, k)) out[k] = structuredClone(data[k]);
+        return out;
+      }),
+      set: rec("storage." + name + ".set", async (items) => {
+        const changes = {};
+        for (const [k, v] of Object.entries(items)) {
+          changes[k] = { oldValue: fake.storage_[name][k], newValue: structuredClone(v) };
+          fake.storage_[name][k] = structuredClone(v);
+        }
+        chrome.storage.onChanged.fire(changes, name);
+      }),
+    };
+  }
   const chrome = {
     runtime: {
       get lastError() {
@@ -77,6 +104,9 @@ export function makeFakeChrome() {
         return p;
       }),
       getManifest: () => fake.manifest,
+      sendMessage: rec("runtime.sendMessage", async () => undefined),
+      openOptionsPage: rec("runtime.openOptionsPage", async () => {}),
+      onMessage: makeEvent(),
     },
     declarativeNetRequest: {
       updateDynamicRules: rec("declarativeNetRequest.updateDynamicRules", async () => {}),
@@ -95,6 +125,8 @@ export function makeFakeChrome() {
       // every cookie, so the two reads overlap (as in Chrome).
       getAll: rec("cookies.getAll", async (filter) =>
         fake.cookies_.filter((c) => (filter.partitionKey ? true : !c.partitionKey)).map((c) => ({ ...c }))),
+      getPartitionKey: rec("cookies.getPartitionKey", async () =>
+        fake.partitionKey ? { partitionKey: fake.partitionKey } : {}),
       set: rec("cookies.set", async (details) => ({ ...details })),
       remove: rec("cookies.remove", async (details) => ({ ...details })),
     },
@@ -111,9 +143,24 @@ export function makeFakeChrome() {
       onEvent: makeEvent(),
       onDetach: makeEvent(),
     },
+    permissions: {
+      request: rec("permissions.request", async () => fake.permissionAnswer),
+      remove: rec("permissions.remove", async () => true),
+      getAll: rec("permissions.getAll", async () => ({
+        origins: fake.permissions_.origins.slice(), permissions: fake.permissions_.permissions.slice(),
+      })),
+    },
+    storage: {
+      local: makeArea("local"),
+      session: makeArea("session"),
+      onChanged: makeEvent(),
+    },
     scripting: {
       executeScript: rec("scripting.executeScript", async (injection) => {
         const isPageState = typeof injection.func === "function" && injection.func.name === "replacePageState";
+        if (typeof injection.func === "function" && injection.func.name === "readPageState") {
+          return [{ frameId: 0, result: structuredClone(fake.pageRead) }];
+        }
         return [{ frameId: 0, result: isPageState ? structuredClone(fake.pageResult) : undefined }];
       }),
     },
