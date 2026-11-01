@@ -23,6 +23,18 @@ function makeEvent() {
 
 const later = (fn) => setTimeout(fn, 0);
 
+// Chrome converts an executeScript result to its own value type, whose
+// dictionaries sort their keys (measured on Chromium 156). A string is kept.
+function chromeResult(x) {
+  if (Array.isArray(x)) return x.map(chromeResult);
+  if (x !== null && typeof x === "object") {
+    const out = {};
+    for (const k of Object.keys(x).sort()) out[k] = chromeResult(x[k]);
+    return out;
+  }
+  return x;
+}
+
 export function makeFakeChrome() {
   const calls = [];
   const fake = {
@@ -170,10 +182,11 @@ export function makeFakeChrome() {
     scripting: {
       executeScript: rec("scripting.executeScript", async (injection) => {
         const isPageState = typeof injection.func === "function" && injection.func.name === "replacePageState";
+        // readPageState returns its read as one JSON string.
         if (typeof injection.func === "function" && injection.func.name === "readPageState") {
-          return [{ frameId: 0, result: structuredClone(fake.pageRead) }];
+          return [{ frameId: 0, result: chromeResult(JSON.stringify(fake.pageRead)) }];
         }
-        return [{ frameId: 0, result: isPageState ? structuredClone(fake.pageResult) : undefined }];
+        return [{ frameId: 0, result: isPageState ? chromeResult(structuredClone(fake.pageResult)) : undefined }];
       }),
     },
     webNavigation: {

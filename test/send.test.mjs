@@ -69,6 +69,24 @@ test("buildPayload gives a C2 payload", async () => {
   assert.deepEqual(ex[1][0].target, { tabId: 7 });
 });
 
+test("buildPayload keeps the key order of the page's IndexedDB values", async () => {
+  const f = makeFakeChrome();
+  const value = { t: "obj", v: { zeta: { t: "j", v: 1 }, alpha: { t: "obj", v: { b: { t: "j", v: null }, a: { t: "j", v: 2 } } } } };
+  f.pageRead = { storage: { local: {}, session: {}, caches: [], idb: [{ name: "d", version: 1, stores: [{
+    name: "s", keyPath: null, autoIncrement: false, indexes: [], records: [{ key: { t: "j", v: "k" }, value }] }] }] }, skipped: [] };
+  const r = await buildPayload(f.chrome, TAB);
+  const got = r.payload.storage.idb[0].stores[0].records[0].value;
+  assert.deepEqual(Object.keys(got.v), ["zeta", "alpha"]);
+  assert.deepEqual(Object.keys(got.v.alpha.v), ["b", "a"]);
+  assert.ok(r.json.indexOf('"zeta"') < r.json.indexOf('"alpha"'));
+});
+
+test("buildPayload fails on a page result that is not the reader's JSON string", async () => {
+  const f = makeFakeChrome();
+  f.impl["scripting.executeScript"] = async (inj) => [{ frameId: 0, result: inj.func ? { storage: {} } : undefined }];
+  await assert.rejects(buildPayload(f.chrome, TAB));
+});
+
 test("buildPayload drops expirationDate of a session cookie and keeps skipped names", async () => {
   const f = makeFakeChrome();
   f.cookies_ = [cookie({ session: true, expirationDate: undefined })];
@@ -386,7 +404,7 @@ test("readPageState reads storage, leaves out a database that fails", async () =
           keyPath: "id", autoIncrement: false, indexNames: ["byA"],
           index: () => ({ name: "byA", keyPath: "a", unique: false, multiEntry: false }),
           getAllKeys: () => { const r = {}; setTimeout(() => { r.result = [1, 2]; r.onsuccess(); }); return r; },
-          getAll: () => { const r = {}; setTimeout(() => { r.result = [{ id: 1, a: "v" }, new FakeCryptoKey()]; r.onsuccess(); }); return r; },
+          getAll: () => { const r = {}; setTimeout(() => { r.result = [{ id: 1, a: "v", _: 0 }, new FakeCryptoKey()]; r.onsuccess(); }); return r; },
         };
         req.result = { name, version: 3, objectStoreNames: ["st"], close() {},
           transaction: () => { transactions++; return { objectStore: () => store }; } };
@@ -403,7 +421,11 @@ test("readPageState reads storage, leaves out a database that fails", async () =
     }),
   });
   try {
-    const { storage, skipped } = await readPageState();
+    // One JSON string: Chrome sorts the keys of an object result.
+    const json = await readPageState();
+    assert.equal(typeof json, "string");
+    const { storage, skipped } = JSON.parse(json);
+    assert.deepEqual(Object.keys(storage.idb[0].stores[0].records[0].value.v), ["id", "a", "_"]);
     assert.deepEqual(storage.local, { a: "1" });
     assert.deepEqual(storage.session, { s: "2" });
     assert.deepEqual(skipped, ["bad"]);

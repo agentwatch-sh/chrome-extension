@@ -67,7 +67,8 @@ export async function buildPayload(chrome, { tabId, url, domain }) {
 
   await chrome.scripting.executeScript({ target: { tabId }, files: ["lib/codec.js"] });
   const [injected] = await chrome.scripting.executeScript({ target: { tabId }, func: readPageState });
-  const { storage, skipped } = injected.result;
+  if (typeof injected?.result !== "string") throw new Error("no page read");
+  const { storage, skipped } = JSON.parse(injected.result);
 
   const payload = { v: 1, domain, url, origin, cookies, storage };
   const json = JSON.stringify(payload);

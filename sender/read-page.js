@@ -3,10 +3,13 @@
 // globalThis.agentwatchCodec. Chrome serializes only the function, so it must
 // use nothing from this module: every helper is declared inside it.
 //
-// It returns {storage, skipped}. `storage` is the C2 storage object. `skipped`
-// lists the names of databases and caches that could not be opened or read;
-// they are left out of `storage`. A name is not secret; a stored value never
-// enters an error or a name.
+// It returns JSON.stringify({storage, skipped}): one string, because Chrome
+// converts an object result to its own value type, which sorts object keys
+// (measured on Chromium 156), and a page's stored objects keep their key
+// order. `storage` is the C2 storage object. `skipped` lists the names of
+// databases and caches that could not be opened or read; they are left out of
+// `storage`. A name is not secret; a stored value never enters an error or a
+// name.
 export async function readPageState() {
   const codec = globalThis.agentwatchCodec;
   const CHUNK = 32 * 1024;
@@ -110,5 +113,5 @@ export async function readPageState() {
       skipped.push("cache " + String(name));
     }
   }
-  return { storage, skipped };
+  return JSON.stringify({ storage, skipped });
 }
