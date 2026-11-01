@@ -16,7 +16,7 @@ function copyPartition(pk) {
 }
 
 export function cookieKey(c) {
-  return [c.name, c.domain, c.path, c.partitionKey?.topLevelSite ?? ""].join("\u0000");
+  return [c.name, c.domain.toLowerCase(), c.path, c.partitionKey?.topLevelSite ?? ""].join("\u0000");
 }
 
 export function toSetDetails(c) {

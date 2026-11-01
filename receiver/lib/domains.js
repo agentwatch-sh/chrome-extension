@@ -3,11 +3,11 @@
 const REFUSED = [
   ["://", "paste the host only"],
   ["/", "paste the host only"],
+  ["[", "an IP address is not allowed"],
+  ["]", "an IP address is not allowed"],
   [":", "a port is not allowed"],
   ["*", "a wildcard is not allowed"],
   ["@", "a user name is not allowed"],
-  ["[", "an IP address is not allowed"],
-  ["]", "an IP address is not allowed"],
 ];
 
 function fail(reason) {
@@ -24,6 +24,10 @@ export function normalizeEntry(input) {
   if (/\s/.test(s)) return fail("whitespace is not allowed");
   if (s.endsWith(".")) s = s.slice(0, -1);
   if (s === "" || s.endsWith(".")) return fail("the host ends with extra dots");
+  if (/[\u0000-\u007f]/.test(s.replace(/[A-Za-z0-9.-]/g, ""))) return fail("a character is not allowed");
+  if (/\p{C}/u.test(s)) return fail("a control or invisible character is not allowed");
+  if (/[\u3002\uff0e\uff61]/.test(s)) return fail("use a plain dot between labels");
+  if (/[\u00df\u03c2]/.test(s)) return fail("use the punycode form");
   let host;
   try {
     host = new URL("http://" + s).hostname;
@@ -34,7 +38,9 @@ export function normalizeEntry(input) {
   if (host.endsWith(".")) host = host.slice(0, -1);
   if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return fail("an IP address is not allowed");
   if (host.length === 0 || host.length > 253) return fail("the host is too long");
+  if (!/^[a-z0-9.-]+$/.test(host)) return fail("the host is not valid");
   const labels = host.split(".");
+  if (labels.some((l) => l === "")) return fail("a label is empty");
   if (labels.length < 2) return fail("the host needs at least two labels");
   for (const label of labels) {
     if (label.length < 1 || label.length > 63) return fail("a label must be 1 to 63 characters");

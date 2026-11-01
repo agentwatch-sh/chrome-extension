@@ -56,3 +56,7 @@ test("cookieKey and dedupe", () => {
   assert.notEqual(cookieKey(a), cookieKey(c));
   assert.deepEqual(dedupe([a, c, b]), [a, c]);
 });
+
+test("cookieKey lowercases the domain", () => {
+  assert.equal(cookieKey({ ...base, domain: "A.Example" }), cookieKey({ ...base, domain: "a.example" }));
+});

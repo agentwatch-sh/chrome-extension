@@ -48,3 +48,37 @@ test("fallbackDomain", () => {
   assert.equal(fallbackDomain("example.com"), "example.com");
   assert.equal(fallbackDomain("localhost"), "localhost");
 });
+
+test("normalizeEntry refuses delimiters, escapes and invisible characters", () => {
+  const bad = ["a.example?x", "a.example#f", "a.example\\x", "a%2eexample.com", "a%41.example",
+    "a.example\u0000", "a​.example", "a­.example", "a‌.example", "a‍.example",
+    "a_b.example", "a\u0001.example", "a\u007f.example", "a。example", "a．example",
+    "a｡example", "straße.example", "ς.example", "a.example", "a͸.example"];
+  for (const s of bad) assert.equal(normalizeEntry(s).ok, false, JSON.stringify(s));
+});
+
+test("normalizeEntry reason texts", () => {
+  const table = [
+    ["", "the entry is empty"],
+    ["https://a.example/x", "paste the host only"],
+    ["a.example/x", "paste the host only"],
+    ["a.example:80", "a port is not allowed"],
+    ["*.a.example", "a wildcard is not allowed"],
+    ["a@b.example", "a user name is not allowed"],
+    ["[::1]", "an IP address is not allowed"],
+    ["1.2.3.4", "an IP address is not allowed"],
+    ["a b.example", "whitespace is not allowed"],
+    ["a.example..", "the host ends with extra dots"],
+    [".a.example", "a label is empty"],
+    ["a..example", "a label is empty"],
+    ["com", "the host needs at least two labels"],
+    ["a".repeat(64) + ".example", "a label must be 1 to 63 characters"],
+    ["-a.example", "a label must not start or end with a hyphen"],
+    ["a_b.example", "a character is not allowed"],
+    ["a.example?x", "a character is not allowed"],
+    ["a​.example", "a control or invisible character is not allowed"],
+    ["a。example", "use a plain dot between labels"],
+    ["straße.example", "use the punycode form"],
+  ];
+  for (const [s, reason] of table) assert.equal(normalizeEntry(s).reason, reason, JSON.stringify(s));
+});
