@@ -1,0 +1,166 @@
+// Tagged value codec for page storage (IndexedDB keys and values). Classic
+// script: it sets globalThis.agentwatchCodec and exports nothing else. Loaded
+// by a Node test, by chrome.scripting.executeScript in a page's isolated world
+// and by a module service worker. encode is async, decode is sync.
+// No error text carries a stored value.
+(() => {
+  class UnsupportedValue extends Error {
+    constructor(message) {
+      super(message);
+      this.name = "UnsupportedValue";
+    }
+  }
+
+  const VIEWS = [
+    "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array", "Uint16Array",
+    "Int32Array", "Uint32Array", "Float32Array", "Float64Array",
+    "BigInt64Array", "BigUint64Array", "DataView",
+  ];
+  const CHUNK = 32 * 1024;
+
+  const toB64 = (u8) => {
+    let s = "";
+    for (let i = 0; i < u8.length; i += CHUNK) {
+      s += String.fromCharCode.apply(null, u8.subarray(i, i + CHUNK));
+    }
+    return btoa(s);
+  };
+
+  const fromB64 = (b64) => {
+    let bin;
+    try {
+      bin = atob(b64);
+    } catch {
+      throw new UnsupportedValue("invalid base64");
+    }
+    const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    return u8;
+  };
+
+  const ctorName = (v) => {
+    try {
+      const p = Object.getPrototypeOf(v);
+      const n = p && p.constructor && p.constructor.name;
+      return typeof n === "string" && n ? n : "Object";
+    } catch {
+      return "Object";
+    }
+  };
+
+  // The built-in view kind of v, or null. A subclass (a Node Buffer) maps to
+  // its built-in base.
+  const viewName = (v) => {
+    for (const n of VIEWS) {
+      const C = globalThis[n];
+      if (C && v instanceof C) return n;
+    }
+    return null;
+  };
+
+  const hasBlob = typeof Blob === "function";
+  const hasFile = typeof File === "function";
+
+  async function encode(v) {
+    if (v === undefined) return { t: "undef" };
+    if (v === null || typeof v === "boolean" || typeof v === "string") return { t: "j", v };
+    if (typeof v === "number") {
+      if (Object.is(v, -0)) return { t: "num", v: "-0" };
+      return Number.isFinite(v) ? { t: "j", v } : { t: "num", v: String(v) };
+    }
+    if (typeof v === "bigint") return { t: "big", v: v.toString() };
+    if (typeof v === "function") return { t: "unsupported", c: "Function" };
+    if (typeof v === "symbol") return { t: "unsupported", c: "Symbol" };
+    if (v instanceof Date) {
+      const ms = v.getTime();
+      return { t: "date", v: Number.isNaN(ms) ? null : ms };
+    }
+    if (hasBlob && v instanceof Blob) {
+      const out = { t: "blob", type: v.type, v: toB64(new Uint8Array(await v.arrayBuffer())) };
+      if (hasFile && v instanceof File) {
+        out.name = v.name;
+        out.lastModified = v.lastModified;
+      }
+      return out;
+    }
+    if (v instanceof ArrayBuffer) return { t: "ab", v: toB64(new Uint8Array(v)) };
+    if (ArrayBuffer.isView(v)) {
+      const c = viewName(v);
+      if (c === null) return { t: "unsupported", c: ctorName(v) };
+      return { t: "view", c, v: toB64(new Uint8Array(v.buffer, v.byteOffset, v.byteLength)) };
+    }
+    if (v instanceof Map) {
+      const a = [];
+      for (const [k, x] of v) a.push([await encode(k), await encode(x)]);
+      return { t: "map", v: a };
+    }
+    if (v instanceof Set) {
+      const a = [];
+      for (const x of v) a.push(await encode(x));
+      return { t: "set", v: a };
+    }
+    if (Array.isArray(v)) {
+      const a = [];
+      for (let i = 0; i < v.length; i++) a.push(await encode(v[i]));
+      return { t: "arr", v: a };
+    }
+    if (v instanceof RegExp) return { t: "re", s: v.source, f: v.flags };
+    const proto = Object.getPrototypeOf(v);
+    if (proto === Object.prototype || proto === null) {
+      const o = {};
+      for (const k of Object.keys(v)) {
+        Object.defineProperty(o, k, {
+          value: await encode(v[k]), writable: true, enumerable: true, configurable: true,
+        });
+      }
+      return { t: "obj", v: o };
+    }
+    return { t: "unsupported", c: ctorName(v) };
+  }
+
+  function decode(e) {
+    if (e === null || typeof e !== "object") throw new UnsupportedValue("bad encoding");
+    switch (e.t) {
+      case "undef": return undefined;
+      case "j": return e.v;
+      case "num": return Number(e.v);
+      case "big": return BigInt(e.v);
+      case "date": return new Date(e.v === null ? NaN : e.v);
+      case "blob": {
+        const bytes = fromB64(e.v);
+        if (e.name !== undefined) {
+          return new File([bytes], e.name, { type: e.type, lastModified: e.lastModified });
+        }
+        return new Blob([bytes], { type: e.type });
+      }
+      case "ab": return fromB64(e.v).buffer;
+      case "view": {
+        if (!VIEWS.includes(e.c) || typeof globalThis[e.c] !== "function") {
+          throw new UnsupportedValue("unsupported view " + String(e.c).slice(0, 40));
+        }
+        const u8 = fromB64(e.v);
+        const C = globalThis[e.c];
+        if (C === DataView) return new DataView(u8.buffer);
+        if (u8.byteLength % C.BYTES_PER_ELEMENT !== 0) throw new UnsupportedValue("bad view length");
+        return new C(u8.buffer, 0, u8.byteLength / C.BYTES_PER_ELEMENT);
+      }
+      case "map": return new Map(e.v.map(([k, x]) => [decode(k), decode(x)]));
+      case "set": return new Set(e.v.map(decode));
+      case "arr": return e.v.map(decode);
+      case "re": return new RegExp(e.s, e.f);
+      case "obj": {
+        const o = {};
+        for (const k of Object.keys(e.v)) {
+          Object.defineProperty(o, k, {
+            value: decode(e.v[k]), writable: true, enumerable: true, configurable: true,
+          });
+        }
+        return o;
+      }
+      case "unsupported": throw new UnsupportedValue("unsupported value: " + String(e.c).slice(0, 40));
+      default: throw new UnsupportedValue("unknown tag");
+    }
+  }
+
+  globalThis.agentwatchCodec = { encode, decode, UnsupportedValue };
+})();
