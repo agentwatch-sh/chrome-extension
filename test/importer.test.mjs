@@ -118,10 +118,10 @@ test("the import follows C6 in order and sums the counts", async () => {
 
   const relevant = f.calls.filter(([p]) => !p.startsWith("runtime.") && !p.startsWith("port."));
   assert.deepEqual(relevant.map(describeCall), [
+    "tabs.query",
     "cookies.getAll", "cookies.getAll",
     "cookies.remove", "cookies.remove",
     "cookies.set", "cookies.set",
-    "tabs.query",
     "tabs.create",
     "debugger.attach",
     "debugger.sendCommand Network.enable",
@@ -473,7 +473,7 @@ test("a second import waits until the first ends, success or failure", async () 
   assert.ok(f3.callsTo("debugger.detach").length === 1);
 });
 
-test("the origin's tabs close before the restore tab opens; a window keeps a tab", async () => {
+test("the origin's tabs close before the cookie swap and before the restore tab opens; a window keeps a tab", async () => {
   const f = makeFakeChrome();
   f.setTabs([
     { id: 1, windowId: 1, url: ORIGIN + "/a" },
@@ -486,12 +486,16 @@ test("the origin's tabs close before the restore tab opens; a window keeps a tab
   assert.equal(result.tabs_closed, 2);
   assert.deepEqual(f.callsTo("tabs.query"), [[{}]]);
   const order = f.calls
-    .filter(([p]) => p === "tabs.create" || p === "tabs.remove" || p === "debugger.attach")
-    .map(([p, a]) => [p, a[0]]);
+    .filter(([p]) => ["tabs.create", "tabs.remove", "debugger.attach", "cookies.getAll", "cookies.set"].includes(p))
+    .map(([p, a]) => [p, p.startsWith("cookies.") ? "" : a[0]]);
   assert.deepEqual(order, [
     ["tabs.create", { windowId: 1, url: "about:blank", active: false }],
     ["tabs.remove", 1],
     ["tabs.remove", 2],
+    ["cookies.getAll", ""],
+    ["cookies.getAll", ""],
+    ["cookies.set", ""],
+    ["cookies.set", ""],
     ["tabs.create", { url: "about:blank", active: true }],
     ["debugger.attach", { tabId: f.callsTo("debugger.attach")[0][0].tabId }],
   ]);
@@ -556,7 +560,9 @@ test("after the cookies step times out, its background work stops", async () => 
   release();
   await settle();
   assert.equal(f.callsTo("cookies.set").length, 1);
-  assert.equal(f.callsTo("tabs.query").length, 0);
+  // The tabs closed before the cookies (M7); no later step runs.
+  assert.equal(f.callsTo("tabs.query").length, 1);
+  assert.equal(f.callsTo("tabs.create").length, 0);
 });
 
 test("after a timeout during cookie removal, no further removal or set happens", async () => {

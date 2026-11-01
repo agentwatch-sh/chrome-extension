@@ -14,11 +14,18 @@ export function allowRule(domains) {
   };
 }
 
-export async function applyAllowlist(chrome, domains) {
-  if (!Array.isArray(domains)) throw new Error("invalid allowlist entry");
-  for (const d of domains) {
+// The new list replaces the old one in full. An entry that is not a
+// normalized C5 entry is refused and counted; the valid entries still apply,
+// so an invalid entry never keeps an older, wider rule in place. A list that
+// is not an array applies as an empty list (everything blocked).
+export async function applyAllowlist(chrome, input) {
+  const list = Array.isArray(input) ? input : [];
+  let refused = Array.isArray(input) ? 0 : 1;
+  const domains = [];
+  for (const d of list) {
     const r = normalizeEntry(d);
-    if (!r.ok || r.entry !== d) throw new Error("invalid allowlist entry");
+    if (r.ok && r.entry === d) domains.push(d);
+    else refused += 1;
   }
   const rule = allowRule(domains);
   await chrome.declarativeNetRequest.updateDynamicRules({
@@ -29,5 +36,5 @@ export async function applyAllowlist(chrome, domains) {
     const u = tabUrl(t);
     return u !== null && !domains.some((d) => covers(d, u.hostname));
   });
-  return { rules: rule ? 1 : 0, closed };
+  return { rules: rule ? 1 : 0, closed, refused };
 }

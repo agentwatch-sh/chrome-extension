@@ -190,15 +190,16 @@ async function runImport(chrome, state, opts) {
   };
 
   try {
-    const cookies = await step("cookies", (signal) => replaceCookies(chrome, state, signal));
-
     // Tabs of the origin hold the state being replaced (an open IndexedDB
-    // connection blocks its deletion).
+    // connection blocks its deletion). They close before the cookie swap, so
+    // no page of the origin can write a cookie between the swap and the close.
     const tabsClosed = await step("close tabs", () =>
       closeTabs(chrome, (t) => {
         const u = tabUrl(t);
         return u !== null && u.origin === state.origin;
       }));
+
+    const cookies = await step("cookies", (signal) => replaceCookies(chrome, state, signal));
 
     const tabId = await step("open tab", async () => {
       ctx.tabPending = chrome.tabs.create({ url: "about:blank", active: true });

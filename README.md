@@ -117,17 +117,18 @@ the receiver at all (measured), and then nothing blocks.
   messaging (host `sh.agentwatch.browser`). Nothing else can talk to it: it
   has no content scripts, no web-accessible files and no
   `externally_connectable`, so a page cannot see it.
-- **A send** replaces the site's state in the agent's Chrome: it removes every
-  cookie of the domain and its subdomains, writes the sent ones, closes the
-  agent's tabs of the origin, writes the page storage on a restore page that
-  the site never receives, and then opens the site. The site's first script
+- **A send** replaces the site's state in the agent's Chrome: it closes the
+  agent's tabs of the origin, removes every cookie of the domain and its
+  subdomains, writes the sent ones, writes the page storage on a restore page
+  that the site never receives, and then opens the site. The site's first script
   sees the sent state. The answer holds counts and names only.
 - **The allowlist block:** a static rule blocks every top-level navigation,
   and one dynamic rule allows the allowlist's domains and their subdomains. So
   the block holds from Chrome's first moment. Frames and subresources from any
   host still load. When the list changes, the receiver closes the tabs whose
   site left it, and it reports each blocked navigation (the host only) to the
-  daemon.
+  daemon. An entry that is not a valid host is refused and counted in the
+  answer; the valid entries of the same list still apply.
 
 ### Its permissions, and why
 

@@ -23,7 +23,7 @@ test("applyAllowlist updates the rule and closes uncovered tabs", async () => {
     { id: 5, windowId: 1, url: "about:blank", pendingUrl: "https://c.example/new" },
   ]);
   const r = await applyAllowlist(f.chrome, ["a.example", "b.example"]);
-  assert.deepEqual(r, { rules: 1, closed: 2 });
+  assert.deepEqual(r, { rules: 1, closed: 2, refused: 0 });
   const [args] = f.callsTo("declarativeNetRequest.updateDynamicRules");
   assert.deepEqual(args[0].removeRuleIds, [2]);
   assert.equal(args[0].addRules.length, 1);
@@ -34,7 +34,7 @@ test("applyAllowlist updates the rule and closes uncovered tabs", async () => {
 test("an empty list adds no rule", async () => {
   const f = makeFakeChrome();
   const r = await applyAllowlist(f.chrome, []);
-  assert.deepEqual(r, { rules: 0, closed: 0 });
+  assert.deepEqual(r, { rules: 0, closed: 0, refused: 0 });
   assert.deepEqual(f.callsTo("declarativeNetRequest.updateDynamicRules")[0][0], { removeRuleIds: [2], addRules: [] });
 });
 
@@ -46,7 +46,7 @@ test("about:blank opens before the last tab of a window closes", async () => {
     { id: 3, windowId: 8, url: "https://a.example/" },
   ]);
   const r = await applyAllowlist(f.chrome, ["a.example"]);
-  assert.deepEqual(r, { rules: 1, closed: 2 });
+  assert.deepEqual(r, { rules: 1, closed: 2, refused: 0 });
   assert.deepEqual(f.callsTo("tabs.create"), [[{ windowId: 7, url: "about:blank", active: false }]]);
   const order = f.calls.map(([p]) => p);
   assert.ok(order.indexOf("tabs.create") < order.indexOf("tabs.remove"));
@@ -56,20 +56,35 @@ test("chrome:// tabs are never touched, even alone in a window", async () => {
   const f = makeFakeChrome();
   f.setTabs([{ id: 1, windowId: 1, url: "chrome://newtab/" }]);
   const r = await applyAllowlist(f.chrome, ["a.example"]);
-  assert.deepEqual(r, { rules: 1, closed: 0 });
+  assert.deepEqual(r, { rules: 1, closed: 0, refused: 0 });
   assert.equal(f.callsTo("tabs.remove").length, 0);
 });
 
-test("an invalid or non-normalized entry rejects the request without an echo", async () => {
-  for (const bad of ["EVIL.example", "https://x.example", "nodot", 5]) {
+test("invalid entries are refused and counted; the valid ones apply, never an older wider rule", async () => {
+  for (const bad of ["EVIL.example", "https://x.example", "nodot", 5, null, "a.example."]) {
     const f = makeFakeChrome();
-    await assert.rejects(applyAllowlist(f.chrome, ["a.example", bad]), (e) => {
-      assert.equal(e.message, "invalid allowlist entry");
-      return true;
-    });
-    assert.equal(f.callsTo("declarativeNetRequest.updateDynamicRules").length, 0);
+    f.setTabs([
+      { id: 1, windowId: 1, url: "https://a.example/" },
+      { id: 2, windowId: 1, url: "https://evil.example/" },
+    ]);
+    const r = await applyAllowlist(f.chrome, ["a.example", bad]);
+    assert.deepEqual(r, { rules: 1, closed: 1, refused: 1 }, String(bad));
+    const [[update]] = f.callsTo("declarativeNetRequest.updateDynamicRules");
+    assert.deepEqual(update.removeRuleIds, [2]);
+    assert.deepEqual(update.addRules.map((x) => x.condition.requestDomains), [["a.example"]]);
+    assert.deepEqual(f.callsTo("tabs.remove").map((a) => a[0]), [2]);
+    assert.deepEqual(Object.keys(r), ["rules", "closed", "refused"]); // no entry is echoed
   }
-  await assert.rejects(applyAllowlist(makeFakeChrome().chrome, "a.example"), /invalid allowlist entry/);
+  // Only invalid entries: the old rule goes, and no new one comes.
+  const f = makeFakeChrome();
+  const r = await applyAllowlist(f.chrome, ["EVIL.example", "x"]);
+  assert.deepEqual(r, { rules: 0, closed: 0, refused: 2 });
+  assert.deepEqual(f.callsTo("declarativeNetRequest.updateDynamicRules")[0][0], { removeRuleIds: [2], addRules: [] });
+  // A list that is not an array blocks everything.
+  const g = makeFakeChrome();
+  g.setTabs([{ id: 1, windowId: 1, url: "https://a.example/" }, { id: 2, windowId: 1, url: "chrome://newtab/" }]);
+  assert.deepEqual(await applyAllowlist(g.chrome, "a.example"), { rules: 0, closed: 1, refused: 1 });
+  assert.deepEqual(g.callsTo("declarativeNetRequest.updateDynamicRules")[0][0], { removeRuleIds: [2], addRules: [] });
 });
 
 test("a tab already gone is not an error and is not counted", async () => {
@@ -83,5 +98,5 @@ test("a tab already gone is not an error and is not counted", async () => {
     if (id === 1) throw new Error("No tab with id: 1.");
   };
   const r = await applyAllowlist(f.chrome, ["a.example"]);
-  assert.deepEqual(r, { rules: 1, closed: 1 });
+  assert.deepEqual(r, { rules: 1, closed: 1, refused: 0 });
 });
