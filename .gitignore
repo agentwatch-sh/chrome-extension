@@ -9,3 +9,8 @@ dist/
 *.zip
 *.crx
 *.pem
+
+# The live test run folder (profiles, X auth files, logs, screenshots).
+test/live/.run/
+# Chromium writes indexed rulesets into an unpacked extension it loads.
+_metadata/
