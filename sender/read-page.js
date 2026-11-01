@@ -64,8 +64,10 @@ export async function readPageState() {
           const ix = st.index(indexName);
           s.indexes.push({ name: ix.name, keyPath: ix.keyPath, unique: ix.unique, multiEntry: ix.multiEntry });
         }
+        // One transaction for both reads, so a page write between them cannot
+        // misalign keys and values.
         const keys = await req(st.getAllKeys());
-        const values = await req(db.transaction(storeName, "readonly").objectStore(storeName).getAll());
+        const values = await req(st.getAll());
         for (let i = 0; i < keys.length; i++) {
           s.records.push({ key: await codec.encode(keys[i]), value: await codec.encode(values[i]) });
         }

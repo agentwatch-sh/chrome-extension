@@ -196,8 +196,8 @@ export function readableSites(origins, boxes) {
   return origins.filter((o) => !boxPatterns.has(o));
 }
 
-async function say(chrome, state, text, extra = {}) {
-  await chrome.storage.session.set({ lastSend: { state, text, ...extra } });
+async function say(chrome, scope, state, text, extra = {}) {
+  await chrome.storage.session.set({ lastSend: { state, text, domain: scope.domain, at: Date.now(), ...extra } });
 }
 
 export async function runSend(chrome, fetchImpl, msg) {
@@ -213,19 +213,19 @@ export async function runSend(chrome, fetchImpl, msg) {
     const entry = typeof domain === "string" ? normalizeEntry(domain) : { ok: false };
     if (!boxes.includes(box) || typeof user !== "string" || user === "" || !entry.ok ||
         entry.entry !== domain || !covers(domain, host) || !Number.isInteger(tabId)) {
-      return await say(chrome, "error", "The send request is not valid.");
+      return await say(chrome, msg ?? {}, "error", "The send request is not valid.");
     }
-    await say(chrome, "reading", `Reading ${domain}...`);
+    await say(chrome, msg ?? {}, "reading", `Reading ${domain}...`);
     let built;
     try {
       built = await buildPayload(chrome, { tabId, url, domain });
     } catch {
-      return await say(chrome, "error", "Could not read this page. Reload the tab and try again.");
+      return await say(chrome, msg ?? {}, "error", "Could not read this page. Reload the tab and try again.");
     }
     if (built.bytes > MAX_SEND_BYTES) {
-      return await say(chrome, "error", tooLargeText(built.bytes, built.largest));
+      return await say(chrome, msg ?? {}, "error", tooLargeText(built.bytes, built.largest));
     }
-    await say(chrome, "sending", `Sending ${domain} to ${hostOf(box)}...`);
+    await say(chrome, msg ?? {}, "sending", `Sending ${domain} to ${hostOf(box)}...`);
     const result = await sendState(fetchImpl, { box, user, body: built.json, domain });
     const ok = result.kind === "ok";
     let text = result.text;
@@ -233,8 +233,19 @@ export async function runSend(chrome, fetchImpl, msg) {
     const extra = {};
     if (result.link) extra.link = result.link;
     if (result.counts) extra.counts = result.counts;
-    await say(chrome, ok ? "done" : "error", text, extra);
+    await say(chrome, msg ?? {}, ok ? "done" : "error", text, extra);
   } catch {
-    await say(chrome, "error", "The send failed.");
+    await say(chrome, msg ?? {}, "error", "The send failed.");
   }
+}
+
+export const STALE_MS = 3 * 60 * 1000;
+
+// What the popup shows for a stored lastSend on this tab's domain, or null.
+export function visibleStatus(last, domain, now = Date.now()) {
+  if (!last || last.domain !== domain) return null;
+  if ((last.state === "reading" || last.state === "sending") && now - last.at > STALE_MS) {
+    return { state: "error", text: "The last send did not finish." };
+  }
+  return last;
 }

@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import "../sender/lib/codec.js";
 import {
   MAX_SEND_BYTES, buildPayload, sendState, resultText, runSend, fetchTargets,
-  chooseDomain, domainChoices, readableSites,
+  chooseDomain, domainChoices, readableSites, visibleStatus,
 } from "../sender/send.js";
 import { readPageState } from "../sender/read-page.js";
 import { onSendClick } from "../sender/popup.js";
@@ -279,6 +279,8 @@ test("addBox asks for the permission first, stores the origin once; removeBox re
 });
 
 test("readPageState reads storage, leaves out a database that fails", async () => {
+  class FakeCryptoKey {}
+  let transactions = 0;
   const saved = {};
   const set = (k, v) => {
     saved[k] = Object.getOwnPropertyDescriptor(globalThis, k);
@@ -296,11 +298,11 @@ test("readPageState reads storage, leaves out a database that fails", async () =
         const store = {
           keyPath: "id", autoIncrement: false, indexNames: ["byA"],
           index: () => ({ name: "byA", keyPath: "a", unique: false, multiEntry: false }),
-          getAllKeys: () => { const r = {}; setTimeout(() => { r.result = [1]; r.onsuccess(); }); return r; },
-          getAll: () => { const r = {}; setTimeout(() => { r.result = [{ id: 1, a: "v" }]; r.onsuccess(); }); return r; },
+          getAllKeys: () => { const r = {}; setTimeout(() => { r.result = [1, 2]; r.onsuccess(); }); return r; },
+          getAll: () => { const r = {}; setTimeout(() => { r.result = [{ id: 1, a: "v" }, new FakeCryptoKey()]; r.onsuccess(); }); return r; },
         };
         req.result = { name, version: 3, objectStoreNames: ["st"], close() {},
-          transaction: () => ({ objectStore: () => store }) };
+          transaction: () => { transactions++; return { objectStore: () => store }; } };
         req.onsuccess();
       });
       return req;
@@ -323,6 +325,12 @@ test("readPageState reads storage, leaves out a database that fails", async () =
     assert.equal(storage.idb[0].version, 3);
     assert.deepEqual(storage.idb[0].stores[0].indexes, [{ name: "byA", keyPath: "a", unique: false, multiEntry: false }]);
     assert.equal(storage.idb[0].stores[0].records[0].key.v, 1);
+    // A value the codec cannot carry is tagged; the database stays, nothing is skipped.
+    assert.equal(storage.idb[0].stores[0].records.length, 2);
+    assert.deepEqual(storage.idb[0].stores[0].records[1].value, { t: "unsupported", c: "FakeCryptoKey" });
+    assert.equal(skipped.includes("good"), false);
+    // One transaction per store (the "good" database has one store).
+    assert.equal(transactions, 1);
     assert.deepEqual(storage.caches, [{ name: "c1", entries: [{ url: "https://x.example/a", status: 200, headers: [["content-type", "text/plain"]], body: "aGk=" }] }]);
   } finally {
     for (const [k, d] of Object.entries(saved)) {
@@ -339,4 +347,21 @@ test("the pages hold no inline script and no external resource", () => {
     assert.equal(/https?:\/\//.test(html), false);
     assert.equal(/\son[a-z]+=/i.test(html), false);
   }
+});
+
+test("lastSend is tagged and the popup shows it only for its domain, stale ones ended", async () => {
+  const f = makeFakeChrome();
+  setup(f);
+  await runSend(f.chrome, async () => ({ status: 401, ok: false, json: async () => ({}) }), { ...TAB, box: BOX, user: "u" });
+  const last = f.storage_.session.lastSend;
+  assert.equal(last.domain, "app.localhost");
+  assert.equal(typeof last.at, "number");
+  assert.equal(visibleStatus(last, "app.localhost").text, last.text);
+  assert.equal(visibleStatus(last, "other.example"), null);
+  assert.equal(visibleStatus(null, "app.localhost"), null);
+  const now = Date.now();
+  const reading = { state: "reading", text: "Reading...", domain: "a.example", at: now - 4 * 60 * 1000 };
+  assert.deepEqual(visibleStatus(reading, "a.example", now), { state: "error", text: "The last send did not finish." });
+  assert.equal(visibleStatus({ ...reading, at: now - 60 * 1000 }, "a.example", now).state, "reading");
+  assert.equal(visibleStatus({ ...reading, state: "done", at: now - 9e6 }, "a.example", now).state, "done");
 });

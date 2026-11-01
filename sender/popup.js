@@ -1,6 +1,6 @@
 // The popup. The logic is exported so a Node test can run it; the page wiring
 // runs only where there is a document.
-import { chooseDomain, domainChoices, fetchTargets, readableSites } from "./send.js";
+import { chooseDomain, domainChoices, fetchTargets, readableSites, visibleStatus } from "./send.js";
 
 // The Send click. permissions.request is the first statement, before any
 // await, so Chrome counts it as the user's gesture. The worker then does the
@@ -10,7 +10,9 @@ export async function onSendClick(chrome, ctx) {
   const granted = await asked;
   if (!granted) {
     await chrome.storage.session.set({
-      lastSend: { state: "error", text: `Chrome did not give access to ${ctx.domain}.` },
+      lastSend: {
+        state: "error", text: `Chrome did not give access to ${ctx.domain}.`, domain: ctx.domain, at: Date.now(),
+      },
     });
     return;
   }
@@ -48,13 +50,18 @@ async function start() {
     sel.replaceChildren(...values.map((v) => Object.assign(document.createElement("option"), { value: v, textContent: v })));
   };
 
-  const showLast = (last) => {
-    if (last) show(status, last.text, last.link);
+  let last = null;
+  const showLast = () => {
+    const v = visibleStatus(last, domainSel.value);
+    if (v) show(status, v.text, v.link);
+    else status.textContent = "";
   };
-  const { lastSend } = await chrome.storage.session.get("lastSend");
-  showLast(lastSend);
+  ({ lastSend: last } = await chrome.storage.session.get("lastSend"));
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === "session" && changes.lastSend) showLast(changes.lastSend.newValue);
+    if (area === "session" && changes.lastSend) {
+      last = changes.lastSend.newValue;
+      showLast();
+    }
   });
 
   const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -73,6 +80,7 @@ async function start() {
     fill(domainSel, choices);
     domainSel.value = await chooseDomain(chrome, active.id, host);
   }
+  showLast();
 
   const { boxes = [] } = await chrome.storage.local.get("boxes");
   fill(boxSel, boxes);
@@ -99,7 +107,10 @@ async function start() {
     refreshSend();
   }
   boxSel.addEventListener("change", loadUsers);
-  domainSel.addEventListener("change", refreshSend);
+  domainSel.addEventListener("change", () => {
+    refreshSend();
+    showLast();
+  });
   userSel.addEventListener("change", refreshSend);
   await loadUsers();
 
