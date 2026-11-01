@@ -124,6 +124,7 @@ test("the import follows C6 in order and sums the counts", async () => {
     "tabs.query",
     "tabs.create",
     "debugger.attach",
+    "debugger.sendCommand Network.enable",
     "debugger.sendCommand Network.setBypassServiceWorker",
     "debugger.sendCommand Fetch.enable",
     "tabs.update",
@@ -157,10 +158,14 @@ test("the import follows C6 in order and sums the counts", async () => {
   assert.deepEqual(f.callsTo("debugger.attach"), [[{ tabId }, "1.3"]]);
   assert.deepEqual(f.callsTo("tabs.update"), [[tabId, { url: R }]]);
 
+  // Chromium applies the bypass only for a client that enabled the Network
+  // domain (measured on Chromium 156: without it, a site's service worker
+  // answered the restore page).
   const commands = f.callsTo("debugger.sendCommand");
-  assert.deepEqual(commands[0], [{ tabId }, "Network.setBypassServiceWorker", { bypass: true }]);
-  assert.deepEqual(commands[1], [{ tabId }, "Fetch.enable", { patterns: [{ urlPattern: R, requestStage: "Request" }] }]);
-  const [target, method, params] = commands[2];
+  assert.deepEqual(commands[0], [{ tabId }, "Network.enable", {}]);
+  assert.deepEqual(commands[1], [{ tabId }, "Network.setBypassServiceWorker", { bypass: true }]);
+  assert.deepEqual(commands[2], [{ tabId }, "Fetch.enable", { patterns: [{ urlPattern: R, requestStage: "Request" }] }]);
+  const [target, method, params] = commands[3];
   assert.deepEqual(target, { tabId });
   assert.equal(method, "Fetch.fulfillRequest");
   assert.equal(params.requestId, "rq1");
@@ -170,7 +175,7 @@ test("the import follows C6 in order and sums the counts", async () => {
     { name: "Cache-Control", value: "no-store" },
   ]);
   assert.equal(Buffer.from(params.body, "base64").toString("utf8"), BODY);
-  assert.deepEqual(commands[3], [{ tabId }, "Fetch.disable"]);
+  assert.deepEqual(commands[4], [{ tabId }, "Fetch.disable"]);
   assert.deepEqual(f.callsTo("debugger.detach"), [[{ tabId }]]);
 
   const execs = f.callsTo("scripting.executeScript").map((a) => a[0]);
@@ -306,6 +311,7 @@ test("each later step names itself when it fails, and the tab is closed after a 
   const cases = [
     ["fetch enable", (f) => { f.impl["debugger.sendCommand"] = async (t, m) => { if (m === "Fetch.enable") throw new Error(SECRET); return {}; }; }],
     ["fetch enable", (f) => { f.impl["debugger.sendCommand"] = async (t, m) => { if (m === "Network.setBypassServiceWorker") throw new Error(SECRET); return {}; }; }],
+    ["fetch enable", (f) => { f.impl["debugger.sendCommand"] = async (t, m) => { if (m === "Network.enable") throw new Error(SECRET); return {}; }; }],
     ["restore page", (f) => { f.pageResult = { fatal: "not the restore page" }; }],
     ["codec", (f) => { f.impl["scripting.executeScript"] = async (inj) => { if (inj.files) throw new Error(SECRET); return [{ result: undefined }]; }; }],
     ["write storage", (f) => { f.impl["scripting.executeScript"] = async (inj) => { if (inj.args) throw new Error("x " + inj.args[0]); return [{ result: undefined }]; }; }],
@@ -381,6 +387,7 @@ test("other tabs, other frames and other URLs do not complete the restore page",
   assert.equal(result.errors.length, 0);
   const cmds = f.callsTo("debugger.sendCommand").map((a) => [a[1], a[2] && a[2].requestId]);
   assert.deepEqual(cmds, [
+    ["Network.enable", undefined],
     ["Network.setBypassServiceWorker", undefined],
     ["Fetch.enable", undefined],
     ["Fetch.continueRequest", "other"],

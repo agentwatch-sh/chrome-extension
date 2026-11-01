@@ -235,8 +235,12 @@ async function runImport(chrome, state, opts) {
     };
 
     // A service worker of the site must not answer the restore page.
+    // Chromium applies the bypass only for a client that enabled the Network
+    // domain (measured on Chromium 156: without Network.enable the site's
+    // worker answered the restore page).
     await step("fetch enable", async () => {
       listen(chrome.debugger.onEvent, onDebuggerEvent);
+      await chrome.debugger.sendCommand(target, "Network.enable", {});
       await chrome.debugger.sendCommand(target, "Network.setBypassServiceWorker", { bypass: true });
       await chrome.debugger.sendCommand(target, "Fetch.enable", {
         patterns: [{ urlPattern: restoreUrl, requestStage: "Request" }],
