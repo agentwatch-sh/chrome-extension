@@ -6,7 +6,18 @@
 // of this module and no import, only the page's own globals and
 // globalThis.agentwatchCodec. It never throws, and no error text carries a
 // stored value (names and counts only).
-export async function replacePageState(json) {
+//
+// expectedUrl is the restore page's URL. Before it changes anything, the
+// function checks that it runs on that page (our title, no script element,
+// that URL); else it touches nothing and returns {fatal: "not the restore page"}.
+export async function replacePageState(json, expectedUrl) {
+  try {
+    if (document.title !== "agentwatch" || document.scripts.length !== 0 || location.href !== expectedUrl) {
+      return { fatal: "not the restore page" };
+    }
+  } catch (e) {
+    return { fatal: "not the restore page" };
+  }
   const out = { local: 0, session: 0, idb_databases: 0, idb_records: 0, cache_entries: 0, errors: [] };
   const fail = (text) => {
     out.errors.push(text);
@@ -38,13 +49,17 @@ export async function replacePageState(json) {
       for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
       return bytes;
     };
-    // A deletion that another connection blocks stays pending; report it and
-    // leave that database alone, so a later open does not wait behind it.
+    // The importer closed the origin's other tabs first, but a closed tab can
+    // hold its connection for a moment: a blocked deletion gets a short grace.
+    // One still blocked after it stays pending; report it and leave that
+    // database alone, so a later open does not wait behind it.
     const dropDatabase = (name) => new Promise((resolve) => {
       const r = indexedDB.deleteDatabase(name);
       r.onsuccess = () => resolve("ok");
       r.onerror = () => resolve("failed");
-      r.onblocked = () => resolve("blocked");
+      r.onblocked = () => {
+        setTimeout(() => resolve("blocked"), 3000);
+      };
     });
     const hasCaches = typeof caches !== "undefined";
 
@@ -63,10 +78,10 @@ export async function replacePageState(json) {
     try {
       for (const info of await indexedDB.databases()) {
         if (typeof info.name !== "string") continue;
-        if ((await dropDatabase(info.name)) !== "ok") {
-          kept.push(info.name);
-          fail("idb " + info.name + ": not deleted");
-        }
+        const dropped = await dropDatabase(info.name);
+        if (dropped === "ok") continue;
+        kept.push(info.name);
+        fail("idb " + info.name + (dropped === "blocked" ? ": not replaced (in use)" : ": not deleted"));
       }
     } catch (e) {
       fail("idb: not cleared");
@@ -155,6 +170,7 @@ export async function replacePageState(json) {
           tx.oncomplete = () => resolve();
           tx.onabort = () => reject(new Error("aborted"));
         });
+        done.catch(() => {}); // observed: a throw below skips the await
         const store = tx.objectStore(s.name);
         const outOfLine = store.keyPath === null;
         for (const rec of records) {
@@ -188,10 +204,7 @@ export async function replacePageState(json) {
         fail("idb " + dbName + ": not written");
         continue;
       }
-      if (kept.indexOf(d.name) >= 0) {
-        fail("idb " + dbName + ": not written");
-        continue;
-      }
+      if (kept.indexOf(d.name) >= 0) continue; // reported when it was not deleted
       let db;
       try {
         db = await openDatabase(d);

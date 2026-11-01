@@ -1,5 +1,6 @@
 // The allowlist as one dynamic DNR rule, plus closing tabs the list no longer covers (contract C5).
 import { normalizeEntry, covers } from "./lib/domains.js";
+import { closeTabs, tabUrl } from "./tabs.js";
 
 const RULE_ID = 2;
 
@@ -13,19 +14,6 @@ export function allowRule(domains) {
   };
 }
 
-function hostOf(tab) {
-  const raw = tab.pendingUrl || tab.url;
-  if (!raw) return null;
-  let u;
-  try {
-    u = new URL(raw);
-  } catch {
-    return null;
-  }
-  if (u.protocol !== "http:" && u.protocol !== "https:") return null;
-  return u.hostname.toLowerCase();
-}
-
 export async function applyAllowlist(chrome, domains) {
   if (!Array.isArray(domains)) throw new Error("invalid allowlist entry");
   for (const d of domains) {
@@ -37,27 +25,9 @@ export async function applyAllowlist(chrome, domains) {
     removeRuleIds: [RULE_ID],
     addRules: rule ? [rule] : [],
   });
-  const tabs = await chrome.tabs.query({});
-  const doomed = tabs.filter((t) => {
-    const host = hostOf(t);
-    return host !== null && !domains.some((d) => covers(d, host));
+  const closed = await closeTabs(chrome, (t) => {
+    const u = tabUrl(t);
+    return u !== null && !domains.some((d) => covers(d, u.hostname));
   });
-  const doomedIds = new Set(doomed.map((t) => t.id));
-  const windows = new Set(doomed.map((t) => t.windowId));
-  for (const windowId of windows) {
-    const all = tabs.filter((t) => t.windowId === windowId);
-    if (all.every((t) => doomedIds.has(t.id))) {
-      await chrome.tabs.create({ windowId, url: "about:blank", active: false });
-    }
-  }
-  let closed = 0;
-  for (const t of doomed) {
-    try {
-      await chrome.tabs.remove(t.id);
-      closed += 1;
-    } catch {
-      // The tab is already gone.
-    }
-  }
   return { rules: rule ? 1 : 0, closed };
 }

@@ -9,10 +9,13 @@
 import { toSetDetails, toRemoveDetails, inScope, dedupe } from "./lib/cookies.js";
 import { normalizeEntry, covers } from "./lib/domains.js";
 import { replacePageState } from "./page-state.js";
+import { closeTabs, tabUrl } from "./tabs.js";
 
 // The link answers "timeout" at 115 s. Steps share 100 s, and each of the two
 // cleanup calls gets at most 4 s, so an import always ends before 110 s.
+// Each step has 20 s, except the page's write, which has 60 s.
 const STEP_MS = 20000;
+const WRITE_MS = 60000;
 const IMPORT_MS = 100000;
 const CLEANUP_MS = 4000;
 
@@ -64,15 +67,21 @@ function cookieName(c) {
 
 // C6 step 1: remove every cookie of the domain and its subdomains (also the
 // partitioned ones), then set each sent cookie. One failed cookie is an
-// errors entry; the import goes on.
-async function replaceCookies(chrome, state) {
+// errors entry; the import goes on. When the step has failed (its deadline),
+// signal.aborted stops the work before its next chrome call.
+async function replaceCookies(chrome, state, signal) {
+  const goOn = () => {
+    if (signal.aborted) throw new Error("aborted");
+  };
   const errors = [];
-  const found = [
-    ...(await chrome.cookies.getAll({ domain: state.domain })),
-    ...(await chrome.cookies.getAll({ domain: state.domain, partitionKey: {} })),
-  ];
+  goOn();
+  const unpartitioned = await chrome.cookies.getAll({ domain: state.domain });
+  goOn();
+  const partitioned = await chrome.cookies.getAll({ domain: state.domain, partitionKey: {} });
+  const found = [...unpartitioned, ...partitioned];
   let removed = 0;
   for (const c of dedupe(found)) {
+    goOn();
     try {
       if (await chrome.cookies.remove(toRemoveDetails(c))) removed += 1;
     } catch {
@@ -92,6 +101,7 @@ async function replaceCookies(chrome, state) {
       errors.push("cookie " + name + ": out of scope");
       continue;
     }
+    goOn();
     let ok = false;
     try {
       ok = Boolean(await chrome.cookies.set(toSetDetails(c)));
@@ -108,9 +118,12 @@ function count(x) {
   return Number.isSafeInteger(x) && x >= 0 ? x : 0;
 }
 
+// The page's result, or {fatal: true} when the page found that it is not the
+// restore page (it then touched nothing).
 function pageCounts(results) {
   const r = Array.isArray(results) && results[0] ? results[0].result : null;
   if (r === null || typeof r !== "object") throw new Error("no page result");
+  if (typeof r.fatal === "string") return { fatal: true };
   return {
     local: count(r.local),
     session: count(r.session),
@@ -146,16 +159,20 @@ async function runImport(chrome, state, opts) {
   });
   importDeadline.catch(() => {});
 
-  const step = async (name, fn) => {
+  // fn gets a signal; signal.aborted is true once the step has failed, so
+  // work that is still running can stop.
+  const step = async (name, fn, ms = STEP_MS) => {
     let handle;
+    const signal = { aborted: false };
     const stepDeadline = new Promise((_, reject) => {
-      handle = setTimer(() => reject(new Error("deadline")), STEP_MS);
+      handle = setTimer(() => reject(new Error("deadline")), ms);
     });
-    const work = Promise.resolve().then(fn);
+    const work = Promise.resolve().then(() => fn(signal));
     work.catch(() => {}); // a late failure after the deadline is ignored
     try {
       return await Promise.race([work, stepDeadline, importDeadline]);
     } catch {
+      signal.aborted = true;
       throw new Error(name);
     } finally {
       clearTimer(handle);
@@ -173,7 +190,15 @@ async function runImport(chrome, state, opts) {
   };
 
   try {
-    const cookies = await step("cookies", () => replaceCookies(chrome, state));
+    const cookies = await step("cookies", (signal) => replaceCookies(chrome, state, signal));
+
+    // Tabs of the origin hold the state being replaced (an open IndexedDB
+    // connection blocks its deletion).
+    const tabsClosed = await step("close tabs", () =>
+      closeTabs(chrome, (t) => {
+        const u = tabUrl(t);
+        return u !== null && u.origin === state.origin;
+      }));
 
     const tabId = await step("open tab", async () => {
       ctx.tabPending = chrome.tabs.create({ url: "about:blank", active: true });
@@ -209,9 +234,11 @@ async function runImport(chrome, state, opts) {
       }
     };
 
-    await step("fetch enable", () => {
+    // A service worker of the site must not answer the restore page.
+    await step("fetch enable", async () => {
       listen(chrome.debugger.onEvent, onDebuggerEvent);
-      return chrome.debugger.sendCommand(target, "Fetch.enable", {
+      await chrome.debugger.sendCommand(target, "Network.setBypassServiceWorker", { bypass: true });
+      await chrome.debugger.sendCommand(target, "Fetch.enable", {
         patterns: [{ urlPattern: restoreUrl, requestStage: "Request" }],
       });
     });
@@ -233,14 +260,19 @@ async function runImport(chrome, state, opts) {
 
     await step("codec", () => chrome.scripting.executeScript({ target: { tabId }, files: ["lib/codec.js"] }));
 
-    const page = await step("write storage", async () =>
-      pageCounts(
-        await chrome.scripting.executeScript({
-          target: { tabId },
-          func: replacePageState,
-          args: [JSON.stringify(state.storage)],
-        }),
-      ));
+    const page = await step(
+      "write storage",
+      async () =>
+        pageCounts(
+          await chrome.scripting.executeScript({
+            target: { tabId },
+            func: replacePageState,
+            args: [JSON.stringify(state.storage), restoreUrl],
+          }),
+        ),
+      WRITE_MS,
+    );
+    if (page.fatal) throw new Error("restore page");
 
     await step("detach", async () => {
       await chrome.debugger.sendCommand(target, "Fetch.disable");
@@ -254,6 +286,7 @@ async function runImport(chrome, state, opts) {
     return {
       cookies_removed: cookies.removed,
       cookies_set: cookies.set,
+      tabs_closed: tabsClosed,
       local: page.local,
       session: page.session,
       idb_databases: page.idb_databases,
@@ -262,7 +295,8 @@ async function runImport(chrome, state, opts) {
       errors: [...cookies.errors, ...page.errors],
     };
   } catch (e) {
-    // e is always a step's Error: every statement that can throw runs in a step.
+    // e is always an Error with a step's name: every statement that can throw
+    // runs in a step, and a page that is not the restore page fails "restore page".
     if (ctx.attached) await bounded(() => chrome.debugger.detach({ tabId: ctx.tabId }));
     if (ctx.tabId !== null) {
       await bounded(() => chrome.tabs.remove(ctx.tabId));

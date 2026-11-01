@@ -108,11 +108,12 @@ test("the import follows C6 in order and sums the counts", async () => {
   const result = await importState(f.chrome, state, opts());
 
   assert.deepEqual(result, {
-    cookies_removed: 2, cookies_set: 2, local: 1, session: 1,
+    cookies_removed: 2, cookies_set: 2, tabs_closed: 0, local: 1, session: 1,
     idb_databases: 1, idb_records: 1, cache_entries: 0, errors: [],
   });
   assert.deepEqual(Object.keys(result), [
-    "cookies_removed", "cookies_set", "local", "session", "idb_databases", "idb_records", "cache_entries", "errors",
+    "cookies_removed", "cookies_set", "tabs_closed", "local", "session", "idb_databases", "idb_records",
+    "cache_entries", "errors",
   ]);
 
   const relevant = f.calls.filter(([p]) => !p.startsWith("runtime.") && !p.startsWith("port."));
@@ -120,8 +121,10 @@ test("the import follows C6 in order and sums the counts", async () => {
     "cookies.getAll", "cookies.getAll",
     "cookies.remove", "cookies.remove",
     "cookies.set", "cookies.set",
+    "tabs.query",
     "tabs.create",
     "debugger.attach",
+    "debugger.sendCommand Network.setBypassServiceWorker",
     "debugger.sendCommand Fetch.enable",
     "tabs.update",
     "debugger.sendCommand Fetch.fulfillRequest",
@@ -155,8 +158,9 @@ test("the import follows C6 in order and sums the counts", async () => {
   assert.deepEqual(f.callsTo("tabs.update"), [[tabId, { url: R }]]);
 
   const commands = f.callsTo("debugger.sendCommand");
-  assert.deepEqual(commands[0], [{ tabId }, "Fetch.enable", { patterns: [{ urlPattern: R, requestStage: "Request" }] }]);
-  const [target, method, params] = commands[1];
+  assert.deepEqual(commands[0], [{ tabId }, "Network.setBypassServiceWorker", { bypass: true }]);
+  assert.deepEqual(commands[1], [{ tabId }, "Fetch.enable", { patterns: [{ urlPattern: R, requestStage: "Request" }] }]);
+  const [target, method, params] = commands[2];
   assert.deepEqual(target, { tabId });
   assert.equal(method, "Fetch.fulfillRequest");
   assert.equal(params.requestId, "rq1");
@@ -166,17 +170,19 @@ test("the import follows C6 in order and sums the counts", async () => {
     { name: "Cache-Control", value: "no-store" },
   ]);
   assert.equal(Buffer.from(params.body, "base64").toString("utf8"), BODY);
-  assert.deepEqual(commands[2], [{ tabId }, "Fetch.disable"]);
+  assert.deepEqual(commands[3], [{ tabId }, "Fetch.disable"]);
   assert.deepEqual(f.callsTo("debugger.detach"), [[{ tabId }]]);
 
   const execs = f.callsTo("scripting.executeScript").map((a) => a[0]);
   assert.deepEqual(execs[0], { target: { tabId }, files: ["lib/codec.js"] });
   assert.deepEqual(execs[1].target, { tabId });
   assert.equal(execs[1].func, replacePageState);
-  assert.equal(execs[1].args.length, 1);
+  assert.equal(execs[1].args.length, 2);
   assert.equal(typeof execs[1].args[0], "string");
   // One JSON string: a null keyPath survives (executeScript drops null-valued properties).
   assert.deepEqual(JSON.parse(execs[1].args[0]), state.storage);
+  // The second argument is R, for the page's own restore-page check.
+  assert.equal(execs[1].args[1], R);
   assert.deepEqual(execs[2].target, { tabId });
   assert.deepEqual(execs[2].args, [state.url]);
 
@@ -205,7 +211,7 @@ test("every timer of an import is cleared when it ends", async () => {
   await importState(f.chrome, makeState(), opts(timers));
   assert.ok(timers.list.length > 0);
   assert.deepEqual(timers.list.filter((h) => !h.cleared), []);
-  assert.deepEqual([...new Set(timers.list.map((h) => h.ms))].sort((a, b) => a - b), [20000, 100000]);
+  assert.deepEqual([...new Set(timers.list.map((h) => h.ms))].sort((a, b) => a - b), [20000, 60000, 100000]);
 });
 
 test("the default nonce is 16 hex characters and differs per import", async () => {
@@ -277,8 +283,8 @@ test("page errors (an unsupported record) pass through after the cookie errors",
   };
   const result = await importState(f.chrome, makeState(), opts());
   assert.deepEqual(result, {
-    cookies_removed: 0, cookies_set: 1, local: 2, session: 1, idb_databases: 1, idb_records: 4, cache_entries: 3,
-    errors: ["cookie pref: not set", "idb db/s: 1 records skipped"],
+    cookies_removed: 0, cookies_set: 1, tabs_closed: 0, local: 2, session: 1, idb_databases: 1, idb_records: 4,
+    cache_entries: 3, errors: ["cookie pref: not set", "idb db/s: 1 records skipped"],
   });
 });
 
@@ -299,6 +305,8 @@ test("a failing attach detaches nothing, closes the tab and rejects with attach"
 test("each later step names itself when it fails, and the tab is closed after a detach", async () => {
   const cases = [
     ["fetch enable", (f) => { f.impl["debugger.sendCommand"] = async (t, m) => { if (m === "Fetch.enable") throw new Error(SECRET); return {}; }; }],
+    ["fetch enable", (f) => { f.impl["debugger.sendCommand"] = async (t, m) => { if (m === "Network.setBypassServiceWorker") throw new Error(SECRET); return {}; }; }],
+    ["restore page", (f) => { f.pageResult = { fatal: "not the restore page" }; }],
     ["codec", (f) => { f.impl["scripting.executeScript"] = async (inj) => { if (inj.files) throw new Error(SECRET); return [{ result: undefined }]; }; }],
     ["write storage", (f) => { f.impl["scripting.executeScript"] = async (inj) => { if (inj.args) throw new Error("x " + inj.args[0]); return [{ result: undefined }]; }; }],
     ["write storage", (f) => { f.pageResult = null; }],
@@ -373,6 +381,7 @@ test("other tabs, other frames and other URLs do not complete the restore page",
   assert.equal(result.errors.length, 0);
   const cmds = f.callsTo("debugger.sendCommand").map((a) => [a[1], a[2] && a[2].requestId]);
   assert.deepEqual(cmds, [
+    ["Network.setBypassServiceWorker", undefined],
     ["Fetch.enable", undefined],
     ["Fetch.continueRequest", "other"],
     ["Fetch.fulfillRequest", "rq1"],
@@ -457,6 +466,115 @@ test("a second import waits until the first ends, success or failure", async () 
   assert.ok(f3.callsTo("debugger.detach").length === 1);
 });
 
+test("the origin's tabs close before the restore tab opens; a window keeps a tab", async () => {
+  const f = makeFakeChrome();
+  f.setTabs([
+    { id: 1, windowId: 1, url: ORIGIN + "/a" },
+    { id: 2, windowId: 1, url: "about:blank", pendingUrl: ORIGIN + "/b?q=1" },
+    { id: 3, windowId: 2, url: "https://other.localhost/" },
+    { id: 4, windowId: 2, url: "http://www.app.localhost/" }, // another origin: another scheme
+    { id: 5, windowId: 2, url: "https://app.localhost/" }, // another origin: another host
+  ]);
+  const result = await importState(f.chrome, makeState(), opts());
+  assert.equal(result.tabs_closed, 2);
+  assert.deepEqual(f.callsTo("tabs.query"), [[{}]]);
+  const order = f.calls
+    .filter(([p]) => p === "tabs.create" || p === "tabs.remove" || p === "debugger.attach")
+    .map(([p, a]) => [p, a[0]]);
+  assert.deepEqual(order, [
+    ["tabs.create", { windowId: 1, url: "about:blank", active: false }],
+    ["tabs.remove", 1],
+    ["tabs.remove", 2],
+    ["tabs.create", { url: "about:blank", active: true }],
+    ["debugger.attach", { tabId: f.callsTo("debugger.attach")[0][0].tabId }],
+  ]);
+});
+
+test("a window with other tabs gets no about:blank; a tab already gone does not count", async () => {
+  const f = makeFakeChrome();
+  f.setTabs([
+    { id: 1, windowId: 1, url: ORIGIN + "/a" },
+    { id: 2, windowId: 1, url: ORIGIN + "/b" },
+    { id: 3, windowId: 1, url: "https://other.localhost/" },
+  ]);
+  f.impl["tabs.remove"] = async (id) => {
+    if (id === 2) throw new Error("No tab with id");
+  };
+  const result = await importState(f.chrome, makeState(), opts());
+  assert.equal(result.tabs_closed, 1);
+  assert.deepEqual(f.callsTo("tabs.create").map((a) => a[0]), [{ url: "about:blank", active: true }]);
+});
+
+test("a tab query that fails rejects with close tabs and opens no restore tab", async () => {
+  const f = makeFakeChrome();
+  f.impl["tabs.query"] = async () => {
+    throw new Error(SECRET);
+  };
+  await rejectsWith(importState(f.chrome, makeState(), opts()), "close tabs");
+  assert.equal(f.callsTo("tabs.create").length, 0);
+});
+
+test("the write storage step has 60 s; the other steps 20 s", async () => {
+  const f = makeFakeChrome();
+  const timers = fakeTimers();
+  f.impl["scripting.executeScript"] = (inj) => (inj.args ? new Promise(() => {}) : Promise.resolve([{ result: undefined }]));
+  const p = importState(f.chrome, makeState(), opts(timers));
+  await settle();
+  assert.equal(f.callsTo("scripting.executeScript").length, 2);
+  assert.deepEqual(timers.pending(20000), []);
+  const [writeTimer] = timers.pending(60000);
+  assert.ok(writeTimer);
+  assert.equal(timers.pending(100000).length, 1);
+  writeTimer.fn();
+  await rejectsWith(p, "write storage");
+  assert.equal(f.callsTo("debugger.detach").length, 1);
+  assert.equal(f.callsTo("tabs.remove").length, 1);
+});
+
+test("after the cookies step times out, its background work stops", async () => {
+  const f = makeFakeChrome();
+  const timers = fakeTimers();
+  let release;
+  const gate = new Promise((r) => (release = r));
+  f.impl["cookies.set"] = async (d) => {
+    await gate;
+    return { ...d };
+  };
+  const p = importState(f.chrome, makeState(), opts(timers));
+  await settle();
+  assert.equal(f.callsTo("cookies.set").length, 1);
+  const [cookieTimer] = timers.pending(20000);
+  cookieTimer.fn();
+  await rejectsWith(p, "cookies");
+  release();
+  await settle();
+  assert.equal(f.callsTo("cookies.set").length, 1);
+  assert.equal(f.callsTo("tabs.query").length, 0);
+});
+
+test("after a timeout during cookie removal, no further removal or set happens", async () => {
+  const f = makeFakeChrome();
+  const timers = fakeTimers();
+  f.cookies_ = [
+    { name: "a", value: SECRET, domain: "app.localhost", hostOnly: true, path: "/", secure: true },
+    { name: "b", value: SECRET, domain: "app.localhost", hostOnly: true, path: "/", secure: true },
+  ];
+  let release;
+  const gate = new Promise((r) => (release = r));
+  f.impl["cookies.remove"] = async (d) => {
+    await gate;
+    return { ...d };
+  };
+  const p = importState(f.chrome, makeState(), opts(timers));
+  await settle();
+  timers.pending(20000)[0].fn();
+  await rejectsWith(p, "cookies");
+  release();
+  await settle();
+  assert.equal(f.callsTo("cookies.remove").length, 1);
+  assert.equal(f.callsTo("cookies.set").length, 0);
+});
+
 test("an invalid state is refused before any chrome call", async () => {
   const bad = [
     makeState({ domain: "App.localhost" }),
@@ -496,6 +614,7 @@ const KEYWORDS = new Set([
 const ALLOWED = new Set([
   "globalThis", "localStorage", "sessionStorage", "indexedDB", "caches", "Response", "atob",
   "Promise", "Object", "JSON", "Error", "Uint8Array",
+  "document", "location", "setTimeout", // the restore-page check; the grace for a blocked delete
 ]);
 
 // A small tokenizer: enough for the plain code of page-state.js (no regular
@@ -581,7 +700,7 @@ function freeNames(src) {
 
 test("replacePageState is self-contained: no name from outside but page globals and the codec", () => {
   const src = replacePageState.toString();
-  assert.match(src, /^async function replacePageState\(json\)/);
+  assert.match(src, /^async function replacePageState\(json, expectedUrl\)/);
   const { free, tokens } = freeNames(src);
   const outside = [...free].filter((n) => !ALLOWED.has(n));
   assert.deepEqual(outside, []);
@@ -608,18 +727,148 @@ test("page-state.js has no import and exports only replacePageState", async () =
   assert.deepEqual(Object.keys(await import("../receiver/page-state.js")), ["replacePageState"]);
 });
 
+const realSetTimeout = globalThis.setTimeout;
+// The page's grace timer, recorded and shortened (3000 ms -> 40 ms).
+function graceTimer(graces) {
+  return (fn, ms) => {
+    graces.push(ms);
+    return realSetTimeout(fn, ms === 3000 ? 40 : ms);
+  };
+}
+
+// Run fn with page globals replaced (own properties of globalThis), then restore them.
+async function withPage(globals, fn) {
+  const saved = {};
+  for (const k of Object.keys(globals)) {
+    saved[k] = Object.getOwnPropertyDescriptor(globalThis, k);
+    Object.defineProperty(globalThis, k, { value: globals[k], configurable: true, writable: true });
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const k of Object.keys(globals)) {
+      if (saved[k]) Object.defineProperty(globalThis, k, saved[k]);
+      else delete globalThis[k];
+    }
+  }
+}
+
+function restorePage(over = {}) {
+  const touched = [];
+  const storage = (name) => ({
+    clear: () => touched.push(name + ".clear"),
+    setItem: () => touched.push(name + ".setItem"),
+  });
+  return {
+    touched,
+    globals: {
+      document: { title: "agentwatch", scripts: [] },
+      location: { href: R },
+      localStorage: storage("localStorage"),
+      sessionStorage: storage("sessionStorage"),
+      indexedDB: {
+        databases: async () => (touched.push("indexedDB.databases"), []),
+        deleteDatabase: () => (touched.push("indexedDB.deleteDatabase"), {}),
+        open: () => (touched.push("indexedDB.open"), {}),
+      },
+      caches: { keys: async () => (touched.push("caches.keys"), []), delete: async () => touched.push("caches.delete") },
+      agentwatchCodec: { decode: () => null },
+      ...over,
+    },
+  };
+}
+
+test("replacePageState touches nothing off the restore page", async () => {
+  const json = JSON.stringify({ local: { k: SECRET }, session: {}, idb: [], caches: [] });
+  const cases = [
+    { document: { title: "Example", scripts: [] } },
+    { document: { title: "agentwatch", scripts: [{}] } },
+    { location: { href: ORIGIN + "/" } },
+    { document: undefined },
+  ];
+  for (const over of cases) {
+    const page = restorePage(over);
+    const r = await withPage(page.globals, () => replacePageState(json, R));
+    assert.deepEqual(r, { fatal: "not the restore page" });
+    assert.deepEqual(page.touched, []);
+  }
+  // A missing expected URL fails the check too.
+  const page = restorePage();
+  assert.deepEqual(await withPage(page.globals, () => replacePageState(json)), { fatal: "not the restore page" });
+  assert.deepEqual(page.touched, []);
+});
+
+test("replacePageState on the restore page clears, then writes", async () => {
+  const page = restorePage();
+  const r = await withPage(page.globals, () =>
+    replacePageState(JSON.stringify({ local: { k: SECRET }, session: { s: SECRET }, idb: [], caches: [] }), R));
+  assert.deepEqual(r, { local: 1, session: 1, idb_databases: 0, idb_records: 0, cache_entries: 0, errors: [] });
+  assert.deepEqual(page.touched, [
+    "localStorage.clear", "sessionStorage.clear", "indexedDB.databases", "caches.keys",
+    "localStorage.setItem", "sessionStorage.setItem",
+  ]);
+});
+
+test("replacePageState: a delete still blocked after the grace is reported and the import goes on", async () => {
+  const requests = [];
+  const graces = [];
+  const page = restorePage({
+    setTimeout: graceTimer(graces),
+    indexedDB: {
+      databases: async () => [{ name: "held", version: 1 }, { name: "free", version: 1 }],
+      deleteDatabase: (name) => {
+        const r = { name };
+        requests.push(r);
+        realSetTimeout(() => (name === "held" ? r.onblocked() : r.onsuccess()), 0);
+        return r;
+      },
+      open: () => {
+        throw new Error("no open expected");
+      },
+    },
+  });
+  const r = await withPage(page.globals, () =>
+    replacePageState(JSON.stringify({ local: { k: "v" }, session: {}, idb: [{ name: "held", version: 1, stores: [] }], caches: [] }), R));
+  assert.deepEqual(requests.map((x) => x.name), ["held", "free"]);
+  assert.deepEqual(graces, [3000]);
+  assert.deepEqual(r, {
+    local: 1, session: 0, idb_databases: 0, idb_records: 0, cache_entries: 0,
+    errors: ["idb held: not replaced (in use)"],
+  });
+});
+
+test("replacePageState: a delete blocked for a moment that then succeeds is no error", async () => {
+  const graces = [];
+  const page = restorePage({
+    setTimeout: graceTimer(graces),
+    indexedDB: {
+      databases: async () => [{ name: "slow", version: 1 }],
+      deleteDatabase: () => {
+        const r = {};
+        realSetTimeout(() => r.onblocked(), 0);
+        realSetTimeout(() => r.onsuccess(), 10);
+        return r;
+      },
+      open: () => {
+        throw new Error("no open expected");
+      },
+    },
+  });
+  const r = await withPage(page.globals, () => replacePageState(JSON.stringify({ local: {}, session: {}, idb: [], caches: [] }), R));
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(graces, [3000]);
+});
+
 test("replacePageState never throws: unreadable input gives zero counts and one fixed error", async () => {
-  const r = await replacePageState("{not json " + SECRET);
+  const page = restorePage();
+  const r = await withPage(page.globals, () => replacePageState("{not json " + SECRET, R));
   assert.deepEqual(r, { local: 0, session: 0, idb_databases: 0, idb_records: 0, cache_entries: 0, errors: ["storage: not readable"] });
+  assert.deepEqual(page.touched, []);
 });
 
 test("replacePageState without the codec writes nothing and says so", async () => {
-  const saved = globalThis.agentwatchCodec;
-  delete globalThis.agentwatchCodec;
-  try {
-    const r = await replacePageState(JSON.stringify({ local: { k: SECRET } }));
-    assert.deepEqual(r, { local: 0, session: 0, idb_databases: 0, idb_records: 0, cache_entries: 0, errors: ["storage: codec missing"] });
-  } finally {
-    if (saved) globalThis.agentwatchCodec = saved;
-  }
+  const page = restorePage({ agentwatchCodec: undefined });
+  const r = await withPage(page.globals, () => replacePageState(JSON.stringify({ local: { k: SECRET } }), R));
+  assert.deepEqual(r, { local: 0, session: 0, idb_databases: 0, idb_records: 0, cache_entries: 0, errors: ["storage: codec missing"] });
+  assert.deepEqual(page.touched, []);
 });
