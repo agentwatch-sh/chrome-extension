@@ -782,9 +782,10 @@ def make_handler(world: World) -> type:
             self._send(code, json.dumps(obj), "application/json")
 
         def _log_request(self) -> None:
+            # Names only: cookie names and query keys, never their values.
             h = self.headers
             world.events.add(
-                "req", m=self.command, host=self.host, path=self.url.path, q=self.url.query,
+                "req", m=self.command, host=self.host, path=self.url.path, query_keys=sorted(self.q),
                 dest=h.get("Sec-Fetch-Dest"), site=h.get("Sec-Fetch-Site"), mode=h.get("Sec-Fetch-Mode"),
                 user=h.get("Sec-Fetch-User"), origin=h.get("Origin"), cookies=cookie_names(h.get("Cookie")),
                 status=getattr(self, "_status", None), bytes=getattr(self, "_body_bytes", None))

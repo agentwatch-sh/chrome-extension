@@ -272,6 +272,20 @@ export function queueSend(chrome, ctx) {
   return chrome.storage.session.set({ pendingSend });
 }
 
+// True when the tab still shows the origin of the URL the send was asked
+// for. A send can wait for Chrome's dialog, and by then the tab may show
+// another site. A tab whose URL Chrome hides (no access) or a closed tab
+// does not count.
+async function tabShowsOrigin(chrome, tabId, url) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    const shown = tab?.pendingUrl || tab?.url;
+    return typeof shown === "string" && new URL(shown).origin === new URL(url).origin;
+  } catch {
+    return false;
+  }
+}
+
 // The worker's half. Calls run one after another, so one pending send runs once.
 let resumeChain = Promise.resolve();
 
@@ -303,6 +317,10 @@ async function resumeOnce(chrome, fetchImpl, now) {
     return;
   }
   await chrome.storage.session.remove("pendingSend");
+  if (!(await tabShowsOrigin(chrome, msg.tabId, msg.url))) {
+    await say(chrome, msg, "error", "The tab moved to another page. Send again.");
+    return;
+  }
   await runSend(chrome, fetchImpl, msg);
 }
 

@@ -80,6 +80,13 @@ login. An agent cannot start a send.
    (cookies, storage keys, databases, records, cache entries), or the reason
    for a refusal.
 
+A send that waits for Chrome's access gives up after 2 minutes. If you click
+**Deny** (Chrome has closed the popup by then), the popup shows "Waiting for
+Chrome's access to <site>..." until those 2 minutes end, and then "Chrome did
+not give access to <site>." Click **Send** again to ask once more. If the tab
+shows another site when the access comes, the send stops with "The tab moved
+to another page. Send again." and reads nothing.
+
 A send is at most 32 MiB. A larger state is refused before it leaves your
 Chrome, and the message names the largest database.
 

@@ -148,6 +148,7 @@ test("sendState result texts", async () => {
 function setup(f, extra = {}) {
   f.storage_.local.boxes = [BOX];
   f.cookies_ = [cookie()];
+  f.tabs_ = [{ id: TAB.tabId, windowId: 1, url: TAB.url }];
   Object.assign(f, extra);
 }
 
@@ -293,6 +294,41 @@ test("a pending send expires after PENDING_MS", async () => {
   assert.deepEqual(visibleStatus(last, "app.localhost", last.at + PENDING_MS + 1000),
     { state: "error", text: "Chrome did not give access to app.localhost." });
   assert.equal(visibleStatus(last, "app.localhost", last.at + 1000).state, "waiting");
+});
+
+// A pending send can wait for Chrome's dialog; by then the tab may show
+// another site. The worker reads only a tab that still shows the origin.
+test("a pending send whose tab moved to another origin, or closed, ends without a read", async () => {
+  for (const tabs of [[{ id: TAB.tabId, windowId: 1, url: "https://evil.example/x" }],
+    [{ id: TAB.tabId, windowId: 1, url: TAB.url, pendingUrl: "https://evil.example/x" }],
+    [{ id: TAB.tabId, windowId: 1 }], []]) {
+    const f = makeFakeChrome();
+    setup(f, { tabs_: tabs });
+    f.permissions_.origins = ["*://*.app.localhost/*"];
+    let posts = 0;
+    const post = async (...a) => { posts += 1; return OK_REPLY(...a); };
+    await queueSend(f.chrome, { ...TAB, box: BOX, user: "u" });
+    await resumeSend(f.chrome, post);
+    assert.equal(posts, 0);
+    assert.equal(f.callsTo("scripting.executeScript").length, 0);
+    assert.equal(f.callsTo("cookies.getAll").length, 0);
+    assert.equal(f.storage_.session.pendingSend, undefined);
+    const last = f.storage_.session.lastSend;
+    assert.deepEqual([last.state, last.text, last.domain], ["error", "The tab moved to another page. Send again.", "app.localhost"]);
+  }
+});
+
+test("a pending send runs when its tab shows another page of the same origin", async () => {
+  const f = makeFakeChrome();
+  setup(f, { tabs_: [{ id: TAB.tabId, windowId: 1, url: "https://www.app.localhost/other#x" }] });
+  f.permissions_.origins = ["*://*.app.localhost/*"];
+  let posts = 0;
+  const post = async (...a) => { posts += 1; return OK_REPLY(...a); };
+  await queueSend(f.chrome, { ...TAB, box: BOX, user: "u" });
+  await resumeSend(f.chrome, post);
+  assert.equal(posts, 1);
+  assert.deepEqual(f.callsTo("tabs.get"), [[TAB.tabId]]);
+  assert.equal(f.storage_.session.lastSend.state, "done");
 });
 
 test("a pending send with a bad domain is dropped with an error", async () => {

@@ -280,6 +280,8 @@ async function runImport(chrome, state, opts) {
 
     await step("detach", async () => {
       await chrome.debugger.sendCommand(target, "Fetch.disable");
+      // The detach ends this client's Network domain (and with it the service
+      // worker bypass) and its Fetch domain.
       await chrome.debugger.detach(target);
       ctx.attached = false;
     });

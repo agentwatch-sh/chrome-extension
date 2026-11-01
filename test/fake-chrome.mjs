@@ -134,6 +134,11 @@ export function makeFakeChrome() {
     },
     tabs: {
       query: rec("tabs.query", async () => fake.tabs_.map((t) => ({ ...t }))),
+      get: rec("tabs.get", async (tabId) => {
+        const t = fake.tabs_.find((x) => x.id === tabId);
+        if (!t) throw new Error("No tab with id: " + tabId);
+        return { ...t };
+      }),
       remove: rec("tabs.remove", async () => {}),
       create: rec("tabs.create", async (props) => ({ id: 900 + calls.length, ...props })),
       update: rec("tabs.update", async (tabId, props) => {

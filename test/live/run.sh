@@ -94,6 +94,10 @@ up() {
   mkdir -p "$HERE/.run"
   run="$HERE/.run/$(date +%Y%m%d-%H%M%S)"
   mkdir "$run"
+  # From here on, a failed step (set -e also ends the $(up) subshell of
+  # "all") stops whatever this run started. A successful up clears the trap.
+  trap 'down "$run"' EXIT
+  trap 'exit 130' INT TERM
   mkdir "$run/home" "$run/logs" "$run/shots" "$run/x" "$run/pids"
 
   a=$(free_display 90)
@@ -146,6 +150,7 @@ EOF
 EOF
   say "agent Chromium on :$a, operator Chromium on :$o, sites and box on 127.0.0.1:$PORT"
   sleep 3
+  trap - EXIT INT TERM
   echo "$run"
 }
 

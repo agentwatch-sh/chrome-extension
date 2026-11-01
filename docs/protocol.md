@@ -78,7 +78,7 @@ One JSON object per native message. On the daemon's socket each message is one N
   `{"t":"req","id":"<id>","op":"set_allowlist","domains":["a.example"]}` ->
   `{"rules":<1 if the list is not empty, else 0>,"closed":<tabs closed>}`;
   `{"t":"req","id":"<id>","op":"import","state":<C2 payload>}` ->
-  `{"cookies_removed":0,"cookies_set":0,"local":0,"session":0,"idb_databases":0,"idb_records":0,"cache_entries":0,"errors":["<store or cookie name>: <reason>"]}`.
+  `{"cookies_removed":0,"cookies_set":0,"tabs_closed":0,"local":0,"session":0,"idb_databases":0,"idb_records":0,"cache_entries":0,"errors":["<store or cookie name>: <reason>"]}`.
 - Ids are strings. The daemon waits 10 s for `ping` and `set_allowlist`, 120 s for `import`.
 
 ### C5. The allowlist and the block
@@ -90,6 +90,11 @@ One JSON object per native message. On the daemon's socket each message is one N
   most 253; no scheme, port, path, `*` or IP address. A pasted URL is refused with the hint "paste the
   host only" (the web viewer strips a URL to its host before it sends). An entry covers itself and
   every subdomain (O10).
+- Before parsing, an entry is refused when it holds an ASCII character outside `[A-Za-z0-9.-]`, a
+  character of Unicode category C (control, format, unassigned, private use), one of the dots U+3002,
+  U+FF0E, U+FF61, or `ß` (U+00DF) or `ς` (U+03C2) ("use the punycode form": JavaScript's URL and
+  Python's IDNA map these differently). After IDNA the entry matches `^[a-z0-9.-]+$`. A refusal
+  reason never echoes the input; an empty label says "a label is empty".
 - DNR: the receiver's static ruleset `block_main_frame` (`rules/block-main-frame.json`, enabled in the
   manifest): rule id 1, priority 1, `{"type":"block"}`, `resourceTypes: ["main_frame"]`. One dynamic
   rule id 2, priority 2, `{"type":"allow"}`, `requestDomains` = the list, `resourceTypes:
@@ -102,12 +107,15 @@ One JSON object per native message. On the daemon's socket each message is one N
 
 ### C6. The restore page (the receiver's import)
 
-1. Remove every cookie of `domain` and its subdomains (`getAll({domain})` and
+1. (Measured: a partitioned cookie of an http secure-context test site, `*.localhost`, does not move
+   with this URL rule; https sites are not affected.) Remove every cookie of `domain` and its subdomains (`getAll({domain})` and
    `getAll({domain, partitionKey: {}})`), then `cookies.set` each sent cookie (C2 -> set details:
    `url` = `https://` if secure else `http://`, the domain without a leading dot, the path; `domain`
    only when not `hostOnly`; `expirationDate` only when not `session`; `sameSite` and `partitionKey` as
    sent).
-2. `tabs.create({url: "about:blank", active: true})`, `debugger.attach({tabId}, "1.3")`,
+2. Close every tab whose origin equals `origin` (they hold the state being replaced; the about:blank
+   guard of C5 applies), then `tabs.create({url: "about:blank", active: true})`,
+   `debugger.attach({tabId}, "1.3")`, `Network.setBypassServiceWorker({bypass: true})`,
    `Fetch.enable({patterns: [{urlPattern: R, requestStage: "Request"}]})` with
    `R = origin + "/__agentwatch_restore_" + <16 hex chars> + "__"`, `tabs.update(tabId, {url: R})`;
    on `Fetch.requestPaused` for `R`: `Fetch.fulfillRequest` 200, headers `Content-Type: text/html;
@@ -117,9 +125,26 @@ One JSON object per native message. On the daemon's socket each message is one N
    then `executeScript({func: replacePageState, args: [JSON.stringify(state.storage)]})`
    (one JSON string: `executeScript` drops null-valued properties). `replacePageState` clears
    localStorage, sessionStorage, every IndexedDB database of the origin and every cache, then writes
-   the sent ones, and returns counts and errors.
+   the sent ones, and returns counts and errors. It first checks that it runs on the restore page
+   (title "agentwatch", no script elements, `location.href === R`) and else touches nothing.
 4. `Fetch.disable`, `debugger.detach`, then `executeScript({func: (u) => location.replace(u), args:
    [state.url]})`.
 5. Any step that fails: detach, close the restore tab, answer `ok: false` with the step's name. Each
    step has a 20 s deadline. One import at a time; a second waits.
 
+### C9. The two gateway routes, as the sender sees them
+
+The sender calls only these two routes, on the web viewer origin of a box that the operator
+added (the sender holds a host permission for it). Both carry the operator's web login cookie
+(`credentials: "include"`). The gateway sends no CORS headers: the host permission makes the
+answer readable.
+
+| Route | What the sender sends | What the sender reads |
+| --- | --- | --- |
+| `GET /api/browser/targets` | No body. Chromium sends **no `Origin`** on this GET (`Sec-Fetch-Site: none`; measured on Chromium 156, 2026-11-01). | 200: `{"box": "<host>", "users": [{"name", "supported", "running", "password_login": bool}]}`, also inside `{"ok": true, "data": ...}`. The popup offers only users with `password_login: true`. 401 or 403: "Log in to <box> first." |
+| `POST /api/browser/send?user=<name>` | The C2 JSON, `Content-Type: application/json`, at most 33,554,432 bytes (a larger state is refused in the sender, naming the largest database). Chromium sends `Origin: chrome-extension://bpfkgknpndlpkcffmaaelkfcbpackiip`. | 200: the C4 import counts at `data.counts` (also `counts`, `data` or the top level). 403 with `error_code` `password_login_required`: log in with a password. 401: log in. 413: too large. 409 `browser_unsupported`: no agent browser on that box. Any other status: refused. |
+
+The gateway's check (EXTENSION auth): any `Authorization` header gives 403. A GET or HEAD needs no
+`Origin`, but any `Origin` other than `chrome-extension://<sender ID>` gives 403. A POST needs that
+exact `Origin`, else 403. Then the login cookie session, else 401. A login without
+`password_login_for` gives 403 `{"error_code": "password_login_required"}`.
