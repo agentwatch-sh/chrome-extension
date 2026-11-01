@@ -43,6 +43,11 @@ Validity (the sender builds only valid payloads; the daemon refuses others with
   `domain`.
 - `storage.local` and `storage.session` map strings to strings. `idb` and `caches` have the shapes
   above; `keyPath` is `null`, a string or a list of strings.
+- The sender never sends a box's own sign-in: it refuses a send whose `domain` covers the host of a
+  saved box, or whose tab host is a box host, before any read, and it leaves out every cookie that a
+  saved box host would receive (cookie domain-match). The daemon checks the same with the box hosts
+  that the gateway passes.
+- Cache Storage entries with status 0 (opaque) are left out by the sender.
 
 ### C3. The tagged value encoding (`codec.js`, the probe's `enc`/`dec` plus three fixes)
 
@@ -76,7 +81,7 @@ One JSON object per native message. On the daemon's socket each message is one N
   drops an unfinished one.
 - Requests: `{"t":"req","id":"<id>","op":"ping"}` -> `{}`;
   `{"t":"req","id":"<id>","op":"set_allowlist","domains":["a.example"]}` ->
-  `{"rules":<1 if the list is not empty, else 0>,"closed":<tabs closed>}`;
+  `{"rules":<1 if the valid list is not empty, else 0>,"closed":<tabs closed>,"refused":<entries refused>}`;
   `{"t":"req","id":"<id>","op":"import","state":<C2 payload>}` ->
   `{"cookies_removed":0,"cookies_set":0,"tabs_closed":0,"local":0,"session":0,"idb_databases":0,"idb_records":0,"cache_entries":0,"errors":["<store or cookie name>: <reason>"]}`.
 - Ids are strings. The daemon waits 10 s for `ping` and `set_allowlist`, 120 s for `import`.
@@ -100,37 +105,51 @@ One JSON object per native message. On the daemon's socket each message is one N
   rule id 2, priority 2, `{"type":"allow"}`, `requestDomains` = the list, `resourceTypes:
   ["main_frame"]`; no rule 2 when the list is empty. So the block holds from Chromium's first moment,
   before the service worker runs.
+- `set_allowlist` replaces the list. An entry that is not a normalized entry (C5 rules, equal to its
+  normalized form) is refused and counted in `refused`; the valid entries apply, so an invalid entry
+  never keeps an older, wider rule. A `domains` that is not a list applies as an empty list.
+- A site's service worker answers a navigation to its host before DNR sees it (measured on Chromium
+  156: a link to a host that had left the list loaded the worker's page). So whenever the new list
+  lacks an entry of the last applied one (and on the first `set_allowlist` after the receiver's
+  worker starts), the receiver calls `browsingData.remove({}, {serviceWorkers: true})` (permission
+  `browsingData`) after the rule update and before the tabs close. A failed removal fails the call
+  (`ok: false`) after the tabs closed; the next call removes again.
 - On each `set_allowlist` the receiver closes every tab whose `http:`/`https:` host the new list does
   not cover; if that would close the last tab of a window, it first opens `about:blank` there.
 - A main-frame `webNavigation.onErrorOccurred` with `net::ERR_BLOCKED_BY_CLIENT` sends `blocked` with
   the host only.
+- Stage-2 limit (not handled now): a tab whose back/forward cache holds a page of a removed host may go
+  Back to it with no request, so DNR does not block it.
 
 ### C6. The restore page (the receiver's import)
 
-1. (Measured: a partitioned cookie of an http secure-context test site, `*.localhost`, does not move
-   with this URL rule; https sites are not affected.) Remove every cookie of `domain` and its subdomains (`getAll({domain})` and
-   `getAll({domain, partitionKey: {}})`), then `cookies.set` each sent cookie (C2 -> set details:
-   `url` = `https://` if secure else `http://`, the domain without a leading dot, the path; `domain`
-   only when not `hostOnly`; `expirationDate` only when not `session`; `sameSite` and `partitionKey` as
-   sent).
-2. Close every tab whose origin equals `origin` (they hold the state being replaced; the about:blank
-   guard of C5 applies), then `tabs.create({url: "about:blank", active: true})`,
-   `debugger.attach({tabId}, "1.3")`, `Network.setBypassServiceWorker({bypass: true})`,
-   `Fetch.enable({patterns: [{urlPattern: R, requestStage: "Request"}]})` with
+1. Close every tab whose origin equals `origin` (they hold the state being replaced, and a page of
+   the origin could write a cookie during the swap; the about:blank guard of C5 applies). Then
+   (measured: a partitioned cookie of an http secure-context test site, `*.localhost`, does not move
+   with this URL rule; https sites are not affected) remove every cookie of `domain` and its
+   subdomains (`getAll({domain})` and `getAll({domain, partitionKey: {}})`), then `cookies.set` each
+   sent cookie (C2 -> set details: `url` = `https://` if secure else `http://`, the domain without a
+   leading dot, the path; `domain` only when not `hostOnly`; `expirationDate` only when not
+   `session`; `sameSite` and `partitionKey` as sent).
+2. `tabs.create({url: "about:blank", active: true})`, `debugger.attach({tabId}, "1.3")`,
+   `Network.enable`, `Network.setBypassServiceWorker({bypass: true})` (measured: the bypass needs the
+   Network domain on), `Fetch.enable({patterns: [{urlPattern: R, requestStage: "Request"}]})` with
    `R = origin + "/__agentwatch_restore_" + <16 hex chars> + "__"`, `tabs.update(tabId, {url: R})`;
    on `Fetch.requestPaused` for `R`: `Fetch.fulfillRequest` 200, headers `Content-Type: text/html;
    charset=utf-8` and `Cache-Control: no-store`, body
    `<!doctype html><meta charset="utf-8"><link rel="icon" href="data:,"><title>agentwatch</title>`.
 3. After `webNavigation.onCompleted` for `R` in that tab: `executeScript({files: ["lib/codec.js"]})`,
-   then `executeScript({func: replacePageState, args: [JSON.stringify(state.storage)]})`
-   (one JSON string: `executeScript` drops null-valued properties). `replacePageState` clears
-   localStorage, sessionStorage, every IndexedDB database of the origin and every cache, then writes
-   the sent ones, and returns counts and errors. It first checks that it runs on the restore page
+   then `executeScript({func: replacePageState, args: [JSON.stringify(state.storage), R]})` (one
+   JSON string: `executeScript` drops null-valued properties; `R` for the page's own check).
+   `replacePageState` clears localStorage, sessionStorage, every IndexedDB database of the origin
+   and every cache, then writes the sent ones, and returns counts and errors. It first checks that it runs on the restore page
    (title "agentwatch", no script elements, `location.href === R`) and else touches nothing.
 4. `Fetch.disable`, `debugger.detach`, then `executeScript({func: (u) => location.replace(u), args:
    [state.url]})`.
 5. Any step that fails: detach, close the restore tab, answer `ok: false` with the step's name. Each
-   step has a 20 s deadline. One import at a time; a second waits.
+   step has a 20 s deadline, except "write storage", which has 60 s; the whole import has 100 s, and
+   each of the two cleanup calls at most 4 s, so an import ends before the link's 115 s answer and
+   the daemon's 120 s wait. One import at a time; a second waits.
 
 ### C9. The two gateway routes, as the sender sees them
 
@@ -141,8 +160,8 @@ answer readable.
 
 | Route | What the sender sends | What the sender reads |
 | --- | --- | --- |
-| `GET /api/browser/targets` | No body. Chromium sends **no `Origin`** on this GET (`Sec-Fetch-Site: none`; measured on Chromium 156, 2026-11-01). | 200: `{"box": "<host>", "users": [{"name", "supported", "running", "password_login": bool}]}`, also inside `{"ok": true, "data": ...}`. The popup offers only users with `password_login: true`. 401 or 403: "Log in to <box> first." |
-| `POST /api/browser/send?user=<name>` | The C2 JSON, `Content-Type: application/json`, at most 33,554,432 bytes (a larger state is refused in the sender, naming the largest database). Chromium sends `Origin: chrome-extension://bpfkgknpndlpkcffmaaelkfcbpackiip`. | 200: the C4 import counts at `data.counts` (also `counts`, `data` or the top level). 403 with `error_code` `password_login_required`: log in with a password. 401: log in. 413: too large. 409 `browser_unsupported`: no agent browser on that box. Any other status: refused. |
+| `GET /api/browser/targets` | No body, `redirect: "error"`. Chromium sends **no `Origin`** on this GET (`Sec-Fetch-Site: none`; measured on Chromium 156, 2026-11-01). | 200: `{"box": "<host>", "users": [{"name", "supported", "running", "password_login": bool}]}`, also inside `{"ok": true, "data": ...}`. The popup offers only users with `password_login: true`. 401 or 403: "Log in to <box> first." |
+| `POST /api/browser/send?user=<name>` | The C2 JSON, `Content-Type: application/json`, `redirect: "error"`, at most 33,554,432 bytes (a larger state is refused in the sender, naming the largest database or cache; the page reader stops reading above the limit). Chromium sends `Origin: chrome-extension://bpfkgknpndlpkcffmaaelkfcbpackiip`. | 200: the C4 import counts at `data.counts` (also `counts`, `data` or the top level). 403 with `error_code` `password_login_required`: log in with a password. 401: log in. 413: too large. 409 `browser_unsupported`: no agent browser on that box. `browser_receiver_missing`: "The agent browser on <box host> does not answer. Look at its Browser page." `browser_start_failed`: "... does not start. ..." `browser_disabled`: "The agent browser is turned off on <box host>." `browser_payload_invalid`: "The box refused the send as malformed." 504: "The box did not answer in time." Any other status: refused. |
 
 The gateway's check (EXTENSION auth): any `Authorization` header gives 403. A GET or HEAD needs no
 `Origin`, but any `Origin` other than `chrome-extension://<sender ID>` gives 403. A POST needs that
