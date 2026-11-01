@@ -61,7 +61,7 @@
   const hasBlob = typeof Blob === "function";
   const hasFile = typeof File === "function";
 
-  async function encode(v) {
+  async function encode(v, path = new Set()) {
     if (v === undefined) return { t: "undef" };
     if (v === null || typeof v === "boolean" || typeof v === "string") return { t: "j", v };
     if (typeof v === "number") {
@@ -89,42 +89,65 @@
       if (c === null) return { t: "unsupported", c: ctorName(v) };
       return { t: "view", c, v: toB64(new Uint8Array(v.buffer, v.byteOffset, v.byteLength)) };
     }
-    if (v instanceof Map) {
-      const a = [];
-      for (const [k, x] of v) a.push([await encode(k), await encode(x)]);
-      return { t: "map", v: a };
-    }
-    if (v instanceof Set) {
-      const a = [];
-      for (const x of v) a.push(await encode(x));
-      return { t: "set", v: a };
-    }
-    if (Array.isArray(v)) {
-      const a = [];
-      for (let i = 0; i < v.length; i++) a.push(await encode(v[i]));
-      return { t: "arr", v: a };
-    }
     if (v instanceof RegExp) return { t: "re", s: v.source, f: v.flags };
     const proto = Object.getPrototypeOf(v);
-    if (proto === Object.prototype || proto === null) {
+    const plain = proto === Object.prototype || proto === null;
+    if (!(v instanceof Map || v instanceof Set || Array.isArray(v) || plain)) {
+      return { t: "unsupported", c: ctorName(v) };
+    }
+    // A value that is its own ancestor cannot be encoded as a tree.
+    if (path.has(v)) return { t: "unsupported", c: "Cycle" };
+    path.add(v);
+    try {
+      if (v instanceof Map) {
+        const a = [];
+        for (const [k, x] of v) a.push([await encode(k, path), await encode(x, path)]);
+        return { t: "map", v: a };
+      }
+      if (v instanceof Set) {
+        const a = [];
+        for (const x of v) a.push(await encode(x, path));
+        return { t: "set", v: a };
+      }
+      if (Array.isArray(v)) {
+        const a = [];
+        for (let i = 0; i < v.length; i++) a.push(await encode(v[i], path));
+        return { t: "arr", v: a };
+      }
       const o = {};
       for (const k of Object.keys(v)) {
         Object.defineProperty(o, k, {
-          value: await encode(v[k]), writable: true, enumerable: true, configurable: true,
+          value: await encode(v[k], path), writable: true, enumerable: true, configurable: true,
         });
       }
       return { t: "obj", v: o };
+    } finally {
+      path.delete(v);
     }
-    return { t: "unsupported", c: ctorName(v) };
   }
 
+  // Any native error from malformed input becomes UnsupportedValue, with a
+  // fixed text that never carries the input.
   function decode(e) {
+    try {
+      return decodeTagged(e);
+    } catch (err) {
+      if (err instanceof UnsupportedValue) throw err;
+      throw new UnsupportedValue("malformed encoding");
+    }
+  }
+
+  function decodeTagged(e) {
     if (e === null || typeof e !== "object") throw new UnsupportedValue("bad encoding");
     switch (e.t) {
       case "undef": return undefined;
       case "j": return e.v;
-      case "num": return Number(e.v);
-      case "big": return BigInt(e.v);
+      case "num":
+        if (!["NaN", "Infinity", "-Infinity", "-0"].includes(e.v)) throw new UnsupportedValue("bad number");
+        return Number(e.v);
+      case "big":
+        if (typeof e.v !== "string" || !/^-?[0-9]+$/.test(e.v)) throw new UnsupportedValue("bad bigint");
+        return BigInt(e.v);
       case "date": return new Date(e.v === null ? NaN : e.v);
       case "blob": {
         const bytes = fromB64(e.v);

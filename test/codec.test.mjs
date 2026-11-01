@@ -122,3 +122,31 @@ test("5 MB Uint8Array", async () => {
   assert.equal(d.length, a.length);
   assert.ok(Buffer.compare(d, a) === 0);
 });
+
+test("cycles encode as unsupported Cycle", async () => {
+  const o = { a: 1 };
+  o.self = o;
+  const e = await encode(o);
+  assert.equal(e.t, "obj");
+  assert.deepEqual(e.v.self, { t: "unsupported", c: "Cycle" });
+  assert.throws(() => decode(e.v.self), UnsupportedValue);
+  const m = new Map();
+  m.set("k", m);
+  const em = await encode(m);
+  assert.deepEqual(em.v[0][1], { t: "unsupported", c: "Cycle" });
+  assert.throws(() => decode(em.v[0][1]), UnsupportedValue);
+  const shared = { s: 1 };
+  const d = await encode([shared, shared]);
+  assert.equal(d.v[1].t, "obj");
+});
+
+test("malformed input throws UnsupportedValue", () => {
+  for (const bad of [
+    { t: "big", v: "1.5" }, { t: "big", v: "abc" }, { t: "big", v: "" }, { t: "big", v: "0x10" },
+    { t: "re", s: "(", f: "" }, { t: "re", s: "a", f: "zz" },
+    { t: "num", v: "12" }, { t: "num", v: "abc" },
+    { t: "map", v: 5 }, null,
+  ]) {
+    assert.throws(() => decode(bad), (err) => err instanceof UnsupportedValue, JSON.stringify(bad));
+  }
+});
