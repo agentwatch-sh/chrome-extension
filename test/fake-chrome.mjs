@@ -126,6 +126,7 @@ export function makeFakeChrome() {
       }),
       getManifest: () => fake.manifest,
       sendMessage: rec("runtime.sendMessage", async () => undefined),
+      getPlatformInfo: rec("runtime.getPlatformInfo", async () => ({ os: "linux", arch: "x86-64" })),
       openOptionsPage: rec("runtime.openOptionsPage", async () => {}),
       onMessage: makeEvent(),
     },
@@ -187,9 +188,11 @@ export function makeFakeChrome() {
     scripting: {
       executeScript: rec("scripting.executeScript", async (injection) => {
         const isPageState = typeof injection.func === "function" && injection.func.name === "replacePageState";
-        // readPageState returns its read as one JSON string.
+        // readPageState returns its read as one JSON string. Unless the test
+        // names another origin, the page shows the origin the reader expects.
         if (typeof injection.func === "function" && injection.func.name === "readPageState") {
-          return [{ frameId: 0, result: chromeResult(JSON.stringify(fake.pageRead)) }];
+          const read = Object.hasOwn(fake.pageRead, "origin") ? fake.pageRead : { origin: injection.args?.[1], ...fake.pageRead };
+          return [{ frameId: 0, result: chromeResult(JSON.stringify(read)) }];
         }
         return [{ frameId: 0, result: isPageState ? chromeResult(structuredClone(fake.pageResult)) : undefined }];
       }),

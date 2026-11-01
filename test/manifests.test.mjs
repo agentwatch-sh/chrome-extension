@@ -17,7 +17,7 @@ test("sender manifest", () => {
   assert.equal(sender.manifest_version, 3);
   assert.equal(sender.version, "0.1.0");
   assert.equal(sender.name, "agentwatch sender");
-  assert.equal(sender.minimum_chrome_version, "120");
+  assert.equal(sender.minimum_chrome_version, "132");
   assert.equal(typeof sender.description, "string");
   assert.deepEqual(sender.permissions, ["cookies", "activeTab", "scripting", "storage"]);
   assert.deepEqual(sender.optional_host_permissions, ["*://*/*"]);

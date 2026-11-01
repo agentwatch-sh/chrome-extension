@@ -35,11 +35,17 @@ current tab:
   key);
 - the page storage of the tab's **origin** only: localStorage, the tab's
   sessionStorage, every IndexedDB database (version, stores, key paths,
-  indexes and records with typed values) and Cache Storage.
+  indexes and records with typed values) and Cache Storage (except opaque
+  entries: the page itself cannot read their bytes; the result counts them).
 
 It reads nothing else: no history, no other tab, no other origin's page
 storage. It never stores a cookie value or a storage value, and no status text
 or error holds one.
+
+It never sends a box's own sign-in. A send from a box's web viewer tab, or of a
+domain that covers the host of a box you added, stops with "This is an
+agentwatch box. Its sign-in is never sent." before it reads anything, and no
+send holds a cookie that a box's host would receive.
 
 ### Its permissions, and why
 
@@ -59,7 +65,7 @@ login. An agent cannot start a send.
 ### Load it (unpacked) and add a box
 
 1. Get this repository (or the sender folder that your box's web viewer offers
-   for download).
+   for download). The sender needs Chrome 132 or later.
 2. In Chrome, open `chrome://extensions`, turn on **Developer mode**, click
    **Load unpacked** and pick the `sender/` folder. The extension's ID is fixed
    by the `key` in its manifest: `bpfkgknpndlpkcffmaaelkfcbpackiip`.
@@ -73,7 +79,9 @@ login. An agent cannot start a send.
 
 1. Sign in to the site in a tab of your Chrome.
 2. Click the extension's button. The popup shows the site's domain, your boxes
-   and the box's users that have a password login.
+   and the box's users that have a password login. The domain list starts at
+   the tab's host and stops at the site's registrable domain (Chrome's public
+   suffix list), so it never offers a domain such as `co.uk`.
 3. Click **Send**. At the first send of a site, Chrome asks for access to it
    and closes the popup. Click **Allow**; the send goes on without the popup.
 4. Open the popup again to see the result: the domain and the counts
@@ -88,7 +96,9 @@ shows another site when the access comes, the send stops with "The tab moved
 to another page. Send again." and reads nothing.
 
 A send is at most 32 MiB. A larger state is refused before it leaves your
-Chrome, and the message names the largest database.
+Chrome, and the message names the largest database (or cache). The reader
+reads in batches and stops as soon as the state passes 32 MiB, so a very large
+site does not fill the memory of your tab.
 
 ## The receiver
 

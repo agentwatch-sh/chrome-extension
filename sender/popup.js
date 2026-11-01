@@ -1,6 +1,8 @@
 // The popup. The logic is exported so a Node test can run it; the page wiring
 // runs only where there is a document.
-import { chooseDomain, domainChoices, fetchTargets, queueSend, readableSites, siteOrigins, visibleStatus } from "./send.js";
+import {
+  BOX_TEXT, boxHosts, domainOptions, fetchTargets, isBoxSite, queueSend, readableSites, siteOrigins, visibleStatus,
+} from "./send.js";
 
 // The Send click. permissions.request is the first statement, before any
 // await, so Chrome counts it as the user's gesture. Chrome closes this popup
@@ -47,10 +49,17 @@ async function start() {
   const boxSel = $("box");
   const userSel = $("user");
   const userNote = $("user-note");
+  const siteNote = $("site-note");
   let tab = null;
+  let host = "";
+  let boxes = [];
 
+  // A domain that reaches a saved box's sign-in is never sent (the worker
+  // refuses it too).
   const refreshSend = () => {
-    sendBtn.disabled = !(tab && domainSel.value && boxSel.value && userSel.value);
+    const boxSite = Boolean(tab && domainSel.value && isBoxSite(domainSel.value, host, boxHosts(boxes)));
+    if (tab) siteNote.textContent = boxSite ? BOX_TEXT : "";
+    sendBtn.disabled = boxSite || !(tab && domainSel.value && boxSel.value && userSel.value);
   };
   const fill = (sel, values) => {
     sel.replaceChildren(...values.map((v) => Object.assign(document.createElement("option"), { value: v, textContent: v })));
@@ -71,24 +80,23 @@ async function start() {
   });
 
   const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
-  let host = "";
   try {
     const u = new URL(active?.url ?? "");
     if (u.protocol === "https:" || u.protocol === "http:") host = u.hostname;
   } catch {
     host = "";
   }
-  const choices = host ? domainChoices(host) : [];
+  const { choices, chosen } = host ? await domainOptions(chrome, active.id, host) : { choices: [], chosen: "" };
   if (choices.length === 0) {
-    $("site-note").textContent = "Open the site you want to send in this tab first.";
+    siteNote.textContent = "Open the site you want to send in this tab first.";
   } else {
     tab = { tabId: active.id, url: active.url };
     fill(domainSel, choices);
-    domainSel.value = await chooseDomain(chrome, active.id, host);
+    domainSel.value = chosen;
   }
   showLast();
 
-  const { boxes = [] } = await chrome.storage.local.get("boxes");
+  ({ boxes = [] } = await chrome.storage.local.get("boxes"));
   fill(boxSel, boxes);
   $("no-box").hidden = boxes.length > 0;
   $("add-box").addEventListener("click", () => chrome.runtime.openOptionsPage());

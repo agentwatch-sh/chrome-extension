@@ -22,24 +22,69 @@ const loginLink = (box) => box + "/login?next=/browser";
 
 // ---- the domain choice ----
 
+// The host and its parents down to the last two labels (the fallback).
 export function domainChoices(host) {
   if (host.includes(":") || /^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return [];
   return domainCandidates(host).filter((d) => d.includes("."));
 }
 
-export async function chooseDomain(chrome, tabId, host) {
-  const choices = domainChoices(host);
+// The domains the popup offers for a tab, and the one it preselects. The
+// tab's partition key (cookies.getPartitionKey, Chrome 132) names the
+// registrable domain from Chrome's public suffix list: the choices stop there,
+// so a public suffix such as co.uk is never offered, and it is the default.
+// Without a key, the host and its parents down to the fallback.
+export async function domainOptions(chrome, tabId, host) {
+  const all = domainChoices(host);
   try {
     const r = await chrome.cookies.getPartitionKey({ tabId, frameId: 0 });
     const site = r?.partitionKey?.topLevelSite;
     if (typeof site === "string") {
-      const top = new URL(site).hostname;
-      if (choices.includes(top)) return top;
+      const i = all.indexOf(new URL(site).hostname);
+      if (i >= 0) return { choices: all.slice(0, i + 1), chosen: all[i] };
     }
   } catch {
     // No partition key: use the fallback.
   }
-  return fallbackDomain(host);
+  return { choices: all, chosen: all.length > 0 ? fallbackDomain(host) : "" };
+}
+
+// ---- the box's own sign-in ----
+//
+// A box's web viewer keeps its login in a cookie of the box host. A send of a
+// domain that covers a box host would move that login into the agent's
+// Chrome, where any agent process can read it. So the sender refuses such a
+// send before it reads anything, and no payload holds a cookie that a saved
+// box host would receive.
+
+export const BOX_TEXT = "This is an agentwatch box. Its sign-in is never sent.";
+
+const bareHost = (h) => String(h).toLowerCase().replace(/\.$/, "");
+
+// The hosts of the saved boxes (their origins).
+export function boxHosts(boxes) {
+  const out = [];
+  for (const b of Array.isArray(boxes) ? boxes : []) {
+    try {
+      out.push(bareHost(new URL(b).hostname));
+    } catch {
+      // Not an origin: no host.
+    }
+  }
+  return out;
+}
+
+// True when a send of `domain` from a tab on `tabHost` would reach a box's sign-in.
+export function isBoxSite(domain, tabHost, hosts) {
+  const tab = bareHost(tabHost);
+  return hosts.some((h) => h === tab || covers(domain, h));
+}
+
+// True when a box host would receive the cookie (cookie domain-match): a
+// host-only cookie whose domain is the box host, or a domain cookie whose
+// domain covers it.
+export function boxGetsCookie(c, hosts) {
+  const d = bareHost(String(c.domain ?? "").replace(/^\./, ""));
+  return hosts.some((h) => (c.hostOnly === true ? h === d : covers(d, h)));
 }
 
 // ---- the payload ----
@@ -59,16 +104,30 @@ function cleanCookie(c) {
   return out;
 }
 
-export async function buildPayload(chrome, { tabId, url, domain }) {
+// A stop with a fixed text for the operator. The text never holds a value.
+export class SendStop extends Error {}
+
+export const MOVED_TEXT = "The tab moved to another page. Send again.";
+
+export async function buildPayload(chrome, { tabId, url, domain, boxes = [] }) {
   const origin = new URL(url).origin;
+  await chrome.scripting.executeScript({ target: { tabId }, files: ["lib/codec.js"] });
+  const [injected] = await chrome.scripting.executeScript({
+    target: { tabId }, func: readPageState, args: [MAX_SEND_BYTES, origin],
+  });
+  if (typeof injected?.result !== "string") throw new Error("no page read");
+  const read = JSON.parse(injected.result);
+  // The tab can show another page by the time the reader runs.
+  if (read?.origin !== origin) throw new SendStop(MOVED_TEXT);
+  if (read.tooLarge) throw new SendStop(readerTooLargeText(read.tooLarge));
+  const { storage, skipped } = read;
+
+  const hosts = boxHosts(boxes);
   const plain = await chrome.cookies.getAll({ domain });
   const partitioned = await chrome.cookies.getAll({ domain, partitionKey: {} });
-  const cookies = dedupe([...plain, ...partitioned]).filter((c) => inScope(c, domain)).map(cleanCookie);
-
-  await chrome.scripting.executeScript({ target: { tabId }, files: ["lib/codec.js"] });
-  const [injected] = await chrome.scripting.executeScript({ target: { tabId }, func: readPageState });
-  if (typeof injected?.result !== "string") throw new Error("no page read");
-  const { storage, skipped } = JSON.parse(injected.result);
+  const cookies = dedupe([...plain, ...partitioned])
+    .filter((c) => inScope(c, domain) && !boxGetsCookie(c, hosts))
+    .map(cleanCookie);
 
   const payload = { v: 1, domain, url, origin, cookies, storage };
   const json = JSON.stringify(payload);
@@ -83,6 +142,20 @@ export async function buildPayload(chrome, { tabId, url, domain }) {
 export function tooLargeText(bytes, largest) {
   let t = `This site's state is too large to send (${mib(bytes)} MiB; the limit is ${MAX_SEND_BYTES / MIB} MiB).`;
   if (largest) t += ` The largest part is the database "${largest.name}" (${mib(largest.bytes)} MiB).`;
+  return t;
+}
+
+// The text for the page reader's own stop (read-page.js).
+export function readerTooLargeText(tl) {
+  const limit = MAX_SEND_BYTES / MIB;
+  if (tl?.stage === "estimate") {
+    return `This site's state is too large to send (its databases hold ${mib(tl.bytes)} MiB; the limit is ${limit} MiB).`;
+  }
+  let t = `This site's state is too large to send (more than ${limit} MiB).`;
+  const p = tl?.largest;
+  if (p && typeof p.name === "string") {
+    t += ` The largest part is the ${p.kind === "cache" ? "cache" : "database"} "${p.name}" (${mib(p.bytes)} MiB read).`;
+  }
   return t;
 }
 
@@ -124,18 +197,33 @@ export function resultText(result, box) {
     case "login": return `Log in to ${host} first.`;
     case "too-large": return "The box refused the send: it is too large.";
     case "unsupported": return "This box's agentwatch has no agent browser yet.";
+    case "receiver-missing": return `The agent browser on ${host} does not answer. Look at its Browser page.`;
+    case "start-failed": return `The agent browser on ${host} does not start. Look at its Browser page.`;
+    case "disabled": return `The agent browser is turned off on ${host}.`;
+    case "malformed": return "The box refused the send as malformed.";
+    case "timeout": return "The box did not answer in time.";
     case "unreachable": return `Cannot reach ${host}.`;
     default: return `The box refused the send (HTTP ${result.status}).`;
   }
 }
 
+// The C8 error codes with a text of their own (any HTTP status).
+const CODE_KINDS = {
+  browser_receiver_missing: "receiver-missing",
+  browser_start_failed: "start-failed",
+  browser_disabled: "disabled",
+  browser_payload_invalid: "malformed",
+};
+
 export async function sendState(fetchImpl, { box, user, body, domain }) {
   const text = typeof body === "string" ? body : JSON.stringify(body);
   let res;
   try {
+    // A redirect would carry the body to another address: never follow one.
     res = await fetchImpl(box + "/api/browser/send?user=" + encodeURIComponent(user), {
       method: "POST",
       credentials: "include",
+      redirect: "error",
       headers: { "Content-Type": "application/json" },
       body: text,
     });
@@ -158,6 +246,10 @@ export async function sendState(fetchImpl, { box, user, body, domain }) {
     result.kind = "too-large";
   } else if (status === 409 && code === "browser_unsupported") {
     result.kind = "unsupported";
+  } else if (Object.hasOwn(CODE_KINDS, code)) {
+    result.kind = CODE_KINDS[code];
+  } else if (status === 504) {
+    result.kind = "timeout";
   } else {
     result.kind = "refused";
   }
@@ -175,7 +267,7 @@ function finish(result, box) {
 export async function fetchTargets(fetchImpl, box) {
   let res;
   try {
-    res = await fetchImpl(box + "/api/browser/targets", { credentials: "include" });
+    res = await fetchImpl(box + "/api/browser/targets", { credentials: "include", redirect: "error" });
   } catch {
     return { kind: "unreachable", text: resultText({ kind: "unreachable" }, box) };
   }
@@ -201,8 +293,19 @@ async function say(chrome, scope, state, text, extra = {}) {
   await chrome.storage.session.set({ lastSend: { state, text, domain: scope.domain, at: Date.now(), ...extra } });
 }
 
-export async function runSend(chrome, fetchImpl, msg) {
+// Chrome stops an extension's service worker when one fetch takes more than
+// 30 s, and a box may wait 45 s for the agent browser's first start. An
+// extension API call every 20 s keeps the worker alive while a send runs.
+export const KEEPALIVE_MS = 20000;
+
+const realTimers = {
+  setInterval: (fn, ms) => setInterval(fn, ms),
+  clearInterval: (h) => clearInterval(h),
+};
+
+export async function runSend(chrome, fetchImpl, msg, timers = realTimers) {
   const { tabId, url, domain, box, user } = msg ?? {};
+  let keepalive = null;
   try {
     const { boxes = [] } = await chrome.storage.local.get("boxes");
     let host = "";
@@ -216,12 +319,21 @@ export async function runSend(chrome, fetchImpl, msg) {
         entry.entry !== domain || !covers(domain, host) || !Number.isInteger(tabId)) {
       return await say(chrome, msg ?? {}, "error", "The send request is not valid.");
     }
+    if (isBoxSite(domain, host, boxHosts(boxes))) {
+      return await say(chrome, msg ?? {}, "error", BOX_TEXT);
+    }
+    keepalive = timers.setInterval(() => {
+      Promise.resolve()
+        .then(() => chrome.runtime.getPlatformInfo())
+        .catch(() => {});
+    }, KEEPALIVE_MS);
     await say(chrome, msg ?? {}, "reading", `Reading ${domain}...`);
     let built;
     try {
-      built = await buildPayload(chrome, { tabId, url, domain });
-    } catch {
-      return await say(chrome, msg ?? {}, "error", "Could not read this page. Reload the tab and try again.");
+      built = await buildPayload(chrome, { tabId, url, domain, boxes });
+    } catch (e) {
+      const text = e instanceof SendStop ? e.message : "Could not read this page. Reload the tab and try again.";
+      return await say(chrome, msg ?? {}, "error", text);
     }
     if (built.bytes > MAX_SEND_BYTES) {
       return await say(chrome, msg ?? {}, "error", tooLargeText(built.bytes, built.largest));
@@ -237,6 +349,8 @@ export async function runSend(chrome, fetchImpl, msg) {
     await say(chrome, msg ?? {}, ok ? "done" : "error", text, extra);
   } catch {
     await say(chrome, msg ?? {}, "error", "The send failed.");
+  } finally {
+    if (keepalive !== null) timers.clearInterval(keepalive);
   }
 }
 
@@ -318,7 +432,7 @@ async function resumeOnce(chrome, fetchImpl, now) {
   }
   await chrome.storage.session.remove("pendingSend");
   if (!(await tabShowsOrigin(chrome, msg.tabId, msg.url))) {
-    await say(chrome, msg, "error", "The tab moved to another page. Send again.");
+    await say(chrome, msg, "error", MOVED_TEXT);
     return;
   }
   await runSend(chrome, fetchImpl, msg);
