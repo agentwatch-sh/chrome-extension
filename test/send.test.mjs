@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import "../sender/lib/codec.js";
 import {
   MAX_SEND_BYTES, buildPayload, sendState, resultText, runSend, fetchTargets,
-  chooseDomain, domainChoices, readableSites, visibleStatus,
+  chooseDomain, domainChoices, readableSites, visibleStatus, queueSend, resumeSend, PENDING_MS,
 } from "../sender/send.js";
 import { readPageState } from "../sender/read-page.js";
 import { onSendClick } from "../sender/popup.js";
@@ -186,26 +186,113 @@ test("runSend refuses an unknown box, a bad domain and an unreadable page", asyn
   assert.ok(!JSON.stringify(last).includes(SECRET));
 });
 
-test("the popup click asks for the site permission before any await", () => {
+// Chrome closes the popup when it shows its permission dialog, and a message
+// from the closing popup to a stopped worker is lost (both measured on
+// Chromium 156). So the popup writes the send to storage.session in the same
+// task as the permission request, and the worker runs it when
+// storage.onChanged or permissions.onAdded wakes it.
+const OK_REPLY = async () => ({ status: 200, ok: true, json: async () => ({ ok: true, data: { counts: {
+  cookies_set: 1, local: 0, session: 0, idb_databases: 0, idb_records: 0, cache_entries: 0, errors: [] } } }) });
+
+test("the popup click asks for the site permission and stores the send before any await", async () => {
   const f = makeFakeChrome();
   const p = onSendClick(f.chrome, { ...TAB, box: BOX, user: "u" });
   const reqs = f.callsTo("permissions.request");
   assert.equal(reqs.length, 1);
   assert.deepEqual(reqs[0][0], { origins: ["*://*.app.localhost/*"] });
+  const sets = f.callsTo("storage.session.set");
+  assert.equal(sets.length, 1);
+  const { at, ...pending } = sets[0][0].pendingSend;
+  assert.deepEqual(pending, { ...TAB, box: BOX, user: "u" });
+  assert.equal(typeof at, "number");
+  const order = f.calls.map(([path]) => path).filter((path) => path === "permissions.request" || path === "storage.session.set");
+  assert.deepEqual(order, ["permissions.request", "storage.session.set"]);
   assert.equal(f.callsTo("runtime.sendMessage").length, 0);
-  return p.then(() => {
-    const m = f.callsTo("runtime.sendMessage");
-    assert.deepEqual(m[0][0], { op: "send", ...TAB, box: BOX, user: "u" });
-  });
+  await p;
+  assert.ok(f.storage_.session.pendingSend);
 });
 
-test("a denied permission ends the click without a send", async () => {
+test("a denied permission, seen by a popup that stayed open, drops the pending send", async () => {
   const f = makeFakeChrome();
+  setup(f);
   f.permissionAnswer = false;
+  const never = async () => { throw new Error("no post"); };
   await onSendClick(f.chrome, { ...TAB, box: BOX, user: "u" });
-  assert.equal(f.callsTo("runtime.sendMessage").length, 0);
+  assert.equal(f.storage_.session.pendingSend, undefined);
   const last = f.storage_.session.lastSend;
   assert.deepEqual([last.state, last.text], ["error", "Chrome did not give access to app.localhost."]);
+  f.permissions_.origins = ["*://*.app.localhost/*"];
+  await resumeSend(f.chrome, never);
+  assert.equal(f.storage_.session.lastSend.state, "error");
+});
+
+test("a queued send runs at once when Chrome already gives access", async () => {
+  const f = makeFakeChrome();
+  setup(f);
+  f.permissions_.origins = ["*://*.app.localhost/*"];
+  let posts = 0;
+  const post = async (...a) => { posts += 1; return OK_REPLY(...a); };
+  await queueSend(f.chrome, { ...TAB, box: BOX, user: "u" });
+  await resumeSend(f.chrome, post);
+  assert.equal(posts, 1);
+  assert.equal(f.storage_.session.lastSend.state, "done");
+  assert.equal(f.storage_.session.pendingSend, undefined);
+});
+
+test("a queued send without access waits once; the grant runs it once", async () => {
+  const f = makeFakeChrome();
+  setup(f);
+  let posts = 0;
+  const post = async (...a) => { posts += 1; return OK_REPLY(...a); };
+  await queueSend(f.chrome, { ...TAB, box: BOX, user: "u" });
+  const at = f.storage_.session.pendingSend.at;
+  await resumeSend(f.chrome, post); // woken by storage.onChanged
+  await resumeSend(f.chrome, post); // an unrelated grant: still no access to the site
+  assert.equal(posts, 0);
+  const waiting = f.storage_.session.lastSend;
+  assert.deepEqual([waiting.state, waiting.text, waiting.domain, waiting.at],
+    ["waiting", "Waiting for Chrome's access to app.localhost...", "app.localhost", at]);
+  assert.equal(f.callsTo("storage.session.set").filter(([o]) => o.lastSend).length, 1);
+  f.permissions_.origins = ["*://*.app.localhost/*"];
+  await Promise.all([resumeSend(f.chrome, post), resumeSend(f.chrome, post)]);
+  assert.equal(posts, 1);
+  assert.equal(f.storage_.session.lastSend.state, "done");
+  assert.equal(f.storage_.session.pendingSend, undefined);
+});
+
+test("a pending send expires after PENDING_MS", async () => {
+  const f = makeFakeChrome();
+  setup(f);
+  let posts = 0;
+  const post = async (...a) => { posts += 1; return OK_REPLY(...a); };
+  await queueSend(f.chrome, { ...TAB, box: BOX, user: "u" });
+  await resumeSend(f.chrome, post);
+  f.permissions_.origins = ["*://*.app.localhost/*"];
+  await resumeSend(f.chrome, post, Date.now() + PENDING_MS + 1000);
+  assert.equal(posts, 0);
+  assert.equal(f.storage_.session.pendingSend, undefined);
+  const last = f.storage_.session.lastSend;
+  assert.deepEqual(visibleStatus(last, "app.localhost", last.at + PENDING_MS + 1000),
+    { state: "error", text: "Chrome did not give access to app.localhost." });
+  assert.equal(visibleStatus(last, "app.localhost", last.at + 1000).state, "waiting");
+});
+
+test("a pending send with a bad domain is dropped with an error", async () => {
+  const f = makeFakeChrome();
+  setup(f);
+  const never = async () => { throw new Error("no post"); };
+  await queueSend(f.chrome, { ...TAB, domain: "http://x/", box: BOX, user: "u" });
+  await resumeSend(f.chrome, never);
+  assert.equal(f.storage_.session.pendingSend, undefined);
+  assert.equal(f.storage_.session.lastSend.state, "error");
+});
+
+test("the worker resumes a pending send on storage.onChanged and permissions.onAdded only", () => {
+  const src = readFileSync(new URL("../sender/sw.js", import.meta.url), "utf8");
+  assert.match(src, /chrome\.storage\.onChanged\.addListener/);
+  assert.match(src, /chrome\.permissions\.onAdded\.addListener/);
+  assert.equal((src.match(/resumeSend\(chrome, fetch\)/g) || []).length, 2);
+  assert.doesNotMatch(src, /runtime\.onMessage/);
 });
 
 test("domain choices and the default domain", async () => {

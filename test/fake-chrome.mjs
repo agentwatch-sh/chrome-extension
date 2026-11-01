@@ -79,6 +79,15 @@ export function makeFakeChrome() {
         }
         chrome.storage.onChanged.fire(changes, name);
       }),
+      remove: rec("storage." + name + ".remove", async (keys) => {
+        const changes = {};
+        for (const k of typeof keys === "string" ? [keys] : keys) {
+          if (!Object.hasOwn(fake.storage_[name], k)) continue;
+          changes[k] = { oldValue: fake.storage_[name][k], newValue: undefined };
+          delete fake.storage_[name][k];
+        }
+        if (Object.keys(changes).length > 0) chrome.storage.onChanged.fire(changes, name);
+      }),
     };
   }
   const chrome = {
@@ -146,6 +155,9 @@ export function makeFakeChrome() {
     permissions: {
       request: rec("permissions.request", async () => fake.permissionAnswer),
       remove: rec("permissions.remove", async () => true),
+      contains: rec("permissions.contains", async (p) =>
+        (p.origins ?? []).every((o) => fake.permissions_.origins.includes(o))),
+      onAdded: makeEvent(),
       getAll: rec("permissions.getAll", async () => ({
         origins: fake.permissions_.origins.slice(), permissions: fake.permissions_.permissions.slice(),
       })),

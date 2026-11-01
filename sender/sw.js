@@ -1,9 +1,14 @@
-// The sender's service worker. The popup asks for a send and may close at
-// once; this worker does the read, the size check and the POST.
-import { runSend } from "./send.js";
+// The sender's service worker. The popup leaves a send in storage.session
+// and may close at once (Chrome closes it when it shows the permission
+// dialog). This worker waits for the site's access, then does the read, the
+// size check and the POST. Both events below also wake a stopped worker.
+import { resumeSend } from "./send.js";
 
-chrome.runtime.onMessage.addListener((msg, sender) => {
-  if (sender.id !== chrome.runtime.id || msg?.op !== "send") return false;
-  runSend(chrome, fetch, msg);
-  return false;
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "session" && changes.pendingSend && changes.pendingSend.newValue) resumeSend(chrome, fetch);
+});
+
+// The operator's Allow in Chrome's dialog.
+chrome.permissions.onAdded.addListener(() => {
+  resumeSend(chrome, fetch);
 });

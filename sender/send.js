@@ -239,11 +239,80 @@ export async function runSend(chrome, fetchImpl, msg) {
   }
 }
 
+// ---- the hand-off from the popup ----
+//
+// Chrome closes the popup when it shows its permission dialog, and a message
+// from the closing popup to a stopped worker is lost (both measured on
+// Chromium 156). So the popup writes the send to storage.session in the same
+// task as permissions.request; that write reaches Chrome before the popup
+// closes. The worker runs it when storage.onChanged or permissions.onAdded
+// wakes it, once Chrome gives the access to the site. A send that waits
+// longer than PENDING_MS is dropped.
+
+export const PENDING_MS = 2 * 60 * 1000;
+
+export function siteOrigins(domain) {
+  return ["*://*." + domain + "/*"];
+}
+
+async function hasAccess(chrome, domain) {
+  try {
+    return await chrome.permissions.contains({ origins: siteOrigins(domain) });
+  } catch {
+    return false;
+  }
+}
+
+// The popup's half: it must start before the click handler's first await.
+export function queueSend(chrome, ctx) {
+  const pendingSend = {
+    tabId: ctx.tabId, url: ctx.url, domain: ctx.domain, box: ctx.box, user: ctx.user, at: Date.now(),
+  };
+  return chrome.storage.session.set({ pendingSend });
+}
+
+// The worker's half. Calls run one after another, so one pending send runs once.
+let resumeChain = Promise.resolve();
+
+export function resumeSend(chrome, fetchImpl, now) {
+  const run = resumeChain.then(() => resumeOnce(chrome, fetchImpl, now ?? Date.now()));
+  resumeChain = run.catch(() => {});
+  return run;
+}
+
+async function resumeOnce(chrome, fetchImpl, now) {
+  const { pendingSend: pending, lastSend: last } = await chrome.storage.session.get(["pendingSend", "lastSend"]);
+  if (!pending || typeof pending !== "object") return;
+  if (!(now - pending.at <= PENDING_MS)) {
+    await chrome.storage.session.remove("pendingSend");
+    return;
+  }
+  const { at, ...msg } = pending;
+  if (typeof msg.domain !== "string" || !normalizeEntry(msg.domain).ok) {
+    await chrome.storage.session.remove("pendingSend");
+    await say(chrome, msg, "error", "The send request is not valid.");
+    return;
+  }
+  if (!(await hasAccess(chrome, msg.domain))) {
+    if (!(last && last.state === "waiting" && last.at === at && last.domain === msg.domain)) {
+      await chrome.storage.session.set({
+        lastSend: { state: "waiting", text: `Waiting for Chrome's access to ${msg.domain}...`, domain: msg.domain, at },
+      });
+    }
+    return;
+  }
+  await chrome.storage.session.remove("pendingSend");
+  await runSend(chrome, fetchImpl, msg);
+}
+
 export const STALE_MS = 3 * 60 * 1000;
 
 // What the popup shows for a stored lastSend on this tab's domain, or null.
 export function visibleStatus(last, domain, now = Date.now()) {
   if (!last || last.domain !== domain) return null;
+  if (last.state === "waiting" && now - last.at > PENDING_MS) {
+    return { state: "error", text: `Chrome did not give access to ${domain}.` };
+  }
   if ((last.state === "reading" || last.state === "sending") && now - last.at > STALE_MS) {
     return { state: "error", text: "The last send did not finish." };
   }

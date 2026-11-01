@@ -1,23 +1,29 @@
 // The popup. The logic is exported so a Node test can run it; the page wiring
 // runs only where there is a document.
-import { chooseDomain, domainChoices, fetchTargets, readableSites, visibleStatus } from "./send.js";
+import { chooseDomain, domainChoices, fetchTargets, queueSend, readableSites, siteOrigins, visibleStatus } from "./send.js";
 
 // The Send click. permissions.request is the first statement, before any
-// await, so Chrome counts it as the user's gesture. The worker then does the
-// read and the POST, so a closing popup does not stop the send.
+// await, so Chrome counts it as the user's gesture. Chrome closes this popup
+// when it shows its permission dialog, so in the same task the send goes to
+// storage.session, where the worker finds it once Chrome gives the access; a
+// closing popup stops nothing. Only a popup that stays open sees a denial and
+// reports it.
 export async function onSendClick(chrome, ctx) {
-  const asked = chrome.permissions.request({ origins: ["*://*." + ctx.domain + "/*"] });
-  const granted = await asked;
-  if (!granted) {
-    await chrome.storage.session.set({
-      lastSend: {
-        state: "error", text: `Chrome did not give access to ${ctx.domain}.`, domain: ctx.domain, at: Date.now(),
-      },
-    });
-    return;
+  const asked = chrome.permissions.request({ origins: siteOrigins(ctx.domain) });
+  const queued = Promise.resolve(queueSend(chrome, ctx)).catch(() => {});
+  let granted = false;
+  try {
+    granted = await asked;
+  } catch {
+    granted = false;
   }
-  await chrome.runtime.sendMessage({
-    op: "send", tabId: ctx.tabId, url: ctx.url, domain: ctx.domain, box: ctx.box, user: ctx.user,
+  await queued;
+  if (granted) return;
+  await chrome.storage.session.remove("pendingSend");
+  await chrome.storage.session.set({
+    lastSend: {
+      state: "error", text: `Chrome did not give access to ${ctx.domain}.`, domain: ctx.domain, at: Date.now(),
+    },
   });
 }
 
