@@ -80,8 +80,16 @@ The test sites:
 
 ## Results
 
-Run of 2026-11-01 on taylor (Debian 13), Chromium 156.0.8078.73, `test/live/run.sh` from a clean
-run folder: **55 checks, 54 passed, 1 failed**. The one failure is a contract item (see below).
+Run of 2026-11-01 on taylor (Debian 13), Chromium 156.0.8078.73, `test/live/run.sh` (`all` mode) from a
+clean run folder, against head `33d0b74` after the fix wave plus the harness fix below: **57 checks,
+56 passed, 1 failed**. The one failure is an accepted test-site limit (see below). The 55-check run
+earlier the same day had the same failure. The two checks of the new `sw_removed` case and the
+checks of `big30` and `big33` are in this run; the table lists each case once.
+
+Harness fix in this re-run: `sw_removed` ran after `service_worker`, whose worker was still
+registered, so that worker answered `/sw` with its own page and the registering script never ran
+(setup check failed with `controlled: null`). The case now drops `sw.localhost` first, which makes the
+receiver remove every worker. The block itself held in the failing run (a `blocked` event).
 
 | Case | Result | How measured |
 | --- | --- | --- |
@@ -138,6 +146,8 @@ run folder: **55 checks, 54 passed, 1 failed**. The one failure is a contract it
 | allowlist change closes the off-list tab | pass | receiver answers (closed) and the s2 page's pagehide beacon |
 | agent's service worker answers the site's navigations | pass | page log (sw-ready, sw-page); the server never saw /sw-plain |
 | import bypasses the site's service worker (Network.setBypassServiceWorker) | pass | import answer; the worker's own log never shows the restore URL |
+| sw_removed setup: the worker answers while listed; the list then drops its host | pass | page log (sw-ready, sw-page, link-ready); receiver answers |
+| a removed host's service worker does not answer a link navigation (the block holds) | pass | receiver `blocked` event; no worker log; no request for the page |
 | a 30 MiB send imports | pass | box-send (bytes, import answer) and the agent page's IndexedDB count |
 | a 33 MiB send is refused in the sender, naming the database | pass | server log has no send POST; screenshot of the popup's text (read by eye) |
 

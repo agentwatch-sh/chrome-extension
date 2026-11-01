@@ -473,6 +473,10 @@ class Live:
         sw-page log, no request for the page).
         """
         keep = sorted(set(self.ctl(op="daemon_state")["allow"]) - {"sw.localhost"} | {"s1.localhost"})
+        # The service_worker case left a registered worker, which would answer /sw
+        # with its own page and keep the registering script from running. Dropping
+        # the host first makes the receiver remove every worker (a list shrink).
+        self.allow(keep)
         a0 = self.allow(sorted(set(keep) | {"sw.localhost"}))
         m = self.ctl.mark()
         self.agent.goto(self.site("sw", "/sw"))
