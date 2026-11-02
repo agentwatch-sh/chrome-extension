@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "agentwatch receiver",
+  "version": "0.1.0",
+  "description": "Receives signed-in site state for the agent browser and blocks sites off the allowlist.",
+  "minimum_chrome_version": "120",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAo4OyJeEiQdYHl5ohGNOAW48EGqCx8AOwFclTUf1ijzyqfManB1N7+NTmMAp5ws+rKWfQB4U03R5XonmYIZZhFJY6iV47v84vRviluvkB9p1kEJSJIgXb0gAFVTgn+1qOJesI+ITSpqvfUV2kUZM+DmddFSML40e+2TbAco/LT5p+ad4HfUx9blgkBnd2pelAuazUbfbV294/JlYa375K27d7VTAzzioNgfXJK36hcwbeEhh98QkyPkfY1ItFWbfqI5mVNGPmdYIlfXpOxKi/7+eTvBjx9p60DbDHPSakNQkuLeGVXWOIq/TheekWHMOL2QO40579Ge0F1OE+HA/OzwIDAQAB",
+  "permissions": ["cookies", "scripting", "tabs", "webNavigation", "declarativeNetRequest", "nativeMessaging", "debugger", "browsingData"],
+  "host_permissions": ["<all_urls>"],
+  "declarative_net_request": {
+    "rule_resources": [
+      { "id": "block_main_frame", "enabled": true, "path": "rules/block-main-frame.json" }
+    ]
+  },
+  "background": { "service_worker": "sw.js", "type": "module" }
+}
