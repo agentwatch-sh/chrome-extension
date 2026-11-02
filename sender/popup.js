@@ -1,7 +1,7 @@
 // The popup. The logic is exported so a Node test can run it; the page wiring
 // runs only where there is a document.
 import {
-  BOX_TEXT, boxHosts, domainOptions, fetchTargets, isBoxSite, queueSend, readableSites, siteOrigins, visibleStatus,
+  BOX_TEXT, boxHosts, domainOptions, fetchTargets, isBoxSite, queueSend, readableSites, siteOrigins, userChoices, visibleStatus,
 } from "./send.js";
 
 // The Send click. permissions.request is the first statement, before any
@@ -113,10 +113,22 @@ async function start() {
       show(userNote, r.text, r.link);
       return;
     }
-    const withLogin = r.users.filter((u) => u.password_login);
-    fill(userSel, withLogin.map((u) => u.name));
-    if (withLogin.length < r.users.length) {
-      show(userNote, `Log in to ${new URL(box).host} with your password first.`, box + "/login?next=/browser");
+    const choices = userChoices(r.users);
+    fill(userSel, choices.map((c) => c.name));
+    for (const [i, c] of choices.entries()) {
+      if (!c.disabled) continue;
+      userSel.options[i].disabled = true;
+      userSel.options[i].title = c.reason;
+    }
+    // The first user that can be chosen is the selected one.
+    const first = [...userSel.options].find((o) => !o.disabled);
+    userSel.value = first ? first.value : "";
+    const reasons = choices.filter((c) => c.disabled).map((c) => c.reason).join(" ");
+    if (choices.length < r.users.length) {
+      const login = `Log in to ${new URL(box).host} with your password first.`;
+      show(userNote, reasons ? `${reasons} ${login}` : login, box + "/login?next=/browser");
+    } else if (reasons) {
+      userNote.textContent = reasons;
     }
     refreshSend();
   }

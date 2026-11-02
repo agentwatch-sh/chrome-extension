@@ -183,6 +183,7 @@ function findCounts(j) {
 
 export function resultText(result, box) {
   const host = hostOf(box);
+  const detail = result.detail ? ` ${result.detail}` : "";
   switch (result.kind) {
     case "ok": {
       const c = result.counts ?? {};
@@ -197,11 +198,16 @@ export function resultText(result, box) {
     case "login": return `Log in to ${host} first.`;
     case "too-large": return "The box refused the send: it is too large.";
     case "unsupported": return "This box's agentwatch has no agent browser yet.";
-    case "receiver-missing": return `The agent browser on ${host} does not answer. Look at its Browser page.`;
-    case "start-failed": return `The agent browser on ${host} does not start. Look at its Browser page.`;
-    case "disabled": return `The agent browser is turned off on ${host}.`;
-    case "malformed": return "The box refused the send as malformed.";
-    case "timeout": return "The box did not answer in time.";
+    case "receiver-missing": return `The agent browser on ${host} does not answer. Look at its Browser page.${detail}`;
+    case "start-failed": return `The agent browser on ${host} does not start. Look at its Browser page.${detail}`;
+    case "disabled": return `The agent browser is turned off on ${host}.${detail}`;
+    case "malformed": return `The box refused the send as malformed.${detail}`;
+    case "timeout": return "The box did not answer in time. The send may still finish: look at its Browser page.";
+    case "import-failed": return `The agent browser on ${host} could not import the site. Look at its Browser page.${detail}`;
+    case "config-invalid": return `The agent browser settings on ${host} are not valid. Look at its Browser page.${detail}`;
+    case "daemon-disconnected": return `The daemon of this user on ${host} is not connected. Look at its Browser page.`;
+    case "user-not-logged-in": return `This login on ${host} is not a login of that user. Log in as that user, then send again.`;
+    case "user-required": return `This login on ${host} is for several users. Choose a user, then send again.`;
     case "unreachable": return `Cannot reach ${host}.`;
     default: return `The box refused the send (HTTP ${result.status}).`;
   }
@@ -213,7 +219,21 @@ const CODE_KINDS = {
   browser_start_failed: "start-failed",
   browser_disabled: "disabled",
   browser_payload_invalid: "malformed",
+  browser_import_failed: "import-failed",
+  browser_config_invalid: "config-invalid",
+  daemon_disconnected: "daemon-disconnected",
+  user_not_logged_in: "user-not-logged-in",
+  user_required: "user-required",
 };
+
+const MAX_DETAIL = 300;
+
+// The gateway's own text (errmsg) for a browser_* code. It holds no sent value.
+function gatewayText(j, code) {
+  if (!code.startsWith("browser_")) return "";
+  const t = j?.errmsg ?? j?.data?.errmsg;
+  return typeof t === "string" ? t.trim().slice(0, MAX_DETAIL) : "";
+}
 
 export async function sendState(fetchImpl, { box, user, body, domain }) {
   const text = typeof body === "string" ? body : JSON.stringify(body);
@@ -248,7 +268,9 @@ export async function sendState(fetchImpl, { box, user, body, domain }) {
     result.kind = "unsupported";
   } else if (Object.hasOwn(CODE_KINDS, code)) {
     result.kind = CODE_KINDS[code];
-  } else if (status === 504) {
+    const d = gatewayText(j, code);
+    if (d) result.detail = d;
+  } else if (status === 504 || status === 524) {
     result.kind = "timeout";
   } else {
     result.kind = "refused";
@@ -258,11 +280,22 @@ export async function sendState(fetchImpl, { box, user, body, domain }) {
 
 function finish(result, box) {
   const out = { ...result, text: resultText(result, box) };
-  if (result.kind === "password" || result.kind === "login") out.link = loginLink(box);
+  if (result.kind === "password" || result.kind === "login" || result.kind === "user-not-logged-in") out.link = loginLink(box);
   return out;
 }
 
 // ---- the box's users ----
+
+export const noBrowserText = (name) => `No agent browser on this box for ${name}.`;
+
+// The users the popup lists: those with a password login. A user whose
+// supported is false is listed but cannot be chosen.
+export function userChoices(users) {
+  return users.filter((u) => u.password_login).map((u) => (
+    u.supported === false
+      ? { name: u.name, disabled: true, reason: noBrowserText(u.name) }
+      : { name: u.name, disabled: false, reason: "" }));
+}
 
 export async function fetchTargets(fetchImpl, box) {
   let res;

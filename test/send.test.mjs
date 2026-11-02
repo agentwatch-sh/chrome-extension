@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import "../sender/lib/codec.js";
 import {
-  MAX_SEND_BYTES, buildPayload, sendState, resultText, runSend, fetchTargets,
+  MAX_SEND_BYTES, buildPayload, sendState, resultText, runSend, fetchTargets, userChoices,
   domainOptions, domainChoices, readableSites, visibleStatus, queueSend, resumeSend, PENDING_MS,
   BOX_TEXT, MOVED_TEXT, SendStop, boxHosts, isBoxSite, boxGetsCookie, KEEPALIVE_MS, readerTooLargeText,
 } from "../sender/send.js";
@@ -884,13 +884,33 @@ test("sendState texts for the agent browser's error codes and a gateway timeout"
     [503, { data: { error_code: "browser_start_failed" } }, "The agent browser on box.example.net does not start. Look at its Browser page."],
     [409, { error_code: "browser_disabled" }, "The agent browser is turned off on box.example.net."],
     [400, { error_code: "browser_payload_invalid", error: SECRET }, "The box refused the send as malformed."],
-    [504, {}, "The box did not answer in time."],
+    [504, {}, "The box did not answer in time. The send may still finish: look at its Browser page."],
+    [524, {}, "The box did not answer in time. The send may still finish: look at its Browser page."],
+    [502, { error_code: "browser_import_failed" }, "The agent browser on box.example.net could not import the site. Look at its Browser page."],
+    [409, { error_code: "browser_config_invalid" }, "The agent browser settings on box.example.net are not valid. Look at its Browser page."],
+    [503, { error_code: "daemon_disconnected", errmsg: "gone" }, "The daemon of this user on box.example.net is not connected. Look at its Browser page."],
+    [403, { error_code: "user_not_logged_in" }, "This login on box.example.net is not a login of that user. Log in as that user, then send again."],
+    [400, { error_code: "user_required" }, "This login on box.example.net is for several users. Choose a user, then send again."],
+    [502, { s: "error", errmsg: "import broke", error_code: "browser_import_failed" }, "The agent browser on box.example.net could not import the site. Look at its Browser page. import broke"],
+    [400, { errmsg: "bad shape", error_code: "browser_payload_invalid" }, "The box refused the send as malformed. bad shape"],
     [503, { error_code: "something_else" }, "The box refused the send (HTTP 503)."],
   ];
   for (const [status, body, text] of cases) {
     const r = await go(status, body);
     assert.equal(r.text, text, JSON.stringify(body));
-    assert.equal(r.link, undefined);
+    assert.equal(r.link, body.error_code === "user_not_logged_in" ? BOX + "/login?next=/browser" : undefined);
     assert.ok(!JSON.stringify(r).includes(SECRET));
   }
+});
+
+test("userChoices greys out a user without an agent browser", () => {
+  const c = userChoices([
+    { name: "a", supported: true, password_login: true },
+    { name: "b", supported: false, password_login: true },
+    { name: "c", supported: true, password_login: false },
+  ]);
+  assert.deepEqual(c, [
+    { name: "a", disabled: false, reason: "" },
+    { name: "b", disabled: true, reason: "No agent browser on this box for b." },
+  ]);
 });
