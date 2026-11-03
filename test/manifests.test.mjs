@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { extensionId } from "../scripts/extension-id.mjs";
 
 const read = (p) => readFileSync(new URL("../" + p, import.meta.url), "utf8");
@@ -11,6 +14,20 @@ const protocol = read("docs/protocol.md");
 
 test("extensionId known vector", () => {
   assert.equal(extensionId("MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtUH8+XV08FK9KGaU8FcmUNec/UsjUDG70wumt2xW2HbcY2hIdCOHxxJFMkU7pEvXKO+fj9O9X8VjAGX7BGh8WCRPVMkNqL3PWNZGYJsCgf13wDeGCGSmtZxzjG1q8224futefeBj5293z/7CwD9NKCqp2pbPOmxSdQoBvBeJpfz4jSaaq4SkpzhHBH1L9/jkRedXLu3kqGoPyQLcR+sEVRoI8wA6ZeMKcV6kec+rrar3UTOlC6s3DG0MI/9xqURESf8mzcjbZ4+1eUwP4EOw0DhFVzOszprGo4JyS0nIB8YNwFxSD5BnDa3MHxxDaXlcjfUtoc/ZxIqMgtgxMdQvDQIDAQAB"), "gdjdfolbhmofnfeagfbobogmbncneffe");
+});
+
+test("scripts/extension-id.mjs prints both IDs when it runs, also from a path with a space", () => {
+  const dir = mkdtempSync(join(tmpdir(), "extension id "));
+  try {
+    for (const p of ["scripts/extension-id.mjs", "sender/manifest.json", "receiver/manifest.json"]) {
+      mkdirSync(dirname(join(dir, p)), { recursive: true });
+      copyFileSync(new URL("../" + p, import.meta.url), join(dir, p));
+    }
+    const out = execFileSync(process.execPath, [join(dir, "scripts", "extension-id.mjs")], { encoding: "utf8" });
+    assert.equal(out, `sender: ${extensionId(sender.key)}\nreceiver: ${extensionId(receiver.key)}\n`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("sender manifest", () => {
