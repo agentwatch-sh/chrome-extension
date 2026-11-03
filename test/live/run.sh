@@ -10,13 +10,13 @@
 # Environment: CHROMIUM (default /usr/bin/chromium), LIVE_PORT (default 8771),
 # RECEIVER (the receiver folder to load; default the repository's receiver/).
 #
-# Everything a run makes lives in test/live/.run/<stamp>/ (git-ignored): two
-# throwaway Chromium profiles, a throwaway HOME, the X auth files (0600), logs,
-# screenshots and results.json. The two Unix sockets live in a short private
-# folder /tmp/aw-live.XXXXXX (0700; env.json names it), because a socket path
-# holds at most 107 bytes and the run folder of a deep checkout is longer. This
-# script deletes nothing: remove test/live/.run/ by hand when you are done (the
-# system clears /tmp).
+# The two Unix sockets of a run live in a short private folder
+# /tmp/aw-live.XXXXXX (0700; env.json names it), because a socket path holds at
+# most 107 bytes and the run folder of a deep checkout is longer. Everything
+# else a run makes lives in test/live/.run/<stamp>/ (git-ignored): two throwaway
+# Chromium profiles, a throwaway HOME, the X auth files (0600), logs,
+# screenshots and results.json. This script deletes nothing: remove
+# test/live/.run/ by hand when you are done (the system clears /tmp).
 set -eu
 
 HERE=$(cd "$(dirname "$0")" && pwd)

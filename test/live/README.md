@@ -37,8 +37,8 @@ holds `results.json`, the screenshots (`shots/`), and the logs (`logs/`:
 `events.jsonl` is the server's request log, page logs and the stub daemon's
 messages; `host.log` is the native host's log). The two Unix sockets
 (`daemon.sock`, `ctl.sock`) are in a short private folder `/tmp/aw-live.XXXXXX`
-(0700, named in the run's `env.json`): a socket path holds at most 107 bytes, so
-the harness also runs from a checkout with a long path. The script deletes
+(0700, named in the run's `env.json`; `<sockets>` below): a socket path holds at
+most 107 bytes, so the harness also runs from a checkout with a long path. The script deletes
 nothing. Remove `test/live/.run/` by hand when you are done; the system clears
 `/tmp`.
 
