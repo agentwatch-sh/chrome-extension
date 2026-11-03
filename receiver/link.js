@@ -6,6 +6,14 @@ const MAX_DELAY_MS = 30000;
 // The daemon waits 10 s (ping, set_allowlist) and 120 s (import); answer just before.
 const TIMEOUT_MS = { import: 115000 };
 const DEFAULT_TIMEOUT_MS = 9000;
+// The native host drops a message while its daemon socket is down, and it says
+// {"t":"link","up":true} after each socket connect. So a notice (blocked) waits
+// from a disconnect, or from a connect, to the next link up, and follows that
+// hello. At most MAX_WAITING wait; the oldest gives way. A hello or a res never
+// waits: a res belongs to its connection. The host sends no "down", so a notice
+// during a daemon outage of a running host still reaches only the host, which
+// drops it.
+const MAX_WAITING = 100;
 
 export class ReceiverLink {
   #chrome;
@@ -17,6 +25,8 @@ export class ReceiverLink {
   #joiner = new PartJoiner();
   #queue = [];
   #running = false;
+  #linkUp = false;
+  #waiting = [];
   #delay = 1000;
 
   constructor(chrome, handlers, { setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = (h) => clearTimeout(h) } = {}) {
@@ -31,6 +41,12 @@ export class ReceiverLink {
   }
 
   send(msg) {
+    const notice = msg.t !== "hello" && msg.t !== "res";
+    if (notice && (!this.#port || !this.#linkUp)) {
+      this.#waiting.push(msg);
+      if (this.#waiting.length > MAX_WAITING) this.#waiting.shift();
+      return;
+    }
     if (!this.#port) return;
     try {
       this.#port.postMessage(msg);
@@ -46,6 +62,7 @@ export class ReceiverLink {
   #connect() {
     const port = this.#chrome.runtime.connectNative(HOST_NAME);
     this.#port = port;
+    this.#linkUp = false;
     this.#joiner = new PartJoiner();
     port.onMessage.addListener((msg) => {
       if (this.#port !== port) return;
@@ -68,7 +85,13 @@ export class ReceiverLink {
   #onMessage(msg) {
     if (!msg || typeof msg !== "object") return;
     if (msg.t === "link") {
-      if (msg.up === true) this.#hello();
+      if (msg.up === true) {
+        this.#linkUp = true;
+        this.#hello();
+        const waiting = this.#waiting;
+        this.#waiting = [];
+        for (const m of waiting) this.send(m);
+      }
       return;
     }
     if (msg.t === "part") {

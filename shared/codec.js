@@ -188,7 +188,15 @@
     if (e === null || typeof e !== "object") throw new UnsupportedValue("bad encoding");
     switch (e.t) {
       case "undef": return undefined;
-      case "j": return e.v;
+      case "j": {
+        // C3: null, a boolean, a string or a finite number other than -0. Any
+        // other JSON value would skip the typed decoding of every value in it.
+        const v = e.v;
+        const ok = v === null || typeof v === "boolean" || typeof v === "string" ||
+          (typeof v === "number" && Number.isFinite(v) && !Object.is(v, -0));
+        if (!ok) throw new UnsupportedValue("bad json value");
+        return v;
+      }
       case "num":
         if (!["NaN", "Infinity", "-Infinity", "-0"].includes(e.v)) throw new UnsupportedValue("bad number");
         return Number(e.v);
@@ -206,7 +214,7 @@
       case "ab": return fromB64(e.v).buffer;
       case "view": {
         if (!VIEWS.includes(e.c) || typeof globalThis[e.c] !== "function") {
-          throw new UnsupportedValue("unsupported view " + String(e.c).slice(0, 40));
+          throw new UnsupportedValue("unsupported view");
         }
         const u8 = fromB64(e.v);
         const C = globalThis[e.c];
@@ -227,7 +235,8 @@
         }
         return o;
       }
-      case "unsupported": throw new UnsupportedValue("unsupported value: " + String(e.c).slice(0, 40));
+      // c is the sender's text (a class name of the page); no error text repeats it.
+      case "unsupported": throw new UnsupportedValue("unsupported value");
       default: throw new UnsupportedValue("unknown tag");
     }
   }

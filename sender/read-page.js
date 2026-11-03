@@ -20,9 +20,10 @@
 // - {origin} alone, when the tab no longer shows expectOrigin: nothing read.
 //
 // The memory a read holds stays near `limit`: records are read with a cursor
-// in batches of about BATCH_BYTES, a running count of the encoded output stops
-// the read at the limit, the codec gets the remaining bytes as its budget, and
-// a cache body is read as a stream that stops at the remaining bytes.
+// in batches of about BATCH_BYTES (a batch also stops once the strings and
+// buffers of its records reach BATCH_BYTES), a running count of the encoded
+// output stops the read at the limit, the codec gets the remaining bytes as its
+// budget, and a cache body is read as a stream that stops at the remaining bytes.
 //
 // A name is not secret; a stored value never enters an error or a name.
 export async function readPageState(limit = 33554432, expectOrigin = null) {
@@ -132,20 +133,66 @@ export async function readPageState(limit = 33554432, expectOrigin = null) {
       r.onerror = () => (gone ? resolve(null) : reject(new Error("open failed")));
     });
 
+  // The memory a read key or value holds, near enough, up to `cap`: NODE bytes
+  // for each value in it (as the codec charges), plus its strings and the whole
+  // buffer of each buffer or view (a structured clone keeps the whole buffer).
+  // It stops counting at `cap`, also part way through a large or sparse array.
+  // A Blob counts NODE: its bytes stay on disk until the codec reads them,
+  // within its budget.
+  const NODE = 12;
+  const heldBytes = (x, cap) => {
+    let n = NODE;
+    const seen = new Set();
+    const todo = [x];
+    const push = (y) => {
+      n += NODE;
+      todo.push(y);
+      return n < cap;
+    };
+    while (todo.length > 0 && n < cap) {
+      const v = todo.pop();
+      if (typeof v === "string") n += v.length;
+      if (v === null || typeof v !== "object" || seen.has(v)) continue;
+      seen.add(v);
+      if (v instanceof ArrayBuffer) n += v.byteLength;
+      else if (ArrayBuffer.isView(v)) {
+        if (!seen.has(v.buffer)) n += v.buffer.byteLength;
+        seen.add(v.buffer);
+      }
+      else if (v instanceof Map) {
+        for (const [k, y] of v) if (!push(k) || !push(y)) break;
+      } else if (v instanceof Set || Array.isArray(v)) {
+        for (const y of v) if (!push(y)) break;
+      } else {
+        for (const k in v) if (Object.hasOwn(v, k) && (!push(k) || !push(v[k]))) break;
+      }
+    }
+    return n;
+  };
+
   // Up to `count` records after the key `after` (all from the first when
   // `after` is null), with one cursor in one transaction: a key and its value
-  // always come together. The transaction ends when the batch is full.
-  const readBatch = (db, storeName, after, count) =>
+  // always come together. The batch also ends once its records hold `room`
+  // bytes (heldBytes), so large records after small ones never fill a batch
+  // that the small ones sized. The transaction ends when the batch is full.
+  const readBatch = (db, storeName, after, count, room) =>
     new Promise((resolve, reject) => {
       const st = db.transaction(storeName, "readonly").objectStore(storeName);
       const r = st.openCursor(after === null ? null : IDBKeyRange.lowerBound(after.key, true));
       const rows = [];
+      let held = 0;
       r.onsuccess = () => {
-        const c = r.result;
-        if (!c) return resolve({ rows, done: true });
-        rows.push([c.key, c.value]);
-        if (rows.length >= count) return resolve({ rows, done: false });
-        c.continue();
+        try {
+          const c = r.result;
+          if (!c) return resolve({ rows, done: true });
+          rows.push([c.key, c.value]);
+          held += heldBytes(c.key, room - held);
+          held += heldBytes(c.value, room - held);
+          if (rows.length >= count || held >= room) return resolve({ rows, done: false });
+          c.continue();
+        } catch {
+          reject(new Error("read failed"));
+        }
       };
       r.onerror = () => reject(new Error("request failed"));
     });
@@ -189,7 +236,7 @@ export async function readPageState(limit = 33554432, expectOrigin = null) {
         let after = null;
         let count = BATCH_FIRST;
         for (;;) {
-          const { rows, done } = await readBatch(db, storeName, after, count);
+          const { rows, done } = await readBatch(db, storeName, after, count, Math.min(BATCH_BYTES, limit - used));
           let batchBytes = 0;
           for (const [k, v] of rows) {
             const key = await codec.encode(k, { budget: limit - used });

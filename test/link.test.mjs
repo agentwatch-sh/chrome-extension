@@ -157,3 +157,32 @@ test("a disconnect reads lastError, drops queued requests and mutes the in-fligh
   assert.deepEqual(order, ["a"]);
   assert.equal(port.posted.filter((m) => m.t === "res").length, 0);
 });
+
+test("a notice waits from a disconnect to the next link up and follows its hello; at most 100 wait", () => {
+  const { f, link, timers } = setup();
+  f.ports[0].fireMessage({ t: "link", up: true });
+  link.send({ t: "blocked", tab: 1, host: "now.example" });
+  assert.deepEqual(f.ports[0].posted.at(-1), { t: "blocked", tab: 1, host: "now.example" }, "with the link up, a notice goes at once");
+  f.ports[0].fireDisconnect();
+  link.send({ t: "blocked", tab: 4, host: "first.example" });
+  for (let i = 0; i < 100; i++) link.send({ t: "blocked", tab: i, host: "h" + i + ".example" });
+  timers.at(-1).fn(); // the reconnect: the new host has no daemon socket yet, and drops what it gets
+  const port = f.ports[1];
+  assert.deepEqual(port.posted, [{ t: "hello", v: 1, version: "0.1.0" }], "the notices wait for the link");
+  port.fireMessage({ t: "link", up: true });
+  assert.deepEqual(port.posted[1], { t: "hello", v: 1, version: "0.1.0" });
+  assert.equal(port.posted.length, 102, "two hellos and the 100 newest notices");
+  assert.deepEqual(port.posted[2], { t: "blocked", tab: 0, host: "h0.example" }, "the oldest notice gave way");
+  assert.deepEqual(port.posted.at(-1), { t: "blocked", tab: 99, host: "h99.example" });
+});
+
+test("a notice before the first link up waits for it; a hello and a res never wait", async () => {
+  const { f, link } = setup();
+  const port = f.ports[0];
+  link.send({ t: "blocked", tab: 2, host: "early.example" });
+  sendReq(port, { t: "req", id: "p", op: "ping" });
+  await tick();
+  assert.deepEqual(port.posted, [{ t: "hello", v: 1, version: "0.1.0" }, { t: "res", id: "p", ok: true, data: {} }]);
+  port.fireMessage({ t: "link", up: true });
+  assert.deepEqual(port.posted.slice(2), [{ t: "hello", v: 1, version: "0.1.0" }, { t: "blocked", tab: 2, host: "early.example" }]);
+});
