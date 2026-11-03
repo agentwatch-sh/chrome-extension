@@ -35,8 +35,12 @@ test/live/run.sh down "$run"         # stop every process of the run
 Each run makes its own folder `test/live/.run/<stamp>/` (git-ignored). It
 holds `results.json`, the screenshots (`shots/`), and the logs (`logs/`:
 `events.jsonl` is the server's request log, page logs and the stub daemon's
-messages; `host.log` is the native host's log). The script deletes nothing.
-Remove `test/live/.run/` by hand when you are done.
+messages; `host.log` is the native host's log). The two Unix sockets
+(`daemon.sock`, `ctl.sock`) are in a short private folder `/tmp/aw-live.XXXXXX`
+(0700, named in the run's `env.json`): a socket path holds at most 107 bytes, so
+the harness also runs from a checkout with a long path. The script deletes
+nothing. Remove `test/live/.run/` by hand when you are done; the system clears
+`/tmp`.
 
 Chromium writes `receiver/_metadata/` (its indexed DNR ruleset) into the
 receiver folder that it loads. The folder is git-ignored. Remove it by hand
@@ -49,7 +53,7 @@ too if you want a clean tree.
 | Two private displays | `Xvfb :N -nolisten tcp -auth <file>`, one for each Chromium. Each auth file (0600) holds one FamilyWild MIT-MAGIC-COOKIE-1 entry from `os.urandom`; the cookie never enters an argv. The script checks that a client without the cookie is refused. |
 | The agent Chromium | `--user-data-dir=<run>/agent --no-first-run --no-default-browser-check --password-store=basic --load-extension=<repo>/receiver --silent-debugger-extension-api`, headed, no remote debugging. Its profile holds the native host manifest `NativeMessagingHosts/sh.agentwatch.browser.json` (allowed origin: the receiver ID), whose `path` is a 0700 wrapper that runs `host.py`. |
 | The operator Chromium | A copy of `sender/` in `<run>/sender-copy/`, whose manifest gains a test-only `commands._execute_action` shortcut (Ctrl+Shift+U) so that xdotool can open the popup. The `key` stays, so the ID stays. The committed `sender/` is never changed. |
-| `server.py` | One HTTP server on 127.0.0.1, routed by the Host header: the test sites, and the stub box at `box.localhost` (`/login` sets a made-up login cookie; `GET /api/browser/targets`; `POST /api/browser/send` checks `Origin` and the cookie, caps the body at 33,554,432 bytes, then asks the stub daemon to add the domain to the allowlist and to import). The stub daemon listens on `<run>/daemon.sock` (0600) and speaks contract C4: it sends each request as parts of 700,000 bytes, one request at a time. A control socket `<run>/ctl.sock` serves the driver. |
+| `server.py` | One HTTP server on 127.0.0.1, routed by the Host header: the test sites, and the stub box at `box.localhost` (`/login` sets a made-up login cookie; `GET /api/browser/targets`; `POST /api/browser/send` checks `Origin` and the cookie, caps the body at 33,554,432 bytes, then asks the stub daemon to add the domain to the allowlist and to import). The stub daemon listens on `<sockets>/daemon.sock` (0600) and speaks contract C4: it sends each request as parts of 700,000 bytes, one request at a time. A control socket `<sockets>/ctl.sock` serves the driver. |
 | `host.py` | The native messaging host for this test only: Chrome's stdio messages to one NDJSON line each on the stub daemon's socket, and back. After each connect it tells the receiver `{"t":"link","up":true}`. |
 | `live.py` | The driver: xdotool on each display, the control socket, and the checks. |
 

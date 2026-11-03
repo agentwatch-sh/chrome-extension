@@ -11,9 +11,12 @@
 # RECEIVER (the receiver folder to load; default the repository's receiver/).
 #
 # Everything a run makes lives in test/live/.run/<stamp>/ (git-ignored): two
-# throwaway Chromium profiles, a throwaway HOME, the X auth files (0600), the
-# sockets, logs, screenshots and results.json. This script deletes nothing:
-# remove test/live/.run/ by hand when you are done.
+# throwaway Chromium profiles, a throwaway HOME, the X auth files (0600), logs,
+# screenshots and results.json. The two Unix sockets live in a short private
+# folder /tmp/aw-live.XXXXXX (0700; env.json names it), because a socket path
+# holds at most 107 bytes and the run folder of a deep checkout is longer. This
+# script deletes nothing: remove test/live/.run/ by hand when you are done (the
+# system clears /tmp).
 set -eu
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -99,6 +102,7 @@ up() {
   trap 'down "$run"' EXIT
   trap 'exit 130' INT TERM
   mkdir "$run/home" "$run/logs" "$run/shots" "$run/x" "$run/pids"
+  sock=$(mktemp -d /tmp/aw-live.XXXXXX)
 
   a=$(free_display 90)
   o=$(free_display $((a + 1)))
@@ -124,7 +128,7 @@ EOF
   mkdir -p "$run/agent/NativeMessagingHosts"
   cat >"$run/native-host" <<EOF
 #!/bin/sh
-exec /usr/bin/python3 "$HERE/host.py" --socket "$run/daemon.sock" --log "$run/logs/host.log" "\$@"
+exec /usr/bin/python3 "$HERE/host.py" --socket "$sock/daemon.sock" --log "$run/logs/host.log" "\$@"
 EOF
   chmod 0700 "$run/native-host"
   cat >"$run/agent/NativeMessagingHosts/sh.agentwatch.browser.json" <<EOF
@@ -132,10 +136,10 @@ EOF
  "type": "stdio", "allowed_origins": ["chrome-extension://$receiver_id/"]}
 EOF
 
-  python3 "$HERE/server.py" --run "$run" --port "$PORT" --sender-id "$sender_id" >"$run/logs/server.log" 2>&1 &
+  python3 "$HERE/server.py" --run "$run" --sockets "$sock" --port "$PORT" --sender-id "$sender_id" >"$run/logs/server.log" 2>&1 &
   echo $! >"$run/pids/server"
   i=0
-  while [ ! -S "$run/ctl.sock" ]; do
+  while [ ! -S "$sock/ctl.sock" ]; do
     i=$((i + 1))
     [ "$i" -le 50 ] || { say "server.py did not start"; return 1; }
     sleep 0.2
@@ -145,7 +149,7 @@ EOF
   start_chromium "$run" operator "$o" "$run/operator" "$run/sender-copy"
 
   cat >"$run/env.json" <<EOF
-{"run": "$run", "port": $PORT, "sender_id": "$sender_id", "receiver_id": "$receiver_id",
+{"run": "$run", "sockets": "$sock", "port": $PORT, "sender_id": "$sender_id", "receiver_id": "$receiver_id",
  "agent": {"display": $a, "xauth": "$run/x/auth.$a"}, "operator": {"display": $o, "xauth": "$run/x/auth.$o"}}
 EOF
   say "agent Chromium on :$a, operator Chromium on :$o, sites and box on 127.0.0.1:$PORT"

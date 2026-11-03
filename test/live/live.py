@@ -131,7 +131,7 @@ class Live:
             self.env = json.load(f)
         self.run = run
         self.port = self.env["port"]
-        self.ctl = Ctl(os.path.join(run, "ctl.sock"))
+        self.ctl = Ctl(os.path.join(self.env.get("sockets", run), "ctl.sock"))
         shots = os.path.join(run, "shots")
         self.agent = Screen("agent", self.env["agent"]["display"], self.env["agent"]["xauth"], shots)
         self.op = Screen("operator", self.env["operator"]["display"], self.env["operator"]["xauth"], shots)

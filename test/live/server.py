@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """The live test's local world: test sites, a stub box and a stub daemon.
 
-Stdlib only. Everything listens on the loopback or on Unix sockets in the run
-folder:
+Stdlib only. Everything listens on the loopback or on two Unix sockets in the
+sockets folder (`--sockets`, default the run folder; run.sh gives a short one,
+because a socket path holds at most 107 bytes):
 
 - HTTP on 127.0.0.1:<port>, routed by the Host header. `box.localhost` is the
   stub box (the gateway's two extension routes, contract C9). Every other
   `*.localhost` host is a test site.
-- The stub daemon on `<run>/daemon.sock` (0600). The native host (host.py)
+- The stub daemon on `<sockets>/daemon.sock` (0600). The native host (host.py)
   connects to it, and it speaks contract C4 to the receiver.
-- A control socket `<run>/ctl.sock` (0600) for the driver (live.py): one JSON
+- A control socket `<sockets>/ctl.sock` (0600) for the driver (live.py): one JSON
   request line in, one JSON answer line out.
 
 No log line holds a cookie value or a storage value, test values included.
@@ -751,12 +752,12 @@ def payload_summary(p: dict) -> dict:
 
 
 class World:
-    def __init__(self, run: str, port: int, sender_id: str) -> None:
+    def __init__(self, run: str, sockets: str, port: int, sender_id: str) -> None:
         self.run = run
         self.port = port
         self.sender_origin = "chrome-extension://" + sender_id
         self.events = Events(os.path.join(run, "logs", "events.jsonl"))
-        self.daemon = StubDaemon(os.path.join(run, "daemon.sock"), self.events)
+        self.daemon = StubDaemon(os.path.join(sockets, "daemon.sock"), self.events)
         self.reports = Reports()
         self.logins: set[str] = set()
         self.logins_lock = threading.Lock()
@@ -1045,12 +1046,14 @@ def control(world: World, req: dict) -> object:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--run", required=True, help="the run folder")
+    ap.add_argument("--sockets", help="the folder of the two Unix sockets (default: the run folder)")
     ap.add_argument("--port", type=int, required=True)
     ap.add_argument("--sender-id", required=True)
     args = ap.parse_args()
-    world = World(args.run, args.port, args.sender_id)
+    sockets = args.sockets or args.run
+    world = World(args.run, sockets, args.port, args.sender_id)
     threading.Thread(target=world.daemon.serve, daemon=True).start()
-    threading.Thread(target=serve_control, args=(world, os.path.join(args.run, "ctl.sock")), daemon=True).start()
+    threading.Thread(target=serve_control, args=(world, os.path.join(sockets, "ctl.sock")), daemon=True).start()
     httpd = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(world))
     httpd.daemon_threads = True
     world.events.add("server", port=args.port)
