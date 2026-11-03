@@ -6,8 +6,13 @@ const MAX_DELAY_MS = 30000;
 // The daemon waits 10 s (ping, set_allowlist) and 120 s (import); answer just before.
 const TIMEOUT_MS = { import: 115000 };
 const DEFAULT_TIMEOUT_MS = 9000;
-// Messages sent while the link is down (blocked notices) wait for the next connection; the oldest
-// gives way when more come.
+// The native host drops a message while its daemon socket is down, and it says
+// {"t":"link","up":true} after each socket connect. So a notice (blocked) waits
+// from a disconnect, or from a connect, to the next link up, and follows that
+// hello. At most MAX_WAITING wait; the oldest gives way. A hello or a res never
+// waits: a res belongs to its connection. The host sends no "down", so a notice
+// during a daemon outage of a running host still reaches only the host, which
+// drops it.
 const MAX_WAITING = 100;
 
 export class ReceiverLink {
@@ -19,7 +24,8 @@ export class ReceiverLink {
   #port = null;
   #joiner = new PartJoiner();
   #queue = [];
-  #draining = -1; // the generation whose requests a #drain loop runs, or -1
+  #running = false;
+  #linkUp = false;
   #waiting = [];
   #delay = 1000;
 
@@ -35,11 +41,13 @@ export class ReceiverLink {
   }
 
   send(msg) {
-    if (!this.#port) {
+    const notice = msg.t !== "hello" && msg.t !== "res";
+    if (notice && (!this.#port || !this.#linkUp)) {
       this.#waiting.push(msg);
       if (this.#waiting.length > MAX_WAITING) this.#waiting.shift();
       return;
     }
+    if (!this.#port) return;
     try {
       this.#port.postMessage(msg);
     } catch {
@@ -54,6 +62,7 @@ export class ReceiverLink {
   #connect() {
     const port = this.#chrome.runtime.connectNative(HOST_NAME);
     this.#port = port;
+    this.#linkUp = false;
     this.#joiner = new PartJoiner();
     port.onMessage.addListener((msg) => {
       if (this.#port !== port) return;
@@ -71,15 +80,18 @@ export class ReceiverLink {
       this.#setTimer(() => this.#connect(), ms);
     });
     this.#hello();
-    const waiting = this.#waiting;
-    this.#waiting = [];
-    for (const msg of waiting) this.send(msg);
   }
 
   #onMessage(msg) {
     if (!msg || typeof msg !== "object") return;
     if (msg.t === "link") {
-      if (msg.up === true) this.#hello();
+      if (msg.up === true) {
+        this.#linkUp = true;
+        this.#hello();
+        const waiting = this.#waiting;
+        this.#waiting = [];
+        for (const m of waiting) this.send(m);
+      }
       return;
     }
     if (msg.t === "part") {
@@ -102,16 +114,13 @@ export class ReceiverLink {
     return Promise.race([done, timeout]).finally(() => this.#clearTimer(handle));
   }
 
-  // One request at a time per connection. After a reconnect the new connection's requests start at
-  // once: a handler of the old connection that still runs (an import, up to 115 s) is not waited for,
-  // and its answer is muted. importState runs one import at a time by itself.
   async #drain() {
-    const gen = this.#generation;
-    if (this.#draining === gen) return;
-    this.#draining = gen;
+    if (this.#running) return;
+    this.#running = true;
     try {
-      while (gen === this.#generation && this.#queue.length > 0) {
+      while (this.#queue.length > 0) {
         const req = this.#queue.shift();
+        const gen = this.#generation;
         const reply = (msg) => {
           if (gen === this.#generation) this.send(msg);
         };
@@ -125,7 +134,7 @@ export class ReceiverLink {
         }
       }
     } finally {
-      if (this.#draining === gen) this.#draining = -1;
+      this.#running = false;
     }
   }
 }

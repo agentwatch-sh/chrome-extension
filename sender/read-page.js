@@ -133,22 +133,39 @@ export async function readPageState(limit = 33554432, expectOrigin = null) {
       r.onerror = () => (gone ? resolve(null) : reject(new Error("open failed")));
     });
 
-  // The bytes of the strings and buffers in a read key or value: the memory it
-  // holds, near enough. A Blob counts 0: its bytes stay on disk until the codec
-  // reads them, within its budget.
-  const heldBytes = (x) => {
-    let n = 0;
+  // The memory a read key or value holds, near enough, up to `cap`: NODE bytes
+  // for each value in it (as the codec charges), plus its strings and the whole
+  // buffer of each buffer or view (a structured clone keeps the whole buffer).
+  // It stops counting at `cap`, also part way through a large or sparse array.
+  // A Blob counts NODE: its bytes stay on disk until the codec reads them,
+  // within its budget.
+  const NODE = 12;
+  const heldBytes = (x, cap) => {
+    let n = NODE;
     const seen = new Set();
     const todo = [x];
-    while (todo.length > 0) {
+    const push = (y) => {
+      n += NODE;
+      todo.push(y);
+      return n < cap;
+    };
+    while (todo.length > 0 && n < cap) {
       const v = todo.pop();
       if (typeof v === "string") n += v.length;
       if (v === null || typeof v !== "object" || seen.has(v)) continue;
       seen.add(v);
-      if (v instanceof ArrayBuffer || ArrayBuffer.isView(v)) n += v.byteLength;
-      else if (v instanceof Map) for (const [k, y] of v) todo.push(k, y);
-      else if (v instanceof Set || Array.isArray(v)) for (const y of v) todo.push(y);
-      else for (const k of Object.keys(v)) todo.push(k, v[k]);
+      if (v instanceof ArrayBuffer) n += v.byteLength;
+      else if (ArrayBuffer.isView(v)) {
+        if (!seen.has(v.buffer)) n += v.buffer.byteLength;
+        seen.add(v.buffer);
+      }
+      else if (v instanceof Map) {
+        for (const [k, y] of v) if (!push(k) || !push(y)) break;
+      } else if (v instanceof Set || Array.isArray(v)) {
+        for (const y of v) if (!push(y)) break;
+      } else {
+        for (const k in v) if (Object.hasOwn(v, k) && (!push(k) || !push(v[k]))) break;
+      }
     }
     return n;
   };
@@ -165,12 +182,17 @@ export async function readPageState(limit = 33554432, expectOrigin = null) {
       const rows = [];
       let held = 0;
       r.onsuccess = () => {
-        const c = r.result;
-        if (!c) return resolve({ rows, done: true });
-        rows.push([c.key, c.value]);
-        held += heldBytes(c.key) + heldBytes(c.value);
-        if (rows.length >= count || held >= room) return resolve({ rows, done: false });
-        c.continue();
+        try {
+          const c = r.result;
+          if (!c) return resolve({ rows, done: true });
+          rows.push([c.key, c.value]);
+          held += heldBytes(c.key, room - held);
+          held += heldBytes(c.value, room - held);
+          if (rows.length >= count || held >= room) return resolve({ rows, done: false });
+          c.continue();
+        } catch {
+          reject(new Error("read failed"));
+        }
       };
       r.onerror = () => reject(new Error("request failed"));
     });

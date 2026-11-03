@@ -615,6 +615,27 @@ test("readPageState stops a batch at about 4 MiB of read records", async () => {
   assert.ok(most * big.length <= 4 * 1048576 + big.length, `one batch held ${most} records of 256 KiB`);
 });
 
+// A limit of 2 MB keeps these fast: a batch's room is the bytes left, at most BATCH_BYTES.
+test("readPageState counts every value of a record for the batch, not only its strings", async () => {
+  const records = [];
+  for (let i = 0; i < 16; i++) records.push([i, "s"]);
+  const numbers = Array.from({ length: 10000 }, (_, j) => j + 0.5);
+  for (let i = 16; i < 76; i++) records.push([i, numbers]);
+  const idb = fakeIndexedDB({ d: { version: 1, stores: { s: { records } } } });
+  const r = await readWith({ idb }, 2000000, PAGE_ORIGIN);
+  assert.equal(r.tooLarge.stage, "read");
+  const most = Math.max(...idb.log.rows.slice(1));
+  assert.ok(most <= 20, `one batch held ${most} of the 60 records of 10,000 numbers`);
+});
+
+test("readPageState stops counting a huge sparse array at the batch's room, and the codec refuses it", async () => {
+  const sparse = [];
+  sparse.length = 300000001;
+  const idb = fakeIndexedDB({ d: { version: 1, stores: { s: { records: [[1, "small"], [2, sparse]] } } } });
+  const r = await readWith({ idb }, 2000000, PAGE_ORIGIN);
+  assert.equal(r.tooLarge.stage, "read");
+});
+
 // I3: the reader stops above the limit; the operator's tab never holds much more.
 test("readPageState stops above the limit and names the largest database so far", async () => {
   const SECRET_V = "SENTINEL-not-a-real-value-7f3a";
