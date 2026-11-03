@@ -6,6 +6,9 @@ const MAX_DELAY_MS = 30000;
 // The daemon waits 10 s (ping, set_allowlist) and 120 s (import); answer just before.
 const TIMEOUT_MS = { import: 115000 };
 const DEFAULT_TIMEOUT_MS = 9000;
+// Messages sent while the link is down (blocked notices) wait for the next connection; the oldest
+// gives way when more come.
+const MAX_WAITING = 100;
 
 export class ReceiverLink {
   #chrome;
@@ -16,7 +19,8 @@ export class ReceiverLink {
   #port = null;
   #joiner = new PartJoiner();
   #queue = [];
-  #running = false;
+  #draining = -1; // the generation whose requests a #drain loop runs, or -1
+  #waiting = [];
   #delay = 1000;
 
   constructor(chrome, handlers, { setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = (h) => clearTimeout(h) } = {}) {
@@ -31,7 +35,11 @@ export class ReceiverLink {
   }
 
   send(msg) {
-    if (!this.#port) return;
+    if (!this.#port) {
+      this.#waiting.push(msg);
+      if (this.#waiting.length > MAX_WAITING) this.#waiting.shift();
+      return;
+    }
     try {
       this.#port.postMessage(msg);
     } catch {
@@ -63,6 +71,9 @@ export class ReceiverLink {
       this.#setTimer(() => this.#connect(), ms);
     });
     this.#hello();
+    const waiting = this.#waiting;
+    this.#waiting = [];
+    for (const msg of waiting) this.send(msg);
   }
 
   #onMessage(msg) {
@@ -91,13 +102,16 @@ export class ReceiverLink {
     return Promise.race([done, timeout]).finally(() => this.#clearTimer(handle));
   }
 
+  // One request at a time per connection. After a reconnect the new connection's requests start at
+  // once: a handler of the old connection that still runs (an import, up to 115 s) is not waited for,
+  // and its answer is muted. importState runs one import at a time by itself.
   async #drain() {
-    if (this.#running) return;
-    this.#running = true;
+    const gen = this.#generation;
+    if (this.#draining === gen) return;
+    this.#draining = gen;
     try {
-      while (this.#queue.length > 0) {
+      while (gen === this.#generation && this.#queue.length > 0) {
         const req = this.#queue.shift();
-        const gen = this.#generation;
         const reply = (msg) => {
           if (gen === this.#generation) this.send(msg);
         };
@@ -111,7 +125,7 @@ export class ReceiverLink {
         }
       }
     } finally {
-      this.#running = false;
+      if (this.#draining === gen) this.#draining = -1;
     }
   }
 }

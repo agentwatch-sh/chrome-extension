@@ -157,3 +157,35 @@ test("a disconnect reads lastError, drops queued requests and mutes the in-fligh
   assert.deepEqual(order, ["a"]);
   assert.equal(port.posted.filter((m) => m.t === "res").length, 0);
 });
+
+test("a message sent while the link is down goes out after the next hello; at most 100 wait", () => {
+  const { f, link, timers } = setup();
+  f.ports[0].fireDisconnect();
+  link.send({ t: "blocked", tab: 4, host: "first.example" });
+  for (let i = 0; i < 100; i++) link.send({ t: "blocked", tab: i, host: "h" + i + ".example" });
+  assert.equal(f.ports[0].posted.filter((m) => m.t === "blocked").length, 0);
+  timers.at(-1).fn(); // the reconnect
+  const posted = f.ports[1].posted;
+  assert.deepEqual(posted[0], { t: "hello", v: 1, version: "0.1.0" });
+  assert.equal(posted.length, 101, "hello and the 100 newest messages");
+  assert.deepEqual(posted[1], { t: "blocked", tab: 0, host: "h0.example" }, "the oldest message gave way");
+  assert.deepEqual(posted.at(-1), { t: "blocked", tab: 99, host: "h99.example" });
+});
+
+test("after a reconnect a new request runs at once, while the old connection's handler still runs", async () => {
+  let release;
+  const { f, timers } = setup({ import: () => new Promise((r) => (release = r)) });
+  sendReq(f.ports[0], { t: "req", id: "old", op: "import", state: {} });
+  await tick();
+  f.ports[0].fireDisconnect();
+  timers.find((t) => t.ms === 1000).fn(); // the reconnect
+  sendReq(f.ports[1], { t: "req", id: "new", op: "ping" });
+  await tick();
+  await tick();
+  assert.deepEqual(f.ports[1].posted.filter((m) => m.t === "res"), [{ t: "res", id: "new", ok: true, data: {} }]);
+  release({});
+  await tick();
+  await tick();
+  assert.equal(f.ports[1].posted.filter((m) => m.t === "res").length, 1, "the old answer stays muted");
+  assert.equal(f.ports[0].posted.filter((m) => m.t === "res").length, 0);
+});

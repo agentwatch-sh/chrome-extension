@@ -85,6 +85,10 @@ One JSON object per native message. On the daemon's socket each message is one N
   `{"t":"req","id":"<id>","op":"import","state":<C2 payload>}` ->
   `{"cookies_removed":0,"cookies_set":0,"tabs_closed":0,"local":0,"session":0,"idb_databases":0,"idb_records":0,"cache_entries":0,"errors":["<store or cookie name>: <reason>"]}`.
 - Ids are strings. The daemon waits 10 s for `ping` and `set_allowlist`, 120 s for `import`.
+- The receiver answers the requests of one connection one at a time, in arrival order. After a
+  reconnect, the new connection's requests start at once: a handler of the old connection that still
+  runs is not waited for, and its answer is never sent. A `blocked` notice from a time when the link was
+  down follows the next `hello` (at most 100 wait; the oldest gives way).
 
 ### C5. The allowlist and the block
 
