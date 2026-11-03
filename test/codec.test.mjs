@@ -5,6 +5,10 @@ import "../shared/codec.js";
 const { encode, decode, UnsupportedValue } = globalThis.agentwatchCodec;
 const rt = async (x) => decode(JSON.parse(JSON.stringify(await encode(x))));
 
+test("a j value decodes to itself", () => {
+  for (const v of [null, true, false, "", "a", 0, 1.5, -2, Number.MAX_VALUE]) assert.ok(Object.is(decode({ t: "j", v }), v), String(v));
+});
+
 test("primitives round trip", async () => {
   for (const x of [undefined, null, true, false, "", "ü€😀", 1.5, 0, -Infinity, Infinity]) {
     assert.ok(Object.is(await rt(x), x), String(x));
@@ -113,6 +117,10 @@ test("error text carries no value", async () => {
   const e = await encode(nested);
   assert.ok(!JSON.stringify(e).includes(s));
   assert.throws(() => decode(e), (err) => !err.message.includes(s));
+  // A sent c is the sender's text: no error text repeats it.
+  for (const bad of [{ t: "unsupported", c: s }, { t: "view", c: s, v: "" }]) {
+    assert.throws(() => decode(bad), (err) => err instanceof UnsupportedValue && !err.message.includes("SENTINEL"), JSON.stringify(bad));
+  }
 });
 
 test("5 MB Uint8Array", async () => {
@@ -146,6 +154,8 @@ test("malformed input throws UnsupportedValue", () => {
     { t: "re", s: "(", f: "" }, { t: "re", s: "a", f: "zz" },
     { t: "num", v: "12" }, { t: "num", v: "abc" },
     { t: "map", v: 5 }, null,
+    // C3: "j" carries null, a boolean, a string or a finite number other than -0, nothing else.
+    { t: "j" }, { t: "j", v: {} }, { t: "j", v: [1] }, { t: "j", v: { t: "obj", v: {} } }, { t: "j", v: -0 }, { t: "j", v: 1e400 },
   ]) {
     assert.throws(() => decode(bad), (err) => err instanceof UnsupportedValue, JSON.stringify(bad));
   }
