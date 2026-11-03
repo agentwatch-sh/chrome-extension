@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import "../sender/lib/codec.js";
 import {
-  MAX_SEND_BYTES, buildPayload, sendState, resultText, runSend, fetchTargets, userChoices,
+  MAX_SEND_BYTES, buildPayload, byteLength, sendState, resultText, runSend, fetchTargets, userChoices,
   domainOptions, domainChoices, readableSites, visibleStatus, queueSend, resumeSend, PENDING_MS,
   BOX_TEXT, MOVED_TEXT, SendStop, boxHosts, isBoxSite, boxGetsCookie, KEEPALIVE_MS, readerTooLargeText,
 } from "../sender/send.js";
@@ -42,7 +42,9 @@ test("buildPayload gives a C2 payload", async () => {
   ];
   f.pageRead = { storage: { local: { a: "1" }, session: { b: "2" }, idb, caches: [] }, skipped: [] };
   const r = await buildPayload(f.chrome, TAB);
-  const p = r.payload;
+  // Only the JSON string: the payload object is not kept next to it while the send runs.
+  assert.equal("payload" in r, false);
+  const p = JSON.parse(r.json);
   assert.equal(p.v, 1);
   assert.equal(p.domain, "app.localhost");
   assert.equal(p.url, TAB.url);
@@ -71,13 +73,19 @@ test("buildPayload gives a C2 payload", async () => {
   assert.deepEqual(ex[1][0].args, [MAX_SEND_BYTES, "https://www.app.localhost"]);
 });
 
+test("byteLength is the UTF-8 length, as TextEncoder counts it", () => {
+  for (const s of ["", "a", "ü", "€", "😀", "a😀b€ü", "\ud800", "x\udc00", "\ud800\ud800\udc00", "\udbff"]) {
+    assert.equal(byteLength(s), new TextEncoder().encode(s).length, JSON.stringify(s));
+  }
+});
+
 test("buildPayload keeps the key order of the page's IndexedDB values", async () => {
   const f = makeFakeChrome();
   const value = { t: "obj", v: { zeta: { t: "j", v: 1 }, alpha: { t: "obj", v: { b: { t: "j", v: null }, a: { t: "j", v: 2 } } } } };
   f.pageRead = { storage: { local: {}, session: {}, caches: [], idb: [{ name: "d", version: 1, stores: [{
     name: "s", keyPath: null, autoIncrement: false, indexes: [], records: [{ key: { t: "j", v: "k" }, value }] }] }] }, skipped: [] };
   const r = await buildPayload(f.chrome, TAB);
-  const got = r.payload.storage.idb[0].stores[0].records[0].value;
+  const got = JSON.parse(r.json).storage.idb[0].stores[0].records[0].value;
   assert.deepEqual(Object.keys(got.v), ["zeta", "alpha"]);
   assert.deepEqual(Object.keys(got.v.alpha.v), ["b", "a"]);
   assert.ok(r.json.indexOf('"zeta"') < r.json.indexOf('"alpha"'));
@@ -94,7 +102,7 @@ test("buildPayload drops expirationDate of a session cookie and keeps skipped na
   f.cookies_ = [cookie({ session: true, expirationDate: undefined })];
   f.pageRead = { storage: { local: {}, session: {}, idb: [], caches: [] }, skipped: ["broken"] };
   const r = await buildPayload(f.chrome, TAB);
-  assert.equal("expirationDate" in r.payload.cookies[0], false);
+  assert.equal("expirationDate" in JSON.parse(r.json).cookies[0], false);
   assert.deepEqual(r.skipped, ["broken"]);
   assert.equal(r.largest, null);
 });
@@ -446,12 +454,13 @@ const cmpKey = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 // names that databases() reports but that no longer exist. The log records
 // opens, transactions, cursor steps, upgrade aborts and deletes.
 function fakeIndexedDB(dbs, { gone = [] } = {}) {
-  const log = { opens: [], transactions: 0, cursorSteps: 0, cursors: 0, aborts: [], deletes: [], created: [] };
+  const log = { opens: [], transactions: 0, cursorSteps: 0, cursors: 0, rows: [], aborts: [], deletes: [], created: [] };
   const store = (st) => ({
     keyPath: st.keyPath ?? null, autoIncrement: !!st.autoIncrement, indexNames: (st.indexes ?? []).map((i) => i.name),
     index: (n) => st.indexes.find((i) => i.name === n),
     openCursor: (range) => {
       log.cursors += 1;
+      const batch = log.rows.push(0) - 1; // the records this cursor gives
       const rows = [...st.records].sort((a, b) => cmpKey(a[0], b[0]))
         .filter(([k]) => range === null || (range.lowerOpen ? cmpKey(k, range.lower) > 0 : cmpKey(k, range.lower) >= 0));
       const req = {};
@@ -462,6 +471,7 @@ function fakeIndexedDB(dbs, { gone = [] } = {}) {
           req.result = null;
         } else {
           const [key, value] = rows[i];
+          log.rows[batch] += 1;
           req.result = { key, primaryKey: key, value, continue: () => { i += 1; step(); } };
         }
         req.onsuccess();
@@ -588,6 +598,21 @@ test("readPageState reads a large store in batches; the first batch is small", a
   // More than one cursor (one per batch), each in its own transaction.
   assert.ok(idb.log.cursors >= 2, "cursors: " + idb.log.cursors);
   assert.ok(idb.log.transactions >= idb.log.cursors);
+});
+
+// A batch is sized by the records of the batch before it, so large records after small ones could
+// fill one batch with 512 of them before the codec's budget applies. A batch also stops at about
+// BATCH_BYTES (4 MiB) of the strings and buffers it holds.
+test("readPageState stops a batch at about 4 MiB of read records", async () => {
+  const records = [];
+  for (let i = 0; i < 16; i++) records.push([i, "s"]);
+  const big = "y".repeat(256 * 1024);
+  for (let i = 16; i < 116; i++) records.push([i, big]);
+  const idb = fakeIndexedDB({ d: { version: 1, stores: { s: { records } } } });
+  const r = await readWith({ idb }, MAX_SEND_BYTES, PAGE_ORIGIN);
+  assert.equal(r.storage.idb[0].stores[0].records.length, 116);
+  const most = Math.max(...idb.log.rows.slice(1));
+  assert.ok(most * big.length <= 4 * 1048576 + big.length, `one batch held ${most} records of 256 KiB`);
 });
 
 // I3: the reader stops above the limit; the operator's tab never holds much more.
@@ -762,7 +787,7 @@ test("a site next to a box is sent, without any cookie that the box host would r
     cookie({ name: "box_exact", value: SECRET + "-box3", domain: ".box.app.localhost", hostOnly: false }),
   ];
   const r = await buildPayload(f.chrome, { ...TAB, boxes: ["https://box.app.localhost:8081"] });
-  assert.deepEqual(r.payload.cookies.map((c) => c.name), ["keep_host", "keep_sub"]);
+  assert.deepEqual(JSON.parse(r.json).cookies.map((c) => c.name), ["keep_host", "keep_sub"]);
   assert.ok(!r.json.includes(SECRET + "-box"));
   assert.ok(r.json.includes(SECRET + "-a"));
 });

