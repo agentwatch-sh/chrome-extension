@@ -145,8 +145,9 @@ side is stage 4 of the two-modes design (agentwatch).
   request that it gets. A bridge request with an op that the receiver does not know gets
   `{"t":"res","ch":"bridge","id":"<id>","ok":false,"error":"unknown op"}`. The main ops are not
   bridge ops: `ping` on channel `bridge` is an unknown op too. A bridge request never stops or delays
-  channel `main`. The receiver of today (before stage 2 of the two-modes design) knows no bridge op,
-  so it answers each bridge request with `unknown op`. Stage 2 builds the C10 ops and waits.
+  channel `main`. A receiver before stage 2 of the two-modes design (before version 0.2.0) knows no
+  bridge op, so it answers each bridge request with `unknown op`. The agent package from version
+  0.2.0 on has the C10 ops and waits (board ab-v16.5).
 - The shared vectors: `test/vectors/parts.json` (parts without `ch`) and
   `test/vectors/parts-bridge.json` (parts with `"ch":"bridge"`).
 
@@ -393,6 +394,8 @@ first document request of a new tab (below).
 - The receiver sends no bridge event on a daemon connection before the first bridge request on that
   connection. So a daemon that does not use the bridge gets no bridge event.
 - An event above `MAX_TO_DAEMON` (C4) is not sent. The receiver sends `bridge.tooLarge` in its place.
+  Its `tabId` is the tab of the event: `source.tabId`, `tabId`, `addedTabId`, `tab.id` or
+  `details.tabId`. A download event names no tab: its `tabId` is -1 (Chrome's `tabs.TAB_ID_NONE`).
   The relay logs the method and gives the client nothing. So that the page never waits for an
   answer that cannot come, the relay then takes a default action on the event's session (`tabId`,
   and `sessionId` when there is one):

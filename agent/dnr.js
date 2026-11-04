@@ -7,6 +7,14 @@ const RULE_ID = 2;
 // The last list that applied in full, per chrome object: one per worker
 // start, so the first call after a start counts as a shrink.
 const applied = new WeakMap();
+// The list of the rule in force: set when the rule update succeeded, also if
+// the call then failed. The bridge checks content-setting patterns against it
+// (C10 contentDetails), so a shrink holds there at once.
+const ruled = new WeakMap();
+
+export function appliedDomains(chrome) {
+  return ruled.get(chrome) ?? [];
+}
 
 export function allowRule(domains) {
   if (domains.length === 0) return null;
@@ -44,6 +52,7 @@ export async function applyAllowlist(chrome, input) {
     removeRuleIds: [RULE_ID],
     addRules: rule ? [rule] : [],
   });
+  ruled.set(chrome, domains);
   const previous = applied.get(chrome);
   const shrinks = previous === undefined || previous.some((d) => !domains.includes(d));
   let workersRemoved = !shrinks;

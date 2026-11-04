@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { importState } from "../agent/importer.js";
+import { attachments } from "../agent/attach.js";
 import { replacePageState } from "../agent/page-state.js";
 import { makeFakeChrome } from "./fake-chrome.mjs";
 
@@ -412,6 +413,7 @@ test("a step that passes its 20 s deadline fails with its name; a late tab is cl
   resolveCreate({ id: 77 });
   await settle();
   assert.deepEqual(f.callsTo("tabs.remove"), [[77]]);
+  assert.equal(attachments(f.chrome).isRestoreTab(77), false, "the late tab is no restore tab of a running import");
 });
 
 test("the whole import has one deadline; the running step is named", async () => {

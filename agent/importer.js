@@ -10,6 +10,7 @@ import { toSetDetails, toRemoveDetails, inScope, dedupe } from "./lib/cookies.js
 import { normalizeEntry, covers } from "./lib/domains.js";
 import { replacePageState } from "./page-state.js";
 import { closeTabs, tabUrl } from "./tabs.js";
+import { attachments } from "./attach.js";
 
 // The link answers "timeout" at 115 s. Steps share 100 s, and each of the two
 // cleanup calls gets at most 4 s, so an import always ends before 110 s.
@@ -147,6 +148,9 @@ async function runImport(chrome, state, opts) {
   const nonce = opts.nonce || randomNonce;
   const restoreUrl = state.origin + "/__agentwatch_restore_" + nonce() + "__";
 
+  // The restore tab is never a bridge tab (C10): attach.js knows it from
+  // when its id is known until the import ends.
+  const att = attachments(chrome);
   const ctx = { tabId: null, tabPending: null, attached: false, listeners: [] };
   const listen = (event, fn) => {
     event.addListener(fn);
@@ -201,16 +205,18 @@ async function runImport(chrome, state, opts) {
 
     const cookies = await step("cookies", (signal) => replaceCookies(chrome, state, signal));
 
-    const tabId = await step("open tab", async () => {
+    const tabId = await step("open tab", async (signal) => {
       ctx.tabPending = chrome.tabs.create({ url: "about:blank", active: true });
       const tab = await ctx.tabPending;
       if (!tab || typeof tab.id !== "number") throw new Error("no tab");
       ctx.tabId = tab.id;
+      // A tab that came after the deadline is closed, and the import has ended.
+      if (!signal.aborted) att.markRestore(tab.id);
       return tab.id;
     });
     const target = { tabId };
 
-    await step("attach", () => chrome.debugger.attach(target, "1.3"));
+    await step("attach", () => att.attachRestore(tabId));
     ctx.attached = true;
 
     // Set by the restore page step; a failed fulfill fails that step.
@@ -283,7 +289,7 @@ async function runImport(chrome, state, opts) {
       await chrome.debugger.sendCommand(target, "Fetch.disable");
       // The detach ends this client's Network domain (and with it the service
       // worker bypass) and its Fetch domain.
-      await chrome.debugger.detach(target);
+      await att.detachRestore(tabId);
       ctx.attached = false;
     });
 
@@ -304,7 +310,7 @@ async function runImport(chrome, state, opts) {
   } catch (e) {
     // e is always an Error with a step's name: every statement that can throw
     // runs in a step, and a page that is not the restore page fails "restore page".
-    if (ctx.attached) await bounded(() => chrome.debugger.detach({ tabId: ctx.tabId }));
+    if (ctx.attached) await bounded(() => att.detachRestore(ctx.tabId));
     if (ctx.tabId !== null) {
       await bounded(() => chrome.tabs.remove(ctx.tabId));
     } else if (ctx.tabPending) {
@@ -316,6 +322,7 @@ async function runImport(chrome, state, opts) {
     throw e;
   } finally {
     for (const [event, fn] of ctx.listeners) event.removeListener(fn);
+    if (ctx.tabId !== null) att.clearRestore(ctx.tabId);
     clearTimer(importHandle);
   }
 }

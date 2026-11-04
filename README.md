@@ -113,6 +113,12 @@ The receiver runs only in the agent's Chrome on the box. agentwatch starts that
 Chrome with `--load-extension=<agent folder>` on each launch; you do not
 install it yourself. Its ID is `dofdpnfachcncepdoondkeodcbnhipdc`.
 
+The native host `sh.agentwatch.browser` is agentwatch's, not this
+repository's. Its check that its parent Chrome runs on the agent profile
+(two-modes design, section 3.2) is built in agentwatch, with stage 4 (board
+ab-v16.7). `test/live/host.py` here is a host for the live test only, and it
+does not check its parent.
+
 Chromium writes its indexed ruleset into `_metadata/` in the agent folder
 when it loads the receiver. So the folder must be writable by the OS user that
 runs the agent's Chrome: from a read-only folder, Chromium 156 does not load
@@ -140,6 +146,14 @@ the receiver at all (measured), and then nothing blocks.
   the list loses a site, the receiver removes every service worker of the
   profile before it closes the tabs; the sites that stay register theirs
   again on their next visit.
+- **The bridge (agent mode, contract C10):** on a second channel of the same
+  native link, agent-browser's relay calls a fixed list of 19 `chrome.*`
+  operations (attach, CDP commands, tabs, windows, downloads, content
+  settings) and gets a fixed list of Chrome events. The bridge checks each
+  request before it reaches Chrome: it never opens a `chrome:`, `file:` or
+  `javascript:` URL, never touches the restore tab of a running send, sets
+  content settings only for allowlisted hosts, and has no cookie operation.
+  At each link change it detaches every tab that it attached.
 
 ### Its permissions, and why
 
@@ -151,8 +165,10 @@ the receiver at all (measured), and then nothing blocks.
 | `webNavigation` | to know when the restore page has loaded, and to report a blocked navigation |
 | `declarativeNetRequest` | the allowlist block |
 | `nativeMessaging` | the link to the agentwatch daemon |
-| `debugger` | to serve the restore page from the extension (the site never sees that request) and to bypass the site's service worker during the import |
+| `debugger` | to serve the restore page from the extension (the site never sees that request) and to bypass the site's service worker during the import; the bridge's CDP commands |
 | `browsingData` | to remove the service workers when a site leaves the allowlist: a worker would otherwise answer a navigation to its host past the block |
+| `downloads` | the bridge: the relay follows and cancels downloads |
+| `contentSettings` | the bridge: the relay grants permissions (location, camera and others) for allowlisted hosts only |
 | host permission `<all_urls>` | the allowlist changes at run time, and an optional permission would need a click in a Chrome that nobody watches |
 
 ## What is not moved

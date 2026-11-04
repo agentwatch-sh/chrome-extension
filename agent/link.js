@@ -2,13 +2,13 @@
 // "main" runs its requests one at a time in arrival order (an import can take
 // 115 s); "bridge" starts each request as soon as it is joined, so a bridge
 // request never waits behind an import or behind another bridge request.
-import { CHANNELS, ChannelJoiner, jsonTooLarge } from "./wire.js";
+import { CHANNELS, ChannelJoiner, MAX_RESULT, RESULT_PART_BYTES, jsonTooLarge, splitBytes } from "./wire.js";
 
 const HOST_NAME = "sh.agentwatch.browser";
 const MAX_DELAY_MS = 30000;
 // The daemon waits 10 s (ping, set_allowlist) and 120 s (import); answer just before.
-// C10 sets the bridge's waits; until then a bridge request gets the default.
-const TIMEOUT_MS = { main: { import: 115000 }, bridge: {} };
+// The bridge sets the wait of each bridge request itself (C10).
+const TIMEOUT_MS = { import: 115000 };
 const DEFAULT_TIMEOUT_MS = 9000;
 // The native host drops a message while its daemon socket is down, and it says
 // {"t":"link","up":true} after each socket connect. So a notice (blocked) waits
@@ -19,15 +19,21 @@ const DEFAULT_TIMEOUT_MS = 9000;
 // drops it.
 const MAX_WAITING = 100;
 
-// The daemon drops the link at a message over MAX_TO_DAEMON (wire.js). So a res
-// over it goes as the error "too large", and any other message over it (or a
-// res whose error is still too large) is never sent.
-function fitForDaemon(msg) {
-  if (!jsonTooLarge(msg)) return msg;
-  if (msg.t !== "res") return null;
+// The daemon drops the link at a message over MAX_TO_DAEMON (wire.js). So a
+// bridge res over it goes in parts up to maxResult (C10), any other res over
+// it (or a bridge res over maxResult) goes as the error "too large", and any
+// other message over it (or a res whose error is still too large) is never
+// sent. Returns the messages to post, in order.
+export function fitForDaemon(msg, maxResult = MAX_RESULT, partBytes = RESULT_PART_BYTES) {
+  if (!jsonTooLarge(msg)) return [msg];
+  if (msg.t !== "res") return [];
+  if (msg.ch === "bridge") {
+    const bytes = new TextEncoder().encode(JSON.stringify(msg));
+    if (bytes.length <= maxResult) return splitBytes(msg.id, bytes, partBytes, "bridge");
+  }
   const fields = { id: msg.id, ok: false, error: "too large" };
   const res = Object.hasOwn(msg, "ch") ? { t: "res", ch: msg.ch, ...fields } : { t: "res", ...fields };
-  return jsonTooLarge(res) ? null : res;
+  return jsonTooLarge(res) ? [] : [res];
 }
 
 export class ReceiverLink {
@@ -35,7 +41,10 @@ export class ReceiverLink {
   #handlers;
   #setTimer;
   #clearTimer;
-  #generation = 0;
+  #onLinkChange;
+  #generation = 0; // counts the disconnects
+  #bridgeGeneration = 0; // counts the disconnects and the link ups
+  #bridgeUsed = false; // a bridge request came on this daemon connection
   #port = null;
   #joiner = new ChannelJoiner();
   #queue = []; // main requests only
@@ -44,12 +53,17 @@ export class ReceiverLink {
   #waiting = [];
   #delay = 1000;
 
-  // handlers: {main: {op: (req) => data}, bridge: {op: (req) => data}}.
-  constructor(chrome, handlers, { setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = (h) => clearTimeout(h) } = {}) {
+  // handlers: {main: {op: (req) => data}, bridge: (req) => data}. The bridge
+  // handler sets its own waits and error texts (C10). onLinkChange runs at
+  // each disconnect and each link up (C10's cleanup).
+  constructor(chrome, handlers, {
+    setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = (h) => clearTimeout(h), onLinkChange = () => {},
+  } = {}) {
     this.#chrome = chrome;
     this.#handlers = handlers;
     this.#setTimer = setTimer;
     this.#clearTimer = clearTimer;
+    this.#onLinkChange = onLinkChange;
   }
 
   start() {
@@ -64,12 +78,41 @@ export class ReceiverLink {
       return;
     }
     if (!this.#port) return;
-    const out = fitForDaemon(msg);
-    if (out === null) return;
+    // All parts of one res go in one go: no other message comes between them.
+    for (const out of fitForDaemon(msg)) this.#post(out);
+  }
+
+  // A bridge event (C10) goes at once while eventsOpen(), else it is dropped:
+  // it never waits like a notice. The bridge sends bridge.tooLarge in place
+  // of an event over MAX_TO_DAEMON.
+  sendEvent(ev) {
+    if (!this.eventsOpen() || jsonTooLarge(ev)) return;
+    this.#post(ev);
+  }
+
+  // True while the link is up and a bridge request came on this daemon
+  // connection: a daemon that does not use the bridge gets no bridge event.
+  eventsOpen() {
+    return this.#port !== null && this.#linkUp && this.#bridgeUsed;
+  }
+
+  #post(out) {
     try {
       this.#port.postMessage(out);
     } catch {
       // The port is closing; onDisconnect schedules the reconnect.
+    }
+  }
+
+  // A disconnect or a new daemon connection: the bridge answers that still
+  // run belong to the old one, and the bridge cleans up.
+  #linkChanged() {
+    this.#bridgeGeneration += 1;
+    this.#bridgeUsed = false;
+    try {
+      void Promise.resolve(this.#onLinkChange()).catch(() => {});
+    } catch {
+      // The cleanup ignores its errors.
     }
   }
 
@@ -81,6 +124,7 @@ export class ReceiverLink {
     const port = this.#chrome.runtime.connectNative(HOST_NAME);
     this.#port = port;
     this.#linkUp = false;
+    this.#bridgeUsed = false;
     this.#joiner = new ChannelJoiner();
     port.onMessage.addListener((msg) => {
       if (this.#port !== port) return;
@@ -93,6 +137,7 @@ export class ReceiverLink {
       this.#port = null;
       this.#generation += 1;
       this.#queue = [];
+      this.#linkChanged();
       const ms = this.#delay;
       this.#delay = Math.min(this.#delay * 2, MAX_DELAY_MS);
       this.#setTimer(() => this.#connect(), ms);
@@ -107,6 +152,7 @@ export class ReceiverLink {
         // A new daemon connection: the unfinished parts came from the old one.
         this.#joiner = new ChannelJoiner();
         this.#linkUp = true;
+        this.#linkChanged();
         this.#hello();
         const waiting = this.#waiting;
         this.#waiting = [];
@@ -123,16 +169,16 @@ export class ReceiverLink {
         this.#queue.push(req);
         this.#drain();
       } else {
+        this.#bridgeUsed = true;
         void this.#answer(ch, req);
       }
     }
   }
 
-  #withTimeout(promise, ch, op) {
+  #withTimeout(promise, op) {
     let handle;
     const timeout = new Promise((_, reject) => {
-      const table = TIMEOUT_MS[ch] ?? {};
-      const ms = Object.hasOwn(table, op) ? table[op] : DEFAULT_TIMEOUT_MS;
+      const ms = Object.hasOwn(TIMEOUT_MS, op) ? TIMEOUT_MS[op] : DEFAULT_TIMEOUT_MS;
       handle = this.#setTimer(() => reject(new Error("timeout")), ms);
     });
     const done = Promise.resolve(promise);
@@ -151,17 +197,27 @@ export class ReceiverLink {
   }
 
   // Runs one request and posts its res; it never rejects. A res names its
-  // channel in "ch", except on main, whose res stays as before channels.
+  // channel in "ch", except on main, whose res stays as before channels. A
+  // main answer is dropped after a disconnect, a bridge answer also after a
+  // link up (C10).
   async #answer(ch, req) {
-    const gen = this.#generation;
+    const generation = () => (ch === "main" ? this.#generation : this.#bridgeGeneration);
+    const gen = generation();
     const reply = (fields) => {
-      if (gen === this.#generation) this.send(ch === "main" ? { t: "res", ...fields } : { t: "res", ch, ...fields });
+      if (gen === generation()) this.send(ch === "main" ? { t: "res", ...fields } : { t: "res", ch, ...fields });
     };
     try {
-      const ops = (Object.hasOwn(this.#handlers, ch) && this.#handlers[ch]) || {};
-      const handler = Object.hasOwn(ops, req.op) ? ops[req.op] : null;
-      if (typeof handler !== "function") throw new Error("unknown op");
-      const data = await this.#withTimeout(handler(req), ch, req.op);
+      let data;
+      if (ch === "main") {
+        const ops = this.#handlers.main || {};
+        const handler = Object.hasOwn(ops, req.op) ? ops[req.op] : null;
+        if (typeof handler !== "function") throw new Error("unknown op");
+        data = await this.#withTimeout(handler(req), req.op);
+      } else {
+        const handler = this.#handlers.bridge;
+        if (typeof handler !== "function") throw new Error("unknown op");
+        data = await handler(req);
+      }
       reply({ id: req.id, ok: true, data });
     } catch (e) {
       reply({ id: req.id, ok: false, error: String(e && e.message ? e.message : "request failed") });
