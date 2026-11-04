@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { PART_BYTES, splitParts, PartJoiner } from "../receiver/wire.js";
+import { PART_BYTES, CHANNELS, splitParts, PartJoiner, ChannelJoiner } from "../receiver/wire.js";
 
 const big = () => ({ t: "req", id: "x", op: "import", pad: "a".repeat(1500001 - 43) });
 
@@ -79,4 +79,99 @@ test("after a bad part the later parts of that id never produce a request; a fre
   assert.equal(j.push(bad[2]), null);
   const fresh = splitParts("fresh", { t: "req", id: "f", op: "ping" });
   assert.deepEqual(j.push(fresh[0]), { t: "req", id: "f", op: "ping" });
+});
+
+// ---- channels: one joiner per channel ----
+
+const ping = (id) => ({ t: "req", id, op: "ping" });
+const noCh = ({ ch, ...part }) => part;
+
+test("the channels are main and bridge; splitParts names a channel only when asked", () => {
+  assert.deepEqual(CHANNELS, ["main", "bridge"]);
+  assert.ok(!Object.hasOwn(splitParts("a", ping("a"))[0], "ch"));
+  const parts = splitParts("b", big(), PART_BYTES, "bridge");
+  assert.equal(parts.length, 3);
+  for (const p of parts) assert.equal(p.ch, "bridge");
+});
+
+test("the parts of each channel join on their own, also when the channels interleave", () => {
+  const imp = splitParts("i", big(), PART_BYTES, "main");
+  const br = splitParts("i", { ...big(), id: "i", op: "x" }, PART_BYTES, "bridge"); // the same id on the other channel
+  const j = new ChannelJoiner();
+  assert.equal(j.push(imp[0]), null);
+  assert.equal(j.push(br[0]), null);
+  assert.equal(j.push(imp[1]), null);
+  assert.equal(j.push(br[1]), null);
+  assert.deepEqual(j.push(br[2]), { ch: "bridge", req: { ...big(), id: "i", op: "x" } });
+  assert.deepEqual(j.push(imp[2]), { ch: "main", req: big() });
+});
+
+test("a new id drops the unfinished request of its own channel only", () => {
+  const imp = splitParts("i", big());
+  const j = new ChannelJoiner();
+  assert.equal(j.push(imp[0]), null);
+  const first = splitParts("b1", big(), PART_BYTES, "bridge");
+  assert.equal(j.push(first[0]), null);
+  assert.deepEqual(j.push(splitParts("b2", ping("b2"), PART_BYTES, "bridge")[0]), { ch: "bridge", req: ping("b2") }, "b2 drops b1");
+  assert.equal(j.push(first[1]), null);
+  assert.equal(j.push(first[2]), null, "b1 never joins");
+  assert.equal(j.push(imp[1]), null);
+  assert.deepEqual(j.push(imp[2]), { ch: "main", req: big() }, "the bridge ids never dropped the import");
+  const later = splitParts("b3", big(), PART_BYTES, "bridge");
+  assert.equal(j.push(later[0]), null);
+  assert.deepEqual(j.push(splitParts("m", ping("m"))[0]), { ch: "main", req: ping("m") }, "a new main id");
+  assert.equal(j.push(later[1]), null);
+  assert.deepEqual(j.push(later[2]), { ch: "bridge", req: big() }, "the main id never dropped the bridge request");
+});
+
+test("a part without ch is channel main", () => {
+  const named = splitParts("i", big(), PART_BYTES, "main");
+  const j = new ChannelJoiner();
+  assert.equal(j.push(noCh(named[0])), null);
+  assert.equal(j.push(named[1]), null);
+  assert.deepEqual(j.push(noCh(named[2])), { ch: "main", req: big() }, "with and without ch, one channel");
+  const br = splitParts("b", big(), PART_BYTES, "bridge");
+  assert.equal(j.push(br[0]), null);
+  assert.equal(j.push(noCh(splitParts("a", big())[0])), null);
+  assert.equal(j.push(br[1]), null);
+  assert.deepEqual(j.push(br[2]), { ch: "bridge", req: big() }, "a part without ch never drops a bridge part");
+});
+
+test("a part with an unknown ch is dropped and changes no channel", () => {
+  const imp = splitParts("i", big());
+  const br = splitParts("b", big(), PART_BYTES, "bridge");
+  const j = new ChannelJoiner();
+  assert.equal(j.push(imp[0]), null);
+  assert.equal(j.push(br[0]), null);
+  for (const ch of ["other", "MAIN", "", null, 1, ["main"]]) {
+    assert.equal(j.push({ ...splitParts("z", ping("z"))[0], ch }), null, JSON.stringify(ch));
+  }
+  assert.equal(j.push(imp[1]), null);
+  assert.equal(j.push(br[1]), null);
+  assert.deepEqual(j.push(imp[2]), { ch: "main", req: big() });
+  assert.deepEqual(j.push(br[2]), { ch: "bridge", req: big() });
+});
+
+test("a bad part drops its own channel's request only", () => {
+  const imp = splitParts("i", big());
+  const br = splitParts("b", big(), PART_BYTES, "bridge");
+  const j = new ChannelJoiner();
+  assert.equal(j.push(imp[0]), null);
+  assert.equal(j.push(br[0]), null);
+  assert.equal(j.push({ ...br[1], b64: "!!!" }), null);
+  assert.equal(j.push(br[2]), null);
+  assert.equal(j.push(imp[1]), null);
+  assert.deepEqual(j.push(imp[2]), { ch: "main", req: big() });
+});
+
+test("the shared bridge vector splits and joins exactly", () => {
+  const v = JSON.parse(readFileSync(new URL("./vectors/parts-bridge.json", import.meta.url), "utf8"));
+  assert.equal(v.part_bytes, 10);
+  assert.equal(v.ch, "bridge");
+  assert.equal(v.parts.length, 4);
+  assert.deepEqual(splitParts(v.id, v.request, v.part_bytes, v.ch), v.parts);
+  const j = new ChannelJoiner();
+  let out = null;
+  for (const p of v.parts) out = j.push(p);
+  assert.deepEqual(out, { ch: "bridge", req: v.request });
 });

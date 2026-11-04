@@ -5,9 +5,13 @@ import { applyAllowlist } from "./dnr.js";
 import { importState } from "./importer.js";
 
 const link = new ReceiverLink(chrome, {
-  ping: async () => ({}),
-  set_allowlist: (req) => applyAllowlist(chrome, req.domains),
-  import: (req) => importState(chrome, req.state),
+  main: {
+    ping: async () => ({}),
+    set_allowlist: (req) => applyAllowlist(chrome, req.domains),
+    import: (req) => importState(chrome, req.state),
+  },
+  // C10 defines the bridge's ops; until then each bridge request gets "unknown op".
+  bridge: {},
 });
 
 watchBlocked(chrome, (msg) => link.send(msg));

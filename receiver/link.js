@@ -1,10 +1,14 @@
-// The receiver's native link to the daemon (contract C4).
-import { PartJoiner } from "./wire.js";
+// The receiver's native link to the daemon (contract C4). Two channels share it:
+// "main" runs its requests one at a time in arrival order (an import can take
+// 115 s); "bridge" starts each request as soon as it is joined, so a bridge
+// request never waits behind an import or behind another bridge request.
+import { CHANNELS, ChannelJoiner } from "./wire.js";
 
 const HOST_NAME = "sh.agentwatch.browser";
 const MAX_DELAY_MS = 30000;
 // The daemon waits 10 s (ping, set_allowlist) and 120 s (import); answer just before.
-const TIMEOUT_MS = { import: 115000 };
+// C10 sets the bridge's waits; until then a bridge request gets the default.
+const TIMEOUT_MS = { main: { import: 115000 }, bridge: {} };
 const DEFAULT_TIMEOUT_MS = 9000;
 // The native host drops a message while its daemon socket is down, and it says
 // {"t":"link","up":true} after each socket connect. So a notice (blocked) waits
@@ -22,13 +26,14 @@ export class ReceiverLink {
   #clearTimer;
   #generation = 0;
   #port = null;
-  #joiner = new PartJoiner();
-  #queue = [];
+  #joiner = new ChannelJoiner();
+  #queue = []; // main requests only
   #running = false;
   #linkUp = false;
   #waiting = [];
   #delay = 1000;
 
+  // handlers: {main: {op: (req) => data}, bridge: {op: (req) => data}}.
   constructor(chrome, handlers, { setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = (h) => clearTimeout(h) } = {}) {
     this.#chrome = chrome;
     this.#handlers = handlers;
@@ -56,14 +61,14 @@ export class ReceiverLink {
   }
 
   #hello() {
-    this.send({ t: "hello", v: 1, version: this.#chrome.runtime.getManifest().version });
+    this.send({ t: "hello", v: 2, version: this.#chrome.runtime.getManifest().version, channels: [...CHANNELS] });
   }
 
   #connect() {
     const port = this.#chrome.runtime.connectNative(HOST_NAME);
     this.#port = port;
     this.#linkUp = false;
-    this.#joiner = new PartJoiner();
+    this.#joiner = new ChannelJoiner();
     port.onMessage.addListener((msg) => {
       if (this.#port !== port) return;
       this.#delay = 1000;
@@ -95,18 +100,24 @@ export class ReceiverLink {
       return;
     }
     if (msg.t === "part") {
-      const req = this.#joiner.push(msg);
-      if (req && req.t === "req" && typeof req.id === "string") {
+      const joined = this.#joiner.push(msg);
+      if (!joined) return;
+      const { ch, req } = joined;
+      if (!req || req.t !== "req" || typeof req.id !== "string") return;
+      if (ch === "main") {
         this.#queue.push(req);
         this.#drain();
+      } else {
+        void this.#answer(ch, req);
       }
     }
   }
 
-  #withTimeout(promise, op) {
+  #withTimeout(promise, ch, op) {
     let handle;
     const timeout = new Promise((_, reject) => {
-      const ms = Object.hasOwn(TIMEOUT_MS, op) ? TIMEOUT_MS[op] : DEFAULT_TIMEOUT_MS;
+      const table = TIMEOUT_MS[ch];
+      const ms = Object.hasOwn(table, op) ? table[op] : DEFAULT_TIMEOUT_MS;
       handle = this.#setTimer(() => reject(new Error("timeout")), ms);
     });
     const done = Promise.resolve(promise);
@@ -118,23 +129,27 @@ export class ReceiverLink {
     if (this.#running) return;
     this.#running = true;
     try {
-      while (this.#queue.length > 0) {
-        const req = this.#queue.shift();
-        const gen = this.#generation;
-        const reply = (msg) => {
-          if (gen === this.#generation) this.send(msg);
-        };
-        try {
-          const handler = Object.hasOwn(this.#handlers, req.op) ? this.#handlers[req.op] : null;
-          if (typeof handler !== "function") throw new Error("unknown op");
-          const data = await this.#withTimeout(handler(req), req.op);
-          reply({ t: "res", id: req.id, ok: true, data });
-        } catch (e) {
-          reply({ t: "res", id: req.id, ok: false, error: String(e && e.message ? e.message : "request failed") });
-        }
-      }
+      while (this.#queue.length > 0) await this.#answer("main", this.#queue.shift());
     } finally {
       this.#running = false;
+    }
+  }
+
+  // Runs one request and posts its res; it never rejects. A res names its
+  // channel in "ch", except on main, whose res stays as before channels.
+  async #answer(ch, req) {
+    const gen = this.#generation;
+    const reply = (fields) => {
+      if (gen === this.#generation) this.send(ch === "main" ? { t: "res", ...fields } : { t: "res", ch, ...fields });
+    };
+    try {
+      const ops = (Object.hasOwn(this.#handlers, ch) && this.#handlers[ch]) || {};
+      const handler = Object.hasOwn(ops, req.op) ? ops[req.op] : null;
+      if (typeof handler !== "function") throw new Error("unknown op");
+      const data = await this.#withTimeout(handler(req), ch, req.op);
+      reply({ id: req.id, ok: true, data });
+    } catch (e) {
+      reply({ id: req.id, ok: false, error: String(e && e.message ? e.message : "request failed") });
     }
   }
 }
