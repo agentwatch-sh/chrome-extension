@@ -3,13 +3,14 @@
   "name": "agentwatch — agent mode (agent browser only)",
   "version": "0.2.0",
   "description": "For the agent browser only: writes sent sign-ins, blocks sites off the allowlist and carries the agent-mode bridge.",
-  "minimum_chrome_version": "120",
+  "minimum_chrome_version": "145",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAo4OyJeEiQdYHl5ohGNOAW48EGqCx8AOwFclTUf1ijzyqfManB1N7+NTmMAp5ws+rKWfQB4U03R5XonmYIZZhFJY6iV47v84vRviluvkB9p1kEJSJIgXb0gAFVTgn+1qOJesI+ITSpqvfUV2kUZM+DmddFSML40e+2TbAco/LT5p+ad4HfUx9blgkBnd2pelAuazUbfbV294/JlYa375K27d7VTAzzioNgfXJK36hcwbeEhh98QkyPkfY1ItFWbfqI5mVNGPmdYIlfXpOxKi/7+eTvBjx9p60DbDHPSakNQkuLeGVXWOIq/TheekWHMOL2QO40579Ge0F1OE+HA/OzwIDAQAB",
   "permissions": ["cookies", "scripting", "tabs", "webNavigation", "declarativeNetRequest", "nativeMessaging", "debugger", "browsingData", "downloads", "contentSettings"],
   "host_permissions": ["<all_urls>"],
   "declarative_net_request": {
     "rule_resources": [
-      { "id": "block_main_frame", "enabled": true, "path": "rules/block-main-frame.json" }
+      { "id": "block_main_frame", "enabled": true, "path": "rules/block-main-frame.json" },
+      { "id": "block_frames", "enabled": true, "path": "rules/block-frames.json" }
     ]
   },
   "background": { "service_worker": "sw.js", "type": "module" }

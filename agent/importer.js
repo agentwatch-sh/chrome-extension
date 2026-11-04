@@ -149,9 +149,10 @@ async function runImport(chrome, state, opts) {
   const restoreUrl = state.origin + "/__agentwatch_restore_" + nonce() + "__";
 
   // The restore tab is never a bridge tab (C10): attach.js knows it from
-  // when its id is known until the import ends.
+  // when its id is known until the import ends. From before tabs.create until
+  // then, a flag makes the eager attach of a new tab wait (known clears it).
   const att = attachments(chrome);
-  const ctx = { tabId: null, tabPending: null, attached: false, listeners: [] };
+  const ctx = { tabId: null, tabPending: null, attached: false, listeners: [], known: () => {} };
   const listen = (event, fn) => {
     event.addListener(fn);
     ctx.listeners.push([event, fn]);
@@ -206,13 +207,18 @@ async function runImport(chrome, state, opts) {
     const cookies = await step("cookies", (signal) => replaceCookies(chrome, state, signal));
 
     const tabId = await step("open tab", async (signal) => {
-      ctx.tabPending = chrome.tabs.create({ url: "about:blank", active: true });
-      const tab = await ctx.tabPending;
-      if (!tab || typeof tab.id !== "number") throw new Error("no tab");
-      ctx.tabId = tab.id;
-      // A tab that came after the deadline is closed, and the import has ended.
-      if (!signal.aborted) att.markRestore(tab.id);
-      return tab.id;
+      ctx.known = att.openingRestore();
+      try {
+        ctx.tabPending = chrome.tabs.create({ url: "about:blank", active: true });
+        const tab = await ctx.tabPending;
+        if (!tab || typeof tab.id !== "number") throw new Error("no tab");
+        ctx.tabId = tab.id;
+        // A tab that came after the deadline is closed, and the import has ended.
+        if (!signal.aborted) att.markRestore(tab.id);
+        return tab.id;
+      } finally {
+        ctx.known();
+      }
     });
     const target = { tabId };
 
@@ -321,6 +327,7 @@ async function runImport(chrome, state, opts) {
     }
     throw e;
   } finally {
+    ctx.known(); // a tabs.create that passed its deadline
     for (const [event, fn] of ctx.listeners) event.removeListener(fn);
     if (ctx.tabId !== null) att.clearRestore(ctx.tabId);
     clearTimer(importHandle);

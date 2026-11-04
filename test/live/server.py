@@ -9,7 +9,8 @@ because a socket path holds at most 107 bytes):
   stub box (the gateway's two extension routes, contract C9). Every other
   `*.localhost` host is a test site.
 - The stub daemon on `<sockets>/daemon.sock` (0600). The native host (host.py)
-  connects to it, and it speaks contract C4 to the receiver.
+  connects to it, and it speaks contract C4 to the receiver: channel main, and
+  channel bridge (C10) for the driver's bridge requests.
 - A control socket `<sockets>/ctl.sock` (0600) for the driver (live.py): one JSON
   request line in, one JSON answer line out.
 
@@ -95,8 +96,9 @@ class StubDaemon:
         self._cv = threading.Condition()
         self._conn: socket.socket | None = None
         self._hello: str | None = None
-        self._results: dict[str, dict] = {}
-        self._one = threading.Lock()  # one request at a time (C4)
+        self._results: dict[tuple[str, str], dict] = {}  # (channel, id) -> res
+        self._one = threading.Lock()  # one main request at a time (C4)
+        self._write = threading.Lock()  # the parts of one request go in one go
         self._next = 0
 
     def serve(self) -> None:
@@ -153,11 +155,13 @@ class StubDaemon:
             with self._cv:
                 self._hello = str(msg.get("version"))
                 self._cv.notify_all()
-            self.events.add("hello", v=msg.get("v"), version=msg.get("version"))
+            self.events.add("hello", v=msg.get("v"), version=msg.get("version"), channels=msg.get("channels"))
         elif t == "res":
             with self._cv:
-                self._results[str(msg.get("id"))] = msg
+                self._results[(str(msg.get("ch") or "main"), str(msg.get("id")))] = msg
                 self._cv.notify_all()
+        elif t == "ev" and msg.get("ch") == "bridge":
+            self.events.add("bridge-ev", **_ev_summary(msg))
         elif t == "blocked":
             self.events.add("blocked", tab=msg.get("tab"), host=msg.get("host"))
         else:
@@ -178,42 +182,59 @@ class StubDaemon:
             return True
 
     def request(self, op: str, timeout: float | None = None, **fields: object) -> dict:
-        """Send one request as C4 parts and wait for its result."""
+        """Send one main request as C4 parts and wait for its result."""
         wait = timeout if timeout is not None else DAEMON_TIMEOUT.get(op, DEFAULT_DAEMON_TIMEOUT)
         with self._one:
-            if not self.wait_hello(10.0):
-                return {"ok": False, "error": "no link"}
-            with self._cv:
-                self._next += 1
-                rid = "r%d" % self._next
-                conn = self._conn
-            body = json.dumps({"t": "req", "id": rid, "op": op, **fields}, separators=(",", ":"), ensure_ascii=False)
-            data = body.encode("utf-8")
-            slices = [data[i:i + PART_BYTES] for i in range(0, len(data), PART_BYTES)]
-            started = time.time()
-            try:
+            return self._call("main", "r", op, wait, fields)
+
+    def bridge(self, op: str, args: list, wait: int | None = None) -> dict:
+        """Send one bridge request (C10) and wait for its result. Bridge
+        requests run at the same time, also beside a main request."""
+        fields: dict = {"args": args}
+        if wait is not None:
+            fields["wait"] = wait
+        return self._call("bridge", "b", op, (wait or 30000) / 1000 + 2, fields)
+
+    def _call(self, ch: str, prefix: str, op: str, wait: float, fields: dict) -> dict:
+        if not self.wait_hello(10.0):
+            return {"ok": False, "error": "no link"}
+        with self._cv:
+            self._next += 1
+            rid = "%s%d" % (prefix, self._next)
+            conn = self._conn
+        body = json.dumps({"t": "req", "id": rid, "op": op, **fields}, separators=(",", ":"), ensure_ascii=False)
+        data = body.encode("utf-8")
+        slices = [data[i:i + PART_BYTES] for i in range(0, len(data), PART_BYTES)]
+        named = {"ch": ch} if ch != "main" else {}
+        started = time.time()
+        try:
+            with self._write:
                 for seq, sl in enumerate(slices):
-                    part = {"t": "part", "id": rid, "seq": seq, "n": len(slices), "b64": base64.b64encode(sl).decode("ascii")}
+                    part = {"t": "part", **named, "id": rid, "seq": seq, "n": len(slices),
+                            "b64": base64.b64encode(sl).decode("ascii")}
                     conn.sendall(json.dumps(part, separators=(",", ":")).encode("ascii") + b"\n")
-            except (OSError, AttributeError):
-                return {"ok": False, "error": "send failed"}
-            deadline = started + wait
-            with self._cv:
-                while rid not in self._results:
-                    left = deadline - time.time()
-                    if left <= 0:
-                        self.events.add("daemon-request", op=op, id=rid, parts=len(slices), bytes=len(data), ok=False, error="timeout")
-                        return {"ok": False, "error": "timeout"}
-                    self._cv.wait(timeout=min(left, 0.5))
-                res = self._results.pop(rid)
-            out = {"ok": bool(res.get("ok")), "secs": round(time.time() - started, 2)}
-            if res.get("ok"):
-                out["data"] = res.get("data")
-            else:
-                out["error"] = str(res.get("error"))
-            self.events.add("daemon-request", op=op, id=rid, parts=len(slices), bytes=len(data), ok=out["ok"],
-                            error=out.get("error"), secs=out["secs"], data=_summary_data(op, out.get("data")))
-            return out
+        except (OSError, AttributeError):
+            return {"ok": False, "error": "send failed"}
+        deadline = started + wait
+        kind = "daemon-request" if ch == "main" else "bridge-request"
+        with self._cv:
+            while (ch, rid) not in self._results:
+                left = deadline - time.time()
+                if left <= 0:
+                    self.events.add(kind, op=op, id=rid, parts=len(slices), bytes=len(data), ok=False, error="timeout")
+                    return {"ok": False, "error": "timeout"}
+                self._cv.wait(timeout=min(left, 0.5))
+            res = self._results.pop((ch, rid))
+        out = {"ok": bool(res.get("ok")), "secs": round(time.time() - started, 3)}
+        if res.get("ok"):
+            out["data"] = res.get("data")
+        else:
+            out["error"] = str(res.get("error"))
+        # A bridge result can hold page content: the log keeps the op and the outcome only.
+        summary = _summary_data(op, out.get("data")) if ch == "main" else None
+        self.events.add(kind, op=op, id=rid, parts=len(slices), bytes=len(data), ok=out["ok"],
+                        error=out.get("error"), secs=out["secs"], data=summary)
+        return out
 
     def set_allowlist(self, domains: list[str]) -> dict:
         self.allow = sorted(set(domains))
@@ -223,6 +244,37 @@ class StubDaemon:
 def _summary_data(op: str, data: object) -> object:
     # Import and allowlist results hold counts and "<name>: <reason>" errors only.
     return data if op in ("ping", "set_allowlist", "import") else None
+
+
+def _path(url: object) -> str | None:
+    return urllib.parse.urlsplit(url).path if isinstance(url, str) and url else None
+
+
+def _ev_summary(msg: dict) -> dict:
+    """A bridge event's name, tab and outcome; of a paused request its id and
+    path. Never a header, a body or other params."""
+    ev = msg.get("ev")
+    out: dict = {"ev": ev}
+    if ev == "debugger.onEvent":
+        src, params = msg.get("source") or {}, msg.get("params") or {}
+        out.update(tab=src.get("tabId"), method=msg.get("method"), session="sessionId" in src)
+        if msg.get("method") == "Fetch.requestPaused":
+            out.update(request_id=params.get("requestId"), path=_path((params.get("request") or {}).get("url")))
+    elif ev == "tabs.onCreated":
+        tab = msg.get("tab") or {}
+        out.update(tab=tab.get("id"), opener=tab.get("openerTabId"), active=tab.get("active"),
+                   path=_path(tab.get("pendingUrl") or tab.get("url")),
+                   attached=msg.get("attached"), held=msg.get("held"), error=msg.get("error"))
+    elif ev == "debugger.onDetach":
+        out.update(tab=(msg.get("source") or {}).get("tabId"), reason=msg.get("reason"))
+    elif ev in ("tabs.onUpdated", "tabs.onRemoved"):
+        out.update(tab=msg.get("tabId"), status=(msg.get("changeInfo") or {}).get("status"))
+    elif ev in ("webNavigation.onCreatedNavigationTarget", "webNavigation.onErrorOccurred"):
+        d = msg.get("details") or {}
+        out.update(tab=d.get("tabId"), source_tab=d.get("sourceTabId"), error=d.get("error"))
+    else:
+        out.update(tab=msg.get("tabId"))
+    return out
 
 
 # ---------------------------------------------------------------- reports
@@ -815,7 +867,7 @@ def make_handler(world: World) -> type:
             try:
                 if self.host == BOX_HOST:
                     self._box()
-                elif self.host.endswith(".localhost"):
+                elif self.host.endswith(".localhost") or self.host == "www.plain.test":
                     self._site()
                 else:
                     self._send(404, "unknown host")
@@ -951,9 +1003,14 @@ def make_handler(world: World) -> type:
             if p == "/nav":
                 page = common(NAV_HTML).replace("__OFF__", world.off()).replace("__OFF2__", world.off("off2"))
                 return self._send(200, page)
-            if p in ("/target", "/page"):
+            # /p/<name> and /f/<name>: a page and a frame whose path names one
+            # check, since the request log keeps no query value.
+            if p in ("/target", "/page") or p.startswith("/p/"):
                 return self._send(200, common(PAGE_HTML).replace("__HOST__", host))
-            if p == "/frame":
+            if p.startswith("/pf/"):  # a page with one frame, /f/<name>
+                frame = '<iframe src="/f/%s"></iframe></body>' % html.escape(p[len("/pf/"):], quote=True)
+                return self._send(200, common(PAGE_HTML).replace("__HOST__", host).replace("</body>", frame))
+            if p == "/frame" or p.startswith("/f/"):
                 return self._send(200, common(FRAME_HTML))
             if p == "/img.png":
                 return self._send(200, PNG, "image/png")
@@ -1032,6 +1089,10 @@ def control(world: World, req: dict) -> object:
         return world.daemon.request("ping")
     if op == "allow":
         return world.daemon.set_allowlist(list(req.get("domains") or []))
+    if op == "bridge":
+        return world.daemon.bridge(str(req.get("call")), list(req.get("args") or []), req.get("wait"))
+    if op == "import":
+        return world.daemon.request("import", state=req.get("state"))
     if op == "report":
         r = world.reports.get(str(req.get("rid")))
         return report_summary(r) if r else {"error": "no report"}

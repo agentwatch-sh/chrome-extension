@@ -1,8 +1,9 @@
 // Every chrome.debugger.attach of the agent package goes through this module:
 // the bridge's attach (contract C10) and the import's attach of its restore
-// tab (C6). So one place knows which tabs the bridge attached (the bridge
-// tabs) and which tab is the restore tab of a running import, which the bridge
-// never touches.
+// tab (C6), and the eager attach of a new tab with its hold (C10, hold.js).
+// So one place knows which tabs the bridge attached (the bridge tabs) and
+// which tab is the restore tab of a running import, which the bridge never
+// touches.
 //
 // A bridge tab is a tab that the bridge attached and did not detach since.
 // The bridge's attaches and detaches of one tab run in arrival order, one
@@ -10,6 +11,8 @@
 // count of resets) when it arrives. After a link change (reset) no bridge tab
 // is left: an op from before it attaches nothing, and an attach that was
 // still running then detaches its tab, as a tab of no connection.
+
+import { Holds } from "./hold.js";
 
 const PROTOCOL_VERSION = "1.3";
 
@@ -20,6 +23,7 @@ export function call(fn) {
 }
 
 const stale = () => new Error("detached");
+const message = (e) => String(e && e.message ? e.message : e);
 
 export class Attachments {
   #chrome;
@@ -27,12 +31,16 @@ export class Attachments {
   #chains = new Map(); // tabId -> {kind, epoch, run, done}: the last op of the tab that has not ended
   #epoch = 0; // counts the resets
   #restore = null; // the restore tab of the running import
+  #opening = null; // a promise while the import creates its restore tab and does not know its id
+  #eager = new Set(); // the tabs whose eager attach runs
+  #gone = new Set(); // of those, the tabs whose attachment Chrome ended meanwhile
   // The eager attach of a new tab (C10 bridge.attachNew). Off at the start
   // and after each reset.
   attachNew = false;
 
   constructor(chrome) {
     this.#chrome = chrome;
+    this.holds = new Holds(chrome);
   }
 
   isBridgeTab(tabId) {
@@ -41,6 +49,11 @@ export class Attachments {
 
   isRestoreTab(tabId) {
     return this.#restore !== null && this.#restore === tabId;
+  }
+
+  // True while the import creates its restore tab and does not know its id.
+  get restoreOpening() {
+    return this.#opening !== null;
   }
 
   // Runs fn(epoch) after the ops of the tab that came before it; the first op
@@ -80,25 +93,84 @@ export class Attachments {
     });
   }
 
+  // C10's eager attach of a new tab, one op of the tab's chain: the attach and
+  // the start of its hold, so an attach or a command of the relay comes after
+  // the hold's own Fetch.enable. The tab is a bridge tab once its hold is on.
+  // The hold's Fetch.enable goes right behind the attach, without waiting for
+  // its answer: Chrome runs the calls in order, and the tab's first request
+  // leaves a few ms after tabs.onCreated (C10 gives the measured numbers).
+  // While the import creates its restore tab and does not know its id, the op
+  // waits; then it skips the restore tab. skip: a tab that the bridge never
+  // attaches (a page of the agent package's own origin). A tab whose
+  // attachment Chrome ends during the op (the tab closed) is no bridge tab.
+  // Gives the fields of the tabs.onCreated event: attached, held, and error
+  // when Chrome refused the attach.
+  attachNewTab(tabId, skip = false) {
+    const no = { attached: false, held: false };
+    return this.#queue(tabId, "eager", async (epoch) => {
+      while (this.#opening) await this.#opening;
+      if (epoch !== this.#epoch || !this.attachNew || skip || this.isRestoreTab(tabId)) return no;
+      if (this.#tabs.has(tabId)) return { attached: true, held: false };
+      this.#eager.add(tabId);
+      try {
+        const attaching = call(() => this.#chrome.debugger.attach({ tabId }, PROTOCOL_VERSION));
+        const holding = this.holds.start(tabId);
+        try {
+          await attaching;
+        } catch (e) {
+          await holding;
+          this.holds.drop(tabId);
+          return { ...no, error: message(e) };
+        }
+        const held = await holding;
+        if (this.#gone.has(tabId)) {
+          this.holds.drop(tabId);
+          return no;
+        }
+        if (epoch !== this.#epoch) {
+          // A link change came while the attach ran: no connection owns the tab.
+          this.holds.drop(tabId);
+          await call(() => this.#chrome.debugger.detach({ tabId })).catch(() => {});
+          return no;
+        }
+        this.#tabs.add(tabId);
+        return { attached: true, held };
+      } finally {
+        this.#eager.delete(tabId);
+        this.#gone.delete(tabId);
+      }
+    });
+  }
+
+  // C10 bridge.release: ends the hold of the tab, after the ops of the tab
+  // that came before it. null also for a tab with no hold.
+  release(tabId) {
+    return this.#queue(tabId, "release", () => this.holds.release(tabId).then(() => null));
+  }
+
   // C10 debugger.detach: null also for a tab that is not a bridge tab. It
   // runs after the attach of the tab that came before it (the relay detaches
-  // after an attach that timed out).
+  // after an attach that timed out). A hold of the tab ends first.
   detach(tabId) {
     return this.#queue(tabId, "detach", async () => {
       if (!this.#tabs.has(tabId)) return null;
       this.#tabs.delete(tabId);
+      await this.holds.release(tabId, false); // the relay takes no request of a tab that it detaches
       await call(() => this.#chrome.debugger.detach({ tabId }));
       return null;
     });
   }
 
-  // Chrome ended the attachment itself (chrome.debugger.onDetach).
+  // Chrome ended the attachment itself (chrome.debugger.onDetach), also of a
+  // tab whose eager attach runs. True for a bridge tab.
   dropped(tabId) {
-    this.#tabs.delete(tabId);
+    if (this.#eager.has(tabId)) this.#gone.add(tabId);
+    this.holds.drop(tabId);
+    return this.#tabs.delete(tabId);
   }
 
   // C10's cleanup at the worker's start and at each link change: the eager
-  // attach goes off, and every bridge tab and every tab that
+  // attach goes off, every hold ends, and every bridge tab and every tab that
   // chrome.debugger.getTargets() reports as attached is detached (a worker
   // that started again knows no bridge tabs), except the restore tab of a
   // running import. Errors are ignored. The detaches go in the tabs' chains,
@@ -107,6 +179,7 @@ export class Attachments {
   async reset() {
     this.#epoch += 1;
     this.attachNew = false;
+    this.holds.releaseAll();
     const known = [...this.#tabs];
     this.#tabs.clear();
     const quiet = (tabId) => this.#queue(tabId, "detach", () => call(() => this.#chrome.debugger.detach({ tabId }))).catch(() => {});
@@ -126,9 +199,21 @@ export class Attachments {
     await Promise.all(detaching);
   }
 
-  // The import's restore tab (channel main, C6). The import marks the tab as
-  // soon as it knows its id and clears the mark when it ends; its attach and
+  // The import's restore tab (channel main, C6). The import sets a flag
+  // before it calls tabs.create (openingRestore), marks the tab as soon as it
+  // knows its id, then clears the flag (the function that openingRestore
+  // gives; it may run again), and clears the mark when it ends. Its attach and
   // detach of that tab come through here too.
+  openingRestore() {
+    let known;
+    const opening = new Promise((resolve) => (known = resolve));
+    this.#opening = opening;
+    return () => {
+      if (this.#opening === opening) this.#opening = null;
+      known();
+    };
+  }
+
   markRestore(tabId) {
     this.#restore = tabId;
   }

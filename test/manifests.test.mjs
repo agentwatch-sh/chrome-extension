@@ -83,7 +83,8 @@ test("agent manifest", () => {
   assert.equal(receiver.manifest_version, 3);
   assert.equal(receiver.version, "0.2.0");
   assert.equal(receiver.name, "agentwatch \u2014 agent mode (agent browser only)");
-  assert.equal(receiver.minimum_chrome_version, "120");
+  // The frame rule's topDomains (C5 rule 4) needs Chrome 141; 145 is the safe minimum.
+  assert.equal(receiver.minimum_chrome_version, "145");
   assert.equal(typeof receiver.description, "string");
   assert.ok(receiver.description.length <= 132, "Chrome's description limit");
   // Two-modes design, section 3.1; downloads and contentSettings for the bridge (C10).
@@ -96,6 +97,7 @@ test("agent manifest", () => {
   assert.deepEqual(receiver.host_permissions, ["<all_urls>"]);
   assert.deepEqual(receiver.declarative_net_request.rule_resources, [
     { id: "block_main_frame", enabled: true, path: "rules/block-main-frame.json" },
+    { id: "block_frames", enabled: true, path: "rules/block-frames.json" },
   ]);
   for (const k of ["content_scripts", "web_accessible_resources", "externally_connectable", "action"]) {
     assert.equal(k in receiver, false, k);
@@ -104,9 +106,13 @@ test("agent manifest", () => {
   assert.ok(existsSync(new URL("../agent/sw.js", import.meta.url)));
 });
 
-test("block rule is C5 rule 1", () => {
+test("the block rules are C5 rules 1 and 3", () => {
   assert.deepEqual(json("agent/rules/block-main-frame.json"), [
     { id: 1, priority: 1, action: { type: "block" }, condition: { resourceTypes: ["main_frame"] } },
+  ]);
+  // <object> and <embed> documents are DNR type object.
+  assert.deepEqual(json("agent/rules/block-frames.json"), [
+    { id: 3, priority: 1, action: { type: "block" }, condition: { resourceTypes: ["sub_frame", "object"] } },
   ]);
 });
 

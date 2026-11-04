@@ -1,6 +1,7 @@
 // The bridge (contract C10): in agent mode, agent-browser's relay drives this
 // Chrome through a fixed list of chrome.* calls (the ops), and the bridge
-// forwards a fixed list of chrome events. It has no CDP logic of its own.
+// forwards a fixed list of chrome events. It has no CDP logic of its own,
+// except the hold of a new tab (hold.js).
 //
 // The bridge checks each request in C10's order (the op, the args, the wait,
 // the tab); a request that fails a check never reaches Chrome. It calls Chrome
@@ -84,6 +85,16 @@ const agentTab = (c, [tabId]) => (c.att.isRestoreTab(tabId) ? "not an agent tab"
 // bridge did not attach.
 const attachedTab = (c, [target]) => (c.att.isBridgeTab(target.tabId) ? null : "not attached");
 
+// A client's Fetch.enable or Fetch.disable on a tab's own session changes
+// the hold of the tab (C10): the hold counts it as it goes to Chrome.
+function sendCommand(c, target, method, params) {
+  const sent = c.chrome.debugger.sendCommand(target, method, params === undefined ? {} : params);
+  if ((method === "Fetch.enable" || method === "Fetch.disable") && target.sessionId === undefined) {
+    c.att.holds.clientFetch(target.tabId, method, sent);
+  }
+  return sent;
+}
+
 function ownOrigin(c, tab) {
   const origin = c.chrome.runtime.getURL("");
   return [tab && tab.url, tab && tab.pendingUrl].some((u) => typeof u === "string" && u.startsWith(origin));
@@ -125,8 +136,7 @@ export const OPS = Object.freeze({
     })), { tab: agentTab }),
   "debugger.detach": op(["id"], 1, (c, [tabId]) => c.att.detach(tabId), { tab: agentTab, nullResult: true }),
   "debugger.sendCommand": op(["target", "string", "object"], 2,
-    (c, [target, method, params]) => c.chrome.debugger.sendCommand(target, method, params === undefined ? {} : params),
-    { tab: attachedTab, wait: WAIT_MAX_MS }),
+    (c, [target, method, params]) => sendCommand(c, target, method, params), { tab: attachedTab, wait: WAIT_MAX_MS }),
   "debugger.getTargets": op([], 0, (c) => c.chrome.debugger.getTargets()),
   "tabs.create": op(["newTab"], 1, (c, [props]) => c.chrome.tabs.create(props)),
   "tabs.get": op(["id"], 1, (c, [tabId]) => c.chrome.tabs.get(tabId)),
@@ -142,14 +152,10 @@ export const OPS = Object.freeze({
     (c, [type, details]) => c.chrome.contentSettings[type].set(details), { nullResult: true }),
   "contentSettings.clear": op(["contentType"], 1, (c, [type]) => c.chrome.contentSettings[type].clear({}), { nullResult: true }),
   "bridge.info": op([], 0, bridgeInfo),
-  // Until the eager attach is built (stage 2, part B), turning it on fails, so
-  // no relay takes a build without it for one that has it.
   "bridge.attachNew": op(["boolean"], 1, (c, [on]) => {
-    if (on) throw new Error("not in this build");
-    c.att.attachNew = false;
+    c.att.attachNew = on;
   }, { nullResult: true }),
-  // The hold of a new tab, which this ends, comes with the eager attach.
-  "bridge.release": op(["id"], 1, () => null, { nullResult: true }),
+  "bridge.release": op(["id"], 1, (c, [tabId]) => c.att.release(tabId), { nullResult: true }),
 });
 
 function argsFit(spec, args, domains) {
@@ -189,6 +195,11 @@ export class Bridge {
     this.#ctx = { chrome, att: this.#att, navigator };
     this.#setTimer = setTimer;
     this.#clearTimer = clearTimer;
+    Object.assign(this.#att.holds, {
+      setTimer,
+      clearTimer,
+      forward: (source, method, params) => this.#emit("debugger.onEvent", { source, method, params }),
+    });
     this.#listen();
   }
 
@@ -235,18 +246,25 @@ export class Bridge {
   #listen() {
     const c = this.#chrome;
     const att = this.#att;
-    // Only for a bridge tab: so never for the restore tab, whose attachment is the import's.
+    // Only for a bridge tab: so never for the restore tab, whose attachment is
+    // the import's, and never for the hold's own Fetch events.
     c.debugger.onEvent.addListener((source, method, params) => {
-      if (!source || !att.isBridgeTab(source.tabId)) return;
+      if (!source || att.holds.event(source, method, params) || !att.isBridgeTab(source.tabId)) return;
       this.#emit("debugger.onEvent", { source, method, params: params === undefined ? {} : params });
     });
     c.debugger.onDetach.addListener((source, reason) => {
-      if (!source || !att.isBridgeTab(source.tabId)) return;
-      att.dropped(source.tabId);
-      this.#emit("debugger.onDetach", { source, reason });
+      if (source && att.dropped(source.tabId)) this.#emit("debugger.onDetach", { source, reason });
     });
-    // The eager attach and the hold of a new tab come in a later part of stage 2.
-    c.tabs.onCreated.addListener((tab) => this.#emit("tabs.onCreated", { tab, attached: false, held: false }));
+    // While the eager attach is on, the event comes once the attach and the
+    // hold of the tab are on (or failed); an event of the tab that Chrome
+    // fires meanwhile can come before it. Off, it comes at once.
+    c.tabs.onCreated.addListener((tab) => {
+      if (!att.attachNew || !tab || !isId(tab.id)) {
+        this.#emit("tabs.onCreated", { tab, attached: false, held: false });
+        return;
+      }
+      void att.attachNewTab(tab.id, ownOrigin(this.#ctx, tab)).then((fields) => this.#emit("tabs.onCreated", { tab, ...fields }));
+    });
     c.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       if (!isObj(changeInfo) || !["url", "title", "status"].some((k) => Object.hasOwn(changeInfo, k))) return;
       this.#emit("tabs.onUpdated", { tabId, changeInfo, tab });

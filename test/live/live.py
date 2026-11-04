@@ -18,6 +18,7 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -149,6 +150,24 @@ class Live:
 
     def allow(self, domains: list[str]) -> dict:
         return self.ctl(op="allow", domains=domains)
+
+    # -- bridge helpers (C10, through the stub daemon's channel bridge)
+
+    def bridge(self, call: str, *args: object, wait: int | None = None) -> dict:
+        return self.ctl(op="bridge", call=call, args=list(args), wait=wait)
+
+    def cdp(self, tab: int, method: str, params: dict | None = None) -> dict:
+        return self.bridge("debugger.sendCommand", {"tabId": tab}, method, params or {})
+
+    def new_tab(self, url: str, attach: bool = True) -> int:
+        tab = (self.bridge("tabs.create", {"url": url, "active": True}).get("data") or {}).get("id")
+        if attach:
+            self.bridge("debugger.attach", tab)
+        return tab
+
+    def close_tab(self, tab: int | None) -> None:
+        if tab is not None:
+            self.bridge("tabs.remove", tab)
 
     # -- operator helpers
 
@@ -536,9 +555,253 @@ class Live:
                    posts=len(posts), screenshot=os.path.basename(shot))
         self.op.key("Escape")
 
+    # -- agent mode (C10, and the DNR rules 3 to 5 of C5)
+
+    def bridge_info(self) -> None:
+        r = self.bridge("bridge.info")
+        d = r.get("data") or {}
+        self.r.add("bridge.info answers on channel bridge", r.get("ok") is True and d.get("bridge") == 1
+                   and d.get("id") == self.env["receiver_id"], "stub daemon's bridge request",
+                   version=d.get("version"), full_version=d.get("fullVersion"))
+
+    def nav_header(self) -> None:
+        """Rule 5: a top-level navigation that the agent package starts sends Sec-Fetch-Site: none."""
+        tab = self.new_tab("about:blank")
+        m = self.ctl.mark()
+        self.cdp(tab, "Page.navigate", {"url": self.site("s1", "/p/hdr-navigate")})
+        nav = self.ctl.wait(m, 10, kind="req", path="/p/hdr-navigate")
+        self.ctl.wait(m, 10, kind="page", page_kind="page-load", page="/p/hdr-navigate")
+        m1 = self.ctl.mark()
+        self.cdp(tab, "Runtime.evaluate", {"expression": "location.href = '/p/hdr-script'", "userGesture": True})
+        script = self.ctl.wait(m1, 10, kind="req", path="/p/hdr-script")
+        self.ctl.wait(m1, 10, kind="page", page_kind="page-load", page="/p/hdr-script")
+        m2 = self.ctl.mark()
+        made = self.new_tab(self.site("s1", "/p/hdr-tabs-create"), attach=False)
+        created = self.ctl.wait(m2, 10, kind="req", path="/p/hdr-tabs-create")
+        m3 = self.ctl.mark()
+        self.cdp(tab, "Page.navigate", {"url": self.site("off", "/p/hdr-off")})
+        blocked = self.ctl.wait(m3, 10, kind="blocked", host="www.off.localhost")
+        time.sleep(1.0)
+        leaked = [e for e in self.ctl.events(m3) if e["kind"] == "req" and e["host"] == "www.off.localhost"]
+        self.close_tab(tab)
+        self.close_tab(made)
+        # Plain http to a host that is not localhost: Chrome sends no Sec-Fetch-*
+        # header there, and rule 5 must add none.
+        base = sorted(set(self.ctl(op="daemon_state")["allow"]))
+        self.allow(base + ["plain.test"])
+        plain_tab = self.new_tab("about:blank")
+        m4 = self.ctl.mark()
+        self.cdp(plain_tab, "Page.navigate", {"url": "http://www.plain.test:%d/p/hdr-plain" % self.port})
+        plain = self.ctl.wait(m4, 10, kind="req", path="/p/hdr-plain")
+        self.ctl.wait(m4, 10, kind="page", page_kind="page-load", page="/p/hdr-plain")
+        self.cdp(plain_tab, "Runtime.evaluate", {"expression": "location.href = '/p/hdr-plain-script'", "userGesture": True})
+        plain_script = self.ctl.wait(m4, 10, kind="req", path="/p/hdr-plain-script")
+        self.close_tab(plain_tab)
+        self.allow(base)
+        fetch_meta = lambda e: [e.get(k) for k in ("site", "user", "dest", "mode")] if e else None  # noqa: E731
+        self.r.add("plain http to a host that is not localhost: no Sec-Fetch-* header, also with rule 5",
+                   bool(plain) and bool(plain_script) and fetch_meta(plain) == [None] * 4 and fetch_meta(plain_script) == [None] * 4,
+                   "server request log: Sec-Fetch-Site, -User, -Dest, -Mode", navigate=fetch_meta(plain), script=fetch_meta(plain_script))
+        hdr = lambda e: [e.get("site"), e.get("user")] if e else None  # noqa: E731
+        self.r.add("a Page.navigate sends Sec-Fetch-Site none and ?1, as a typed URL (rule 5)", hdr(nav) == ["none", "?1"],
+                   "server request log: Sec-Fetch-Site, Sec-Fetch-User", navigate=hdr(nav), tabs_create=hdr(created))
+        self.r.add("a page script's navigation keeps its own Sec-Fetch-Site (rule 5 names the extension only)",
+                   hdr(script) == ["same-origin", "?1"], "server request log", script=hdr(script))
+        self.r.add("a Page.navigate to an off-list host is still blocked (rule 1 holds under rule 5)",
+                   bool(blocked) and not leaked, "receiver blocked event; server log has no request for the host",
+                   blocked=bool(blocked), requests=len(leaked))
+
+    def frame_rule(self) -> None:
+        """Rules 3 and 4: no frame, <object> or <embed> document loads in a tab whose top-level page is not on the list."""
+        kinds = [h + "-" + t for h in ("off", "s1") for t in ("iframe", "object", "embed")]
+
+        def frames(via: str, doc: str = "document") -> str:
+            return ("for (const h of ['off', 's1']) for (const [t, a] of [['iframe', 'src'], ['object', 'data'], ['embed', 'src']]) {"
+                    " const e = %s.createElement(t); e[a] = 'http://www.' + h + '.localhost:%d/f/%s-' + h + '-' + t;"
+                    " %s.body.append(e); }") % (doc, self.port, via, doc)
+
+        def loaded(m: int, via: str) -> list[str]:
+            pre = "/f/%s-" % via
+            return sorted(e["path"][len(pre):] for e in self.ctl.events(m) if e["kind"] == "req" and e["path"].startswith(pre))
+
+        tab = self.new_tab("about:blank")
+        m = self.ctl.mark()
+        self.cdp(tab, "Runtime.evaluate", {"expression": frames("blank")})
+        time.sleep(2.0)
+        blank = loaded(m, "blank")
+        self.cdp(tab, "Page.navigate", {"url": self.site("s1", "/p/frame-top")})
+        self.ctl.wait(m, 10, kind="page", page_kind="page-load", page="/p/frame-top")
+        m1 = self.ctl.mark()
+        self.cdp(tab, "Runtime.evaluate", {"expression": frames("listed")})
+        for k in kinds:
+            self.ctl.wait(m1, 10, kind="req", path="/f/listed-" + k)
+        listed = loaded(m1, "listed")
+        # Measured, not a contract case: an about:blank popup of the allowlisted page.
+        m2 = self.ctl.mark()
+        self.cdp(tab, "Runtime.evaluate", {"expression": "(() => { const w = window.open(''); %s })()" % frames("popup", "w.document"),
+                                           "userGesture": True})
+        time.sleep(2.0)
+        popup = loaded(m2, "popup")
+        pop = self.ctl.wait(m2, 1, kind="bridge-ev", ev="tabs.onCreated")
+        self.close_tab((pop or {}).get("tab"))
+        self.close_tab(tab)
+        self.agent.shot("frame-rule")
+        self.r.add("no frame, <object> or <embed> loads under an about:blank top page, from any host (rules 3 and 4)", blank == [],
+                   "server request log", requests=blank)
+        self.r.add("frames, <object> and <embed> of an allowlisted top page load from any host (rule 4, O11)",
+                   listed == sorted(kinds), "server request log", requests=listed, about_blank_popup=popup)
+
+    def hold(self) -> None:
+        """C10's hold of a new tab, measured: each kind of new tab, many times.
+
+        The release comes DELAY s after tabs.onCreated. A trial's first
+        document request is caught when it reaches the server after the
+        release, and missed when it reaches the server before MISS_S after
+        the event: it left before the hold's Fetch was on. A request between
+        the two passed a hold that was on, and fails the case.
+        """
+        n = int(os.environ.get("HOLD_TRIALS", "10"))
+        delay, miss_s = 1.0, 0.1
+        opener = self.new_tab(self.site("s1", "/p/hold-opener"))
+        on = self.bridge("bridge.attachNew", True)
+        evaluate = lambda js: self.cdp(opener, "Runtime.evaluate", {"expression": js, "userGesture": True})  # noqa: E731
+        ways = {
+            "about:blank, then Page.navigate": lambda url: self.bridge("tabs.create", {"url": "about:blank", "active": True}),
+            "window.open": lambda url: evaluate("void window.open(%s)" % json.dumps(url)),
+            "link _blank": lambda url: evaluate("(() => { const a = document.createElement('a'); a.href = %s; a.target = '_blank'; "
+                                                "document.body.append(a); a.click(); a.remove(); })()" % json.dumps(url)),
+            "tabs.create with a URL": lambda url: self.bridge("tabs.create", {"url": url, "active": True}),
+        }
+
+        def trial(way: str, name: str, release: bool = True, client: bool = False, redirect: bool = False,
+                  frame: bool = False) -> dict:
+            final = ("/pf/" if frame else "/p/") + name
+            first = "/redirect" if redirect else final
+            url = self.site("s1", "/redirect?to=" + final if redirect else final)
+            m = self.ctl.mark()
+            t0 = time.time()
+            ways[way](url)
+            ev = self.ctl.wait(m, 10, kind="bridge-ev", ev="tabs.onCreated") or {}
+            tab = ev.get("tab")
+            if way.startswith("about:blank"):
+                # A client's navigation before its runIfWaitingForDebugger: Page.navigate
+                # answers only after the request, so it goes in its own thread.
+                threading.Thread(target=self.cdp, args=(tab, "Page.navigate", {"url": url}), daemon=True).start()
+            time.sleep(delay)
+            if client:
+                self.cdp(tab, "Fetch.enable", {"patterns": [{"urlPattern": "*", "resourceType": "Document"}]})
+            t_rel = time.time()
+            if release:
+                self.bridge("bridge.release", tab)
+            forwarded = None
+            if client:
+                forwarded = self.ctl.wait(m, 2, kind="bridge-ev", ev="debugger.onEvent", method="Fetch.requestPaused", tab=tab)
+                if forwarded:
+                    time.sleep(0.5)
+                    t_rel = time.time()  # the client's continue is the release here
+                    self.cdp(tab, "Fetch.continueRequest", {"requestId": forwarded["request_id"]})
+            req = self.ctl.wait(m, 10, kind="req", path=first)
+            page = self.ctl.wait(m, 10, kind="page", page_kind="page-load", page=final)
+            framed = self.ctl.wait(m, 10, kind="req", path="/f/" + name) if frame else None
+            evs = self.ctl.events(m)
+            pauses = [e for e in evs if e["kind"] == "bridge-ev" and e.get("method") == "Fetch.requestPaused"]
+            at = req["ts"] - ev["ts"] if req and ev else None
+            row = {"way": way, "attached": ev.get("attached"), "held": ev.get("held"), "error": ev.get("error"),
+                   "event_ms": round((ev["ts"] - t0) * 1000) if ev else None,
+                   "event_to_req_ms": round(at * 1000) if at is not None else None,
+                   "caught": bool(req) and req["ts"] >= t_rel, "missed": at is not None and at < miss_s,
+                   "release_to_req_ms": round((req["ts"] - t_rel) * 1000) if req else None,
+                   "loaded": bool(page), "relay_pauses": [e.get("path") for e in pauses],
+                   "forwarded": (forwarded or {}).get("path"),
+                   "frame_before_release": bool(framed) and framed["ts"] < t_rel if frame else None}
+            if client:
+                self.cdp(tab, "Fetch.disable")
+            self.close_tab(tab)
+            time.sleep(0.3)
+            return row
+
+        rows = [trial(way, "hold-%d-%d" % (w, i)) for i in range(n) for w, way in enumerate(ways)]
+        fallback = [trial("window.open", "hold-max-%d" % i, release=False) for i in range(5)]
+        fallback += [trial("about:blank, then Page.navigate", "hold-max-blank-%d" % i, release=False) for i in range(2)]
+        client = [trial("window.open", "hold-client-%d" % i, client=True) for i in range(5)]
+        redirect = [trial("window.open", "hold-redirect-%d" % i, redirect=True) for i in range(5)]
+        framed = [trial("tabs.create with a URL", "hold-frame-%d" % i, frame=True) for i in range(3)]
+        self.bridge("bridge.attachNew", False)
+        off = [trial("window.open", "hold-off-%d" % i, release=False) for i in range(3)]
+        self.close_tab(opener)
+        with open(os.path.join(self.run, "hold.json"), "w", encoding="utf-8") as f:
+            json.dump({"rows": rows, "fallback": fallback, "client": client, "redirect": redirect, "framed": framed, "off": off},
+                      f, indent=1)
+
+        def stats(xs: list) -> list:
+            xs = sorted(x for x in xs if x is not None)
+            return [xs[0], xs[len(xs) // 2], xs[-1]] if xs else []
+
+        def sound(r: dict) -> bool:  # caught or missed, never passed through a hold that was on
+            return (r["caught"] or r["missed"]) and r["loaded"]
+
+        caught = {way: "%d of %d" % (sum(1 for r in rows if r["way"] == way and r["caught"]), n) for way in ways}
+        self.r.add("bridge.attachNew [true] answers null", on.get("ok") is True and on.get("data") is None, "bridge answer")
+        self.r.add("eager attach: each new tab is attached and held (tabs.onCreated)",
+                   all(r["attached"] is True and r["held"] is True for r in rows), "bridge tabs.onCreated events",
+                   event_ms_min_median_max={way: stats([r["event_ms"] for r in rows if r["way"] == way]) for way in ways})
+        self.r.add("the hold keeps a first document request that starts after it until bridge.release; the page then loads",
+                   all(sound(r) and not r["relay_pauses"] for r in rows)
+                   and all(r["caught"] for r in rows if r["way"].startswith("about:blank")),
+                   "server request time against tabs.onCreated and the release; page log; no hold event reached the relay",
+                   caught=caught, release_to_req_ms=stats([r["release_to_req_ms"] for r in rows if r["caught"]]))
+        self.r.add("HOLD_MAX_MS: a hold with no release ends after 5 s", all(
+                   r["missed"] or (r["event_to_req_ms"] is not None and 4700 <= r["event_to_req_ms"] <= 5800 and r["loaded"])
+                   for r in fallback) and any(not r["missed"] for r in fallback),
+                   "server request time against tabs.onCreated", event_to_req_ms=[r["event_to_req_ms"] for r in fallback])
+        self.r.add("a client's Fetch.enable during the hold: the held request's Fetch.requestPaused reaches the relay, "
+                   "and the client continues it", all(sound(r) and (r["missed"] or r["forwarded"] == "/p/" + "hold-client-%d" % i)
+                                                      for i, r in enumerate(client)) and any(r["forwarded"] for r in client),
+                   "bridge debugger.onEvent; server request time against the client's continue",
+                   forwarded=[r["forwarded"] for r in client], release_to_req_ms=[r["release_to_req_ms"] for r in client])
+        self.r.add("a held request that redirects loads after the release", all(sound(r) for r in redirect)
+                   and any(r["caught"] for r in redirect), "server request time; page log",
+                   release_to_req_ms=[r["release_to_req_ms"] for r in redirect])
+        self.r.add("a frame of a page that the hold missed loads at once, not at the release",
+                   all(r["frame_before_release"] for r in framed if r["missed"]) and any(r["missed"] for r in framed),
+                   "the frame's request time at the server against the release (the page's own request left before the hold)",
+                   frame_before_release=[r["frame_before_release"] for r in framed], missed=[r["missed"] for r in framed])
+        self.r.add("bridge.attachNew [false]: a new tab is neither attached nor held", all(
+                   r["attached"] is False and r["held"] is False and r["loaded"] for r in off),
+                   "bridge tabs.onCreated events", event_to_req_ms=[r["event_to_req_ms"] for r in off])
+
+    def hold_import(self) -> None:
+        """The eager attach never attaches the import's restore tab (C10)."""
+        self.bridge("bridge.attachNew", True)
+        state = {"v": 1, "domain": "s1.localhost", "origin": "http://www.s1.localhost:%d" % self.port,
+                 "url": self.site("s1", "/p/after-import"), "cookies": [],
+                 "storage": {"local": {"made_up": "1"}, "session": {}, "idb": [], "caches": []}}
+        m = self.ctl.mark()
+        res = self.ctl(op="import", state=state)
+        self.ctl.wait(m, 10, kind="page", page_kind="page-load", page="/p/after-import")
+        time.sleep(1.0)
+        evs = self.ctl.events(m)
+        created = [e for e in evs if e["kind"] == "bridge-ev" and e["ev"] == "tabs.onCreated"]
+        restore = [e for e in created if e.get("active")]
+        rtab = restore[0]["tab"] if restore else None
+        onev = [e for e in evs if e["kind"] == "bridge-ev" and e["ev"] == "debugger.onEvent" and e.get("tab") == rtab]
+        self.bridge("bridge.attachNew", False)
+        for e in created:
+            if e.get("held"):
+                self.bridge("bridge.release", e["tab"])
+        counts = res.get("data") or {}
+        self.r.add("an import with the eager attach on: the restore tab is neither attached nor held, and the import succeeds",
+                   res.get("ok") is True and counts.get("local") == 1 and len(restore) == 1 and restore[0].get("attached") is False
+                   and restore[0].get("held") is False and not onev,
+                   "import answer; bridge tabs.onCreated events; no debugger event of the restore tab reached the relay",
+                   import_ok=res.get("ok"), error=res.get("error"), local=counts.get("local"),
+                   created=[[e.get("tab"), e.get("active"), e.get("attached"), e.get("held")] for e in created],
+                   restore_debugger_events=len(onev))
+
 
 CASES = ["link", "stub_refusals", "static_block", "agent_old_state", "add_box", "operator_setup", "popup_before_login",
-         "box_login", "send_s1", "nav_cases", "allowlist_change", "service_worker", "sw_removed", "big30", "big33"]
+         "box_login", "send_s1", "nav_cases", "allowlist_change", "service_worker", "sw_removed", "big30", "big33",
+         "bridge_info", "nav_header", "frame_rule", "hold", "hold_import"]
 
 
 def main() -> int:

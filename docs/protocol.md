@@ -170,6 +170,35 @@ side is stage 4 of the two-modes design (agentwatch).
   rule id 2, priority 2, `{"type":"allow"}`, `requestDomains` = the list, `resourceTypes:
   ["main_frame"]`; no rule 2 when the list is empty. So the block holds from Chromium's first moment,
   before the service worker runs.
+- Three more rules come from the two-modes design (sections 7 and 8). Each `set_allowlist` writes the
+  dynamic rules 2, 4 and 5 in one `updateDynamicRules` call, so the daemon's `allowlist` line to the
+  relay (C10) always comes after them. The answer's `rules` still counts rule 2 only.
+  - The frame rules, as rules 1 and 2 for pages. The static ruleset `block_frames`
+    (`rules/block-frames.json`, enabled in the manifest): rule id 3, priority 1, `{"type":"block"}`,
+    `resourceTypes: ["sub_frame", "object"]` (an `<object>` or `<embed>` document is type `object`).
+    The dynamic rule id 4, priority 2, `{"type":"allow"}`, `topDomains` = the list, the same
+    `resourceTypes`; no rule 4 when the list is empty. A CDP client can make a top-level document
+    with no request (`about:blank`, `setContent`) and put any host in a frame, an `<object>` or an
+    `<embed>` there; these rules load such a document only in a tab whose top-level domain is on the
+    list. A page of an allowlisted site still loads them from any host (O11). Measured on Chromium
+    156: no frame, `<object>` or `<embed>` document loads under an `about:blank` tab, also from an
+    allowlisted host; under an allowlisted page all three load, also from an off-list host; an
+    `about:blank` popup of an allowlisted page loads them too. `topDomains` needs Chrome 141; the receiver's `minimum_chrome_version` is 145,
+    a safe minimum.
+  - The navigation-header rule: dynamic rule id 5, priority 3, `{"type":"modifyHeaders",
+    "requestHeaders":[{"header":"sec-fetch-site","operation":"set","value":"none"}]}`,
+    `resourceTypes: ["main_frame"]`, `initiatorDomains` = the receiver's own ID (`chrome.runtime.id`),
+    `regexFilter` = `^(https://|http://(localhost|[^/:]+\.localhost|127\.[0-9]+\.[0-9]+\.[0-9]+|\[::1\])(:[0-9]+)?/)`.
+    Chrome names the extension as the initiator of a top-level request that it starts (a bridge
+    `Page.navigate`, `tabs.create`), so without the rule a `Page.navigate` sends `Sec-Fetch-Site:
+    cross-site`. Chrome sends `Sec-Fetch-*` headers only to a potentially trustworthy URL (`https:`,
+    and `http:` to `localhost`, `*.localhost`, `127.0.0.0/8` or `[::1]`), so the `regexFilter` keeps
+    the rule to those: a `Sec-Fetch-Site` on another `http:` URL would mark the agent browser.
+    Measured on Chromium 156: a `Page.navigate` sends `none` and `Sec-Fetch-User: ?1`, as a typed
+    URL; a page script's navigation keeps `same-origin`; a `Page.navigate` to an off-list host is
+    still blocked; a `Page.navigate` and a page script's navigation to a plain-`http:` host that is
+    not localhost send no `Sec-Fetch-*` header. Chrome applies a `modifyHeaders` rule only above the
+    priority of every `allow` rule that matches, so its priority is above rule 2's.
 - `set_allowlist` replaces the list. An entry that is not a normalized entry (C5 rules, equal to its
   normalized form) is refused and counted in `refused`; the valid entries apply, so an invalid entry
   never keeps an older, wider rule. A `domains` that is not a list applies as an empty list.
@@ -484,15 +513,32 @@ reach Chrome in the order in which the relay sent them. Playwright needs that, f
     of the daemon and of the receiver.
 - The receiver sets no bound of its own (C4).
 
-**The hold of a new tab.** Not measured: stage 2 measures it with the probe's popup cases. If Chrome
-acts otherwise, stage 2 changes this text.
+**The hold of a new tab.** Measured in stage 2 on Chromium 156 (the live test's case `hold`,
+`test/live/README.md`). Chrome starts the first request of many new tabs before an extension can
+hold it; the last bullet gives the numbers and what the relay does about it.
 
 - `bridge.attachNew` with `[true]` turns the eager attach on; `[false]` turns it off. It starts off,
   and it goes off at each link change. The relay turns it on while at least one client connection is
   open (C11).
 - While it is on, the receiver attaches each new tab in `tabs.onCreated` at once (it becomes a bridge
-  tab). It holds the tab's first document request with `Fetch`, so the tab waits as with Chrome's
-  `waitForDebuggerOnStart`. The event says `"attached":true,"held":true`.
+  tab), and it starts the hold: its own `Fetch.enable` on the tab with the one pattern
+  `{"urlPattern":"*","resourceType":"Document","requestStage":"Request"}`, sent right behind the
+  attach. The hold keeps each paused document request of the tab's top frame (the `frameId` that is
+  the id of the tab's target in `chrome.debugger.getTargets()`; each document request while that
+  answer has not come) until the release, so the tab waits as with Chrome's
+  `waitForDebuggerOnStart`. A second top-level navigation during the hold waits too. It continues a
+  frame's document request at once (for example a frame of a page whose own request left before the
+  hold was on). The event comes when the attach and the hold are on, and says
+  `"attached":true,"held":true`.
+- `held` says that the hold is on, not that it caught a request: a request that Chrome started
+  before the hold was on goes to the site at once. `"attached":true,"held":false`: the hold's
+  `Fetch.enable` failed, or the relay had attached the tab first. With an `error` (Chrome refused
+  the attach), `attached` and `held` are false. A tab whose attachment Chrome ends during the eager
+  attach (the tab closed) says `"attached":false,"held":false`, and no `debugger.onDetach` comes for
+  it.
+- An event of the tab that Chrome fires while the receiver attaches it (for example `tabs.onUpdated`)
+  can come before the tab's `tabs.onCreated`. While the eager attach is off, `tabs.onCreated` comes
+  at once.
 - The receiver never attaches the restore tab of an import. The import sets a flag before it calls
   `tabs.create` for its restore tab, and it clears the flag when it knows that tab's id. A
   `tabs.onCreated` that comes while the flag is set waits until the import knows the id. Then the
@@ -502,15 +548,48 @@ acts otherwise, stage 2 changes this text.
   one, the receiver skips them too.
 - The relay sends `bridge.release` after the client's `Runtime.runIfWaitingForDebugger` on that tab
   got its answer, or before it detaches a tab that no connection took. `debugger.detach` releases the
-  hold too. The receiver releases a hold itself after `HOLD_MAX_MS = 5000`, so a tab never waits for
-  a relay that does not answer.
-- A release when no client turned `Fetch` on: the receiver continues the held request
-  (`Fetch.continueRequest`) and ends its own `Fetch` on the tab (`Fetch.disable`).
-- A release when a client turned `Fetch` on for that tab during the hold (a `debugger.sendCommand`
-  of `Fetch.enable` without a `sessionId`): the receiver neither continues the held request nor
-  calls `Fetch.disable`. It sends the held request's `Fetch.requestPaused` event to the relay, and
-  the client continues the request. So the client's routes see the first request too.
-- The hold's own `Fetch` events never reach the relay, except that one `Fetch.requestPaused`.
+  hold too. The receiver releases a hold itself after `HOLD_MAX_MS = 5000` (from when the hold is
+  on), so a tab never waits for a relay that does not answer.
+- One `Fetch` handler serves the tab's session, for the hold and for the client. So a client's
+  `Fetch.enable` or `Fetch.disable` on the tab (a `debugger.sendCommand` without a `sessionId`)
+  changes the hold:
+  - A client's `Fetch.enable` replaces the hold's pattern. From its answer on, the tab's `Fetch`
+    events are the client's, and the hold pauses no more requests: a client pattern that does not
+    cover documents ends the hold of the tab's later documents. The requests that the hold keeps stay
+    paused.
+  - A client's `Fetch.disable` continues every paused request at once, also the held ones, and ends
+    `Fetch` on the tab. So the hold is over at its answer, and a later release does nothing.
+  - While such a client command waits for its answer, a release waits for that answer too. Else the
+    hold's `Fetch.disable` could reach Chrome after the client's `Fetch.enable` and end the client's
+    `Fetch`.
+- A release when no client turned `Fetch` on: the receiver continues the held requests
+  (`Fetch.continueRequest`) and ends its own `Fetch` on the tab (`Fetch.disable`). With no client
+  `Fetch` command in flight, it sends these calls before it answers any later request, so they
+  reach Chrome before the client's next command. Until `Fetch.disable` answers, the receiver
+  continues each request that the hold's `Fetch` still pauses (for example a redirect of a held
+  request).
+- A release when a client turned `Fetch` on for that tab during the hold: the receiver neither
+  continues the held requests nor calls `Fetch.disable`. It sends each held request's
+  `Fetch.requestPaused` event to the relay, and the client continues the request. So the client's
+  routes see the first request too.
+- A detach and a link change never give a held request to the relay: the receiver continues every
+  held request and calls `Fetch.disable`, because no client takes them.
+- The hold's own `Fetch` events never reach the relay, except those `Fetch.requestPaused` events.
+- Measured (taylor, Chromium 156 in Xvfb, 2026-11-04): Chrome creates a new tab's first request a
+  few ms after `tabs.onCreated` reaches the receiver, and the attach and `Fetch.enable` take 3 to
+  20 ms. The hold caught the first document request of:
+  - an `about:blank` tab that a client then navigates (`Page.navigate` during the hold): 10 of 10;
+  - a `window.open` popup (it starts in the opener's process): 24 of 25 (8 of 18 while the hold's
+    `Fetch.enable` waited for the attach's answer);
+  - a popup of a `target=_blank` link (`noopener`: a new process, where the attach takes 10 to
+    20 ms): 0 of 10;
+  - a `tabs.create` with a URL (Chrome starts the request before `tabs.onCreated`): 0 of 10.
+
+  A missed request loads while the client sets up its session, as without the hold; a frame of its
+  page loads at once. A held request reached the site 4 to 15 ms (median 5) after `bridge.release`.
+  A hold with no release ended 4992 to 5003 ms after `tabs.onCreated`. So the relay opens a tab that it must hold at `about:blank`, and
+  navigates it after the release, as Playwright's `newPage` and `goto` do. The receiver cannot hold
+  the first request of a `noopener` popup.
 
 **The daemon and the relay.**
 

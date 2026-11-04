@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { allowRule, applyAllowlist } from "../agent/dnr.js";
+import { allowRule, applyAllowlist, frameRule, headerRule, TRUSTWORTHY } from "../agent/dnr.js";
 import { makeFakeChrome } from "./fake-chrome.mjs";
 
 test("allowRule is C5 rule 2", () => {
@@ -11,6 +11,42 @@ test("allowRule is C5 rule 2", () => {
     condition: { requestDomains: ["a.example", "b.example"], resourceTypes: ["main_frame"] },
   });
   assert.equal(allowRule([]), null);
+});
+
+const ID = "abcdefghijklmnopabcdefghijklmnop"; // the fake's chrome.runtime.id
+
+test("frameRule and headerRule are C5 rules 4 and 5", () => {
+  // A frame and an <object> or <embed> document of a tab whose top-level page is on the list.
+  assert.deepEqual(frameRule(["a.example", "b.example"]), {
+    id: 4,
+    priority: 2,
+    action: { type: "allow" },
+    condition: { resourceTypes: ["sub_frame", "object"], topDomains: ["a.example", "b.example"] },
+  });
+  // With an empty list no top-level page is on the list: static rule 3 blocks every frame.
+  assert.equal(frameRule([]), null);
+  assert.deepEqual(headerRule(ID), {
+    id: 5,
+    priority: 3,
+    action: { type: "modifyHeaders", requestHeaders: [{ header: "sec-fetch-site", operation: "set", value: "none" }] },
+    condition: { resourceTypes: ["main_frame"], initiatorDomains: [ID], regexFilter: TRUSTWORTHY },
+  });
+  // Chrome applies a modifyHeaders rule only above the priority of every allow rule that matches.
+  assert.ok(headerRule(ID).priority > allowRule(["a.example"]).priority);
+});
+
+// Chrome sends Sec-Fetch-* only to a potentially trustworthy URL; the rule
+// must not add the header where Chrome sends none.
+test("the header rule's regexFilter covers the potentially trustworthy URLs only", () => {
+  const re = new RegExp(TRUSTWORTHY);
+  for (const u of ["https://a.example/", "https://a.example:8443/x", "http://localhost/", "http://localhost:8771/p",
+    "http://www.s1.localhost:8771/p?x=1", "http://127.0.0.1/", "http://127.1.2.3:80/", "http://[::1]:8080/"]) {
+    assert.ok(re.test(u), u);
+  }
+  for (const u of ["http://a.example/", "http://www.plain.test:8771/p", "http://localhost.a.example/", "http://127.0.0.1.a.example/",
+    "http://a.example/https://b.example/", "ftp://localhost/", "http://localhostx/"]) {
+    assert.ok(!re.test(u), u);
+  }
 });
 
 test("applyAllowlist updates the rule and closes uncovered tabs", async () => {
@@ -24,18 +60,20 @@ test("applyAllowlist updates the rule and closes uncovered tabs", async () => {
   ]);
   const r = await applyAllowlist(f.chrome, ["a.example", "b.example"]);
   assert.deepEqual(r, { rules: 1, closed: 2, refused: 0 });
-  const [args] = f.callsTo("declarativeNetRequest.updateDynamicRules");
-  assert.deepEqual(args[0].removeRuleIds, [2]);
-  assert.equal(args[0].addRules.length, 1);
+  // The three dynamic rules change in one call.
+  assert.deepEqual(f.callsTo("declarativeNetRequest.updateDynamicRules"), [[{
+    removeRuleIds: [2, 4, 5],
+    addRules: [allowRule(["a.example", "b.example"]), frameRule(["a.example", "b.example"]), headerRule(ID)],
+  }]]);
   assert.deepEqual(f.callsTo("tabs.remove").map((a) => a[0]).sort(), [3, 5]);
   assert.equal(f.callsTo("tabs.create").length, 0);
 });
 
-test("an empty list adds no rule", async () => {
+test("an empty list adds no allow rule", async () => {
   const f = makeFakeChrome();
   const r = await applyAllowlist(f.chrome, []);
   assert.deepEqual(r, { rules: 0, closed: 0, refused: 0 });
-  assert.deepEqual(f.callsTo("declarativeNetRequest.updateDynamicRules")[0][0], { removeRuleIds: [2], addRules: [] });
+  assert.deepEqual(f.callsTo("declarativeNetRequest.updateDynamicRules")[0][0], { removeRuleIds: [2, 4, 5], addRules: [headerRule(ID)] });
 });
 
 test("about:blank opens before the last tab of a window closes", async () => {
@@ -70,8 +108,7 @@ test("invalid entries are refused and counted; the valid ones apply, never an ol
     const r = await applyAllowlist(f.chrome, ["a.example", bad]);
     assert.deepEqual(r, { rules: 1, closed: 1, refused: 1 }, String(bad));
     const [[update]] = f.callsTo("declarativeNetRequest.updateDynamicRules");
-    assert.deepEqual(update.removeRuleIds, [2]);
-    assert.deepEqual(update.addRules.map((x) => x.condition.requestDomains), [["a.example"]]);
+    assert.deepEqual(update, { removeRuleIds: [2, 4, 5], addRules: [allowRule(["a.example"]), frameRule(["a.example"]), headerRule(ID)] });
     assert.deepEqual(f.callsTo("tabs.remove").map((a) => a[0]), [2]);
     assert.deepEqual(Object.keys(r), ["rules", "closed", "refused"]); // no entry is echoed
   }
@@ -79,12 +116,12 @@ test("invalid entries are refused and counted; the valid ones apply, never an ol
   const f = makeFakeChrome();
   const r = await applyAllowlist(f.chrome, ["EVIL.example", "x"]);
   assert.deepEqual(r, { rules: 0, closed: 0, refused: 2 });
-  assert.deepEqual(f.callsTo("declarativeNetRequest.updateDynamicRules")[0][0], { removeRuleIds: [2], addRules: [] });
+  assert.deepEqual(f.callsTo("declarativeNetRequest.updateDynamicRules")[0][0], { removeRuleIds: [2, 4, 5], addRules: [headerRule(ID)] });
   // A list that is not an array blocks everything.
   const g = makeFakeChrome();
   g.setTabs([{ id: 1, windowId: 1, url: "https://a.example/" }, { id: 2, windowId: 1, url: "chrome://newtab/" }]);
   assert.deepEqual(await applyAllowlist(g.chrome, "a.example"), { rules: 0, closed: 1, refused: 1 });
-  assert.deepEqual(g.callsTo("declarativeNetRequest.updateDynamicRules")[0][0], { removeRuleIds: [2], addRules: [] });
+  assert.deepEqual(g.callsTo("declarativeNetRequest.updateDynamicRules")[0][0], { removeRuleIds: [2, 4, 5], addRules: [headerRule(ID)] });
 });
 
 test("a tab already gone is not an error and is not counted", async () => {

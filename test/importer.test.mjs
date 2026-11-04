@@ -416,6 +416,40 @@ test("a step that passes its 20 s deadline fails with its name; a late tab is cl
   assert.equal(attachments(f.chrome).isRestoreTab(77), false, "the late tab is no restore tab of a running import");
 });
 
+// C10: the eager attach of a new tab waits while this flag is set, so it never
+// attaches the restore tab.
+test("the import's flag is set from before its tabs.create until it knows the tab's id, also when the create fails or passes its deadline", async () => {
+  const f = makeFakeChrome();
+  const att = attachments(f.chrome);
+  const seen = [];
+  f.impl["tabs.create"] = async (props) => {
+    seen.push(["create", att.restoreOpening]);
+    return { id: 41, ...props };
+  };
+  f.impl["debugger.attach"] = async ({ tabId }) => seen.push(["attach", att.restoreOpening, att.isRestoreTab(tabId)]);
+  assert.equal(att.restoreOpening, false);
+  await importState(f.chrome, makeState(), opts());
+  assert.deepEqual(seen, [["create", true], ["attach", false, true]], "the tab is marked when the flag clears");
+  assert.equal(att.restoreOpening, false);
+
+  const g = makeFakeChrome();
+  g.impl["tabs.create"] = async () => {
+    throw new Error("no window");
+  };
+  await rejectsWith(importState(g.chrome, makeState(), opts()), "open tab");
+  assert.equal(attachments(g.chrome).restoreOpening, false);
+
+  const h = makeFakeChrome();
+  const timers = fakeTimers();
+  h.impl["tabs.create"] = () => new Promise(() => {});
+  const p = importState(h.chrome, makeState(), opts(timers));
+  await settle();
+  assert.equal(attachments(h.chrome).restoreOpening, true);
+  timers.pending(20000)[0].fn();
+  await rejectsWith(p, "open tab");
+  assert.equal(attachments(h.chrome).restoreOpening, false);
+});
+
 test("the whole import has one deadline; the running step is named", async () => {
   const f = makeFakeChrome();
   f.autoNavigate = false;
