@@ -43,6 +43,7 @@ test("operator manifest", () => {
   assert.deepEqual(sender.permissions, ["cookies", "activeTab", "scripting", "storage"]);
   assert.deepEqual(sender.optional_host_permissions, ["*://*/*"]);
   assert.equal("host_permissions" in sender, false);
+  assert.equal("optional_permissions" in sender, false);
   assert.equal(sender.action.default_popup, "popup.html");
   assert.equal(sender.options_page, "options.html");
   assert.deepEqual(sender.background, { service_worker: "sw.js", type: "module" });

@@ -463,7 +463,7 @@ test("a bridge event goes only while the link is up and after a bridge request o
   sendReq(port, { t: "req", id: "b", op: "call" }, "bridge");
   assert.equal(link.eventsOpen(), true);
   link.sendEvent(ev(3));
-  link.sendEvent({ ...ev(4), pad: "p".repeat(MAX_TO_DAEMON) }); // the bridge sends bridge.tooLarge in its place
+  assert.equal(link.sendEvent({ ...ev(4), pad: "p".repeat(MAX_TO_DAEMON) }), false, "too large: the bridge sends bridge.tooLarge in its place");
   port.fireMessage({ t: "link", up: true }); // a new daemon connection: no event before its first bridge request
   link.sendEvent(ev(5));
   sendReq(port, { t: "req", id: "b2", op: "call" }, "bridge");

@@ -150,10 +150,14 @@ the receiver at all (measured), and then nothing blocks.
   native link, agent-browser's relay calls a fixed list of 19 `chrome.*`
   operations (attach, CDP commands, tabs, windows, downloads, content
   settings) and gets a fixed list of Chrome events. The bridge checks each
-  request before it reaches Chrome: it never opens a `chrome:`, `file:` or
-  `javascript:` URL, never touches the restore tab of a running send, sets
-  content settings only for allowlisted hosts, and has no cookie operation.
-  At each link change it detaches every tab that it attached.
+  request before it reaches Chrome: a new tab or window opens only
+  `about:blank` or an `http:` or `https:` URL (never a `chrome:`, `file:` or
+  `javascript:` URL); it never touches the restore tab of a running send,
+  sets content settings only for allowlisted hosts, and has no cookie
+  operation. A navigation is a CDP command (`Page.navigate`), which the
+  bridge passes on: the relay refuses a navigation to such a URL before it
+  reaches the bridge (contract C11). At each link change the bridge detaches
+  every tab that it attached.
 
 ### Its permissions, and why
 

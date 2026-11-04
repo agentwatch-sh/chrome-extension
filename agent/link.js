@@ -83,11 +83,13 @@ export class ReceiverLink {
   }
 
   // A bridge event (C10) goes at once while eventsOpen(), else it is dropped:
-  // it never waits like a notice. The bridge sends bridge.tooLarge in place
-  // of an event over MAX_TO_DAEMON.
+  // it never waits like a notice. Returns false, and sends nothing, for an
+  // event over MAX_TO_DAEMON: the bridge then sends bridge.tooLarge.
   sendEvent(ev) {
-    if (!this.eventsOpen() || jsonTooLarge(ev)) return;
+    if (!this.eventsOpen()) return true;
+    if (jsonTooLarge(ev)) return false;
     this.#post(ev);
+    return true;
   }
 
   // True while the link is up and a bridge request came on this daemon

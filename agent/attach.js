@@ -5,8 +5,11 @@
 // never touches.
 //
 // A bridge tab is a tab that the bridge attached and did not detach since.
-// After a link change (reset) no bridge tab is left: an attach that was still
-// running then detaches its tab when it ends, as a tab of no connection.
+// The bridge's attaches and detaches of one tab run in arrival order, one
+// after the other (a promise chain per tab). Each op takes the epoch (the
+// count of resets) when it arrives. After a link change (reset) no bridge tab
+// is left: an op from before it attaches nothing, and an attach that was
+// still running then detaches its tab, as a tab of no connection.
 
 const PROTOCOL_VERSION = "1.3";
 
@@ -16,10 +19,12 @@ export function call(fn) {
   return new Promise((resolve) => resolve(fn()));
 }
 
+const stale = () => new Error("detached");
+
 export class Attachments {
   #chrome;
   #tabs = new Set(); // the bridge tabs
-  #inflight = new Map(); // tabId -> {epoch, promise}: a bridge attach that runs
+  #chains = new Map(); // tabId -> {kind, epoch, run, done}: the last op of the tab that has not ended
   #epoch = 0; // counts the resets
   #restore = null; // the restore tab of the running import
   // The eager attach of a new tab (C10 bridge.attachNew). Off at the start
@@ -38,49 +43,53 @@ export class Attachments {
     return this.#restore !== null && this.#restore === tabId;
   }
 
-  // C10 debugger.attach: {already: true} for a bridge tab. A second attach
-  // while one runs joins it: both get its answer, the second with already
-  // true. An attach of a tab whose attach from before a reset still runs
-  // waits until that one has ended and detached.
-  attach(tabId) {
-    if (this.#tabs.has(tabId)) return Promise.resolve({ already: true });
-    const running = this.#inflight.get(tabId);
-    if (running && running.epoch === this.#epoch) return running.promise.then(() => ({ already: true }));
-    if (running) {
-      const again = () => this.attach(tabId);
-      return running.promise.then(again, again);
-    }
+  // Runs fn(epoch) after the ops of the tab that came before it; the first op
+  // of a tab runs at once. Gives fn's promise.
+  #queue(tabId, kind, fn) {
     const epoch = this.#epoch;
-    const entry = { epoch, promise: null };
-    entry.promise = call(() => this.#chrome.debugger.attach({ tabId }, PROTOCOL_VERSION))
-      .then(async () => {
-        if (epoch === this.#epoch) {
-          this.#tabs.add(tabId);
-          return;
-        }
-        // A link change came while the attach ran: no connection owns the tab.
-        await call(() => this.#chrome.debugger.detach({ tabId })).catch(() => {});
-        throw new Error("detached");
-      })
-      .finally(() => {
-        if (this.#inflight.get(tabId) === entry) this.#inflight.delete(tabId);
-      });
-    this.#inflight.set(tabId, entry);
-    return entry.promise.then(() => ({ already: false }));
+    const before = this.#chains.get(tabId);
+    const run = before ? before.done.then(() => fn(epoch)) : call(() => fn(epoch));
+    const entry = { kind, epoch, run, done: run.then(() => {}, () => {}) };
+    this.#chains.set(tabId, entry);
+    entry.done.then(() => {
+      if (this.#chains.get(tabId) === entry) this.#chains.delete(tabId);
+    });
+    return run;
   }
 
-  // C10 debugger.detach: null also for a tab that is not a bridge tab. A
-  // detach while an attach of the tab runs (the relay detaches after an
-  // attach that timed out) waits for that attach first.
+  // C10 debugger.attach: {already: true} for a bridge tab. A second attach
+  // while one runs (with no op of the tab between them) joins it: both get
+  // its answer, the second with already true. precheck() runs in the op,
+  // before Chrome's attach; it throws to refuse the tab.
+  attach(tabId, precheck = () => {}) {
+    const last = this.#chains.get(tabId);
+    if (last && last.kind === "attach" && last.epoch === this.#epoch) return last.run.then(() => ({ already: true }));
+    return this.#queue(tabId, "attach", async (epoch) => {
+      if (epoch !== this.#epoch) throw stale();
+      if (this.#tabs.has(tabId)) return { already: true };
+      await precheck();
+      if (epoch !== this.#epoch) throw stale();
+      await call(() => this.#chrome.debugger.attach({ tabId }, PROTOCOL_VERSION));
+      if (epoch !== this.#epoch) {
+        // A link change came while the attach ran: no connection owns the tab.
+        await call(() => this.#chrome.debugger.detach({ tabId })).catch(() => {});
+        throw stale();
+      }
+      this.#tabs.add(tabId);
+      return { already: false };
+    });
+  }
+
+  // C10 debugger.detach: null also for a tab that is not a bridge tab. It
+  // runs after the attach of the tab that came before it (the relay detaches
+  // after an attach that timed out).
   detach(tabId) {
-    const running = this.#inflight.get(tabId);
-    if (running) {
-      const again = () => this.detach(tabId);
-      return running.promise.then(again, again);
-    }
-    if (!this.#tabs.has(tabId)) return Promise.resolve(null);
-    this.#tabs.delete(tabId);
-    return call(() => this.#chrome.debugger.detach({ tabId })).then(() => null);
+    return this.#queue(tabId, "detach", async () => {
+      if (!this.#tabs.has(tabId)) return null;
+      this.#tabs.delete(tabId);
+      await call(() => this.#chrome.debugger.detach({ tabId }));
+      return null;
+    });
   }
 
   // Chrome ended the attachment itself (chrome.debugger.onDetach).
@@ -92,14 +101,15 @@ export class Attachments {
   // attach goes off, and every bridge tab and every tab that
   // chrome.debugger.getTargets() reports as attached is detached (a worker
   // that started again knows no bridge tabs), except the restore tab of a
-  // running import. Errors are ignored. A tab that a new connection attached
-  // while this runs stays attached.
+  // running import. Errors are ignored. The detaches go in the tabs' chains,
+  // so an attach of the new connection runs after them; a tab that the new
+  // connection attaches, or whose op still runs, keeps its state.
   async reset() {
     this.#epoch += 1;
     this.attachNew = false;
     const known = [...this.#tabs];
     this.#tabs.clear();
-    const quiet = (tabId) => call(() => this.#chrome.debugger.detach({ tabId })).catch(() => {});
+    const quiet = (tabId) => this.#queue(tabId, "detach", () => call(() => this.#chrome.debugger.detach({ tabId }))).catch(() => {});
     const detaching = known.map(quiet);
     let targets = [];
     try {
@@ -110,7 +120,7 @@ export class Attachments {
     for (const t of Array.isArray(targets) ? targets : []) {
       if (!t || t.attached !== true || !Number.isInteger(t.tabId)) continue;
       const id = t.tabId;
-      if (known.includes(id) || this.isRestoreTab(id) || this.#tabs.has(id) || this.#inflight.has(id)) continue;
+      if (known.includes(id) || this.isRestoreTab(id) || this.#tabs.has(id) || this.#chains.has(id)) continue;
       detaching.push(quiet(id));
     }
     await Promise.all(detaching);

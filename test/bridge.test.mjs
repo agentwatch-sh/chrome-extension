@@ -63,6 +63,7 @@ async function setup({ navigator = NAV, allowlist = V.allowlist, tabs = [] } = {
   return { f, link, bridge, timers, port, send, answer, resOf, evs, errorOf, att: attachments(f.chrome) };
 }
 // The chrome calls since mark, without the port's posts.
+const isEagerOn = (req) => req.op === "bridge.attachNew" && req.args[0] === true;
 const callsSince = (f, mark) => f.calls.slice(mark).filter(([p]) => p !== "port.postMessage");
 
 test("the bridge's constants and ops are C10's", () => {
@@ -86,6 +87,7 @@ test("the bridge's constants and ops are C10's", () => {
 test("each request vector makes its chrome call and gets the vector's res", async () => {
   const s = await setup({ tabs: [{ id: 7, windowId: 1, url: "https://a.example/" }] });
   for (const v of V.requests) {
+    if (isEagerOn(v.req)) continue; // the eager attach comes with the hold (below)
     if (v.chrome) s.f.impl[v.chrome[0]] = async () => structuredClone(v.res.data);
     const mark = s.f.calls.length;
     assert.deepEqual(await s.answer(v.req), v.res, v.req.id);
@@ -118,6 +120,9 @@ test("the checks run in C10's order: the op, the args, the wait, the tab", async
   const s = await setup();
   s.att.markRestore(5);
   assert.equal(await s.errorOf({ op: "cookies.getAll", args: "x", wait: 0 }), "unknown op");
+  const mark = s.f.calls.length;
+  assert.equal(await s.errorOf({ op: ["tabs.get"], args: [7] }), "unknown op", "an op is a string");
+  assert.deepEqual(callsSince(s.f, mark), []);
   assert.equal(await s.errorOf({ op: "tabs.remove", args: ["5"], wait: 0 }), "bad args");
   assert.equal(await s.errorOf({ op: "tabs.remove", args: [5], wait: 0 }), "bad wait");
   assert.equal(await s.errorOf({ op: "tabs.remove", args: [5], wait: 10 }), "not an agent tab");
@@ -137,6 +142,7 @@ test("the kinds of args: each case fits or gets bad args", async () => {
     ["windows.update", [1, { state: "maximized" }]],
     ["contentSettings.set", ["camera", { primaryPattern: "*://*.a.example/*", setting: "block" }]],
     ["contentSettings.set", ["clipboard", { primaryPattern: "https://sub.a.example:8443/*", setting: "allow" }]],
+    ["contentSettings.set", ["location", { primaryPattern: "http://a.example:65535/*", setting: "allow" }]],
     ["contentSettings.clear", ["automaticDownloads"]],
     ["bridge.attachNew", [false]],
   ];
@@ -169,6 +175,12 @@ test("the kinds of args: each case fits or gets bad args", async () => {
     ["contentSettings.set", ["location", { primaryPattern: "https://a.example/x", setting: "allow" }]],
     ["contentSettings.set", ["location", { primaryPattern: "ftp://a.example/*", setting: "allow" }]],
     ["contentSettings.set", ["location", { primaryPattern: "https://a.example/*", setting: "ask" }]],
+    // covers() alone takes these: the host must be a normalized C5 host, and the port 1 to 65535.
+    ["contentSettings.set", ["location", { primaryPattern: "https://.a.example/*", setting: "allow" }]],
+    ["contentSettings.set", ["location", { primaryPattern: "https://x..a.example/*", setting: "allow" }]],
+    ["contentSettings.set", ["location", { primaryPattern: "https://-.a.example/*", setting: "allow" }]],
+    ["contentSettings.set", ["location", { primaryPattern: "*://*.a.example:99999/*", setting: "allow" }]],
+    ["contentSettings.set", ["location", { primaryPattern: "https://a.example:0/*", setting: "allow" }]],
     ["contentSettings.clear", ["cookies"]],
     ["bridge.attachNew", ["true"]],
     ["bridge.release", []],
@@ -205,6 +217,9 @@ test("the wait: each op's default, a request's own wait, and timeout when it run
   s.timers[from].fn();
   await flush();
   assert.deepEqual(s.resOf("c1"), [{ t: "res", ch: "bridge", id: "c1", ok: false, error: "timeout" }]);
+  // The receiver never detaches after a timeout: the relay decides (no detach for awaitPromise, C10).
+  assert.deepEqual(s.f.callsTo("debugger.detach"), []);
+  assert.equal(s.att.isBridgeTab(7), true);
   finish({ result: { value: 2 } }); // Chrome ends the call later
   await flush();
   assert.equal(s.resOf("c1").length, 1, "never a second res");
@@ -276,6 +291,60 @@ test("debugger.detach: null with no call for a tab that is not a bridge tab; aft
   assert.equal((await s.answer({ t: "req", id: "c", op: "debugger.sendCommand", args: [{ tabId: 7 }, "Page.enable"] })).error, "not attached");
 });
 
+test("attach and detach of a tab run in arrival order: a detach in the same tick as the attach detaches it", async () => {
+  const s = await setup({ tabs: [{ id: 7, url: "https://a.example/" }] });
+  s.send({ t: "req", id: "a", op: "debugger.attach", args: [7] });
+  s.send({ t: "req", id: "d", op: "debugger.detach", args: [7] }); // the relay pipelines the requests of one tab
+  await flush();
+  assert.deepEqual(s.resOf("a").map((m) => m.data), [{ already: false }]);
+  assert.deepEqual(s.resOf("d").map((m) => m.data), [null]);
+  assert.deepEqual(s.f.callsTo("debugger.detach"), [[{ tabId: 7 }]]);
+  assert.equal(s.att.isBridgeTab(7), false);
+});
+
+test("a link change while the attach reads its tab: no attach, no bridge tab, no answer", async () => {
+  const s = await setup({ tabs: [{ id: 7, url: "https://a.example/" }] });
+  let give;
+  s.f.impl["tabs.get"] = (id) => new Promise((r) => (give = () => r({ id, url: "https://a.example/" })));
+  s.send({ t: "req", id: "old", op: "debugger.attach", args: [7] });
+  await flush();
+  s.port().fireMessage({ t: "link", up: true }); // a new daemon connection
+  await flush();
+  give();
+  await flush();
+  assert.deepEqual(s.resOf("old"), []);
+  assert.deepEqual(s.f.callsTo("debugger.attach"), [], "the attach belongs to no connection, so it never starts");
+  assert.equal(s.att.isBridgeTab(7), false);
+});
+
+test("attach, detach, attach: each runs after the one before, and the tab ends attached", async () => {
+  const s = await setup({ tabs: [{ id: 7, url: "https://a.example/" }] });
+  const done = [];
+  s.f.impl["debugger.attach"] = () => new Promise((r) => done.push(r));
+  s.send({ t: "req", id: "a1", op: "debugger.attach", args: [7] });
+  await flush();
+  s.send({ t: "req", id: "d1", op: "debugger.detach", args: [7] }); // the relay's detach after an attach timed out
+  s.send({ t: "req", id: "a2", op: "debugger.attach", args: [7] });
+  await flush();
+  assert.equal(done.length, 1);
+  done[0]();
+  await flush();
+  assert.equal(done.length, 2, "the second attach starts after the detach");
+  done[1]();
+  await flush();
+  assert.deepEqual(["a1", "d1", "a2"].map((id) => s.resOf(id).map((m) => m.data)), [[{ already: false }], [null], [{ already: false }]]);
+  assert.deepEqual(s.f.callsTo("debugger.detach"), [[{ tabId: 7 }]]);
+  assert.equal(s.att.isBridgeTab(7), true);
+});
+
+test("until the eager attach is built, bridge.attachNew [true] fails, so no build claims it; [false] answers null", async () => {
+  const s = await setup();
+  const on = V.requests.find((v) => isEagerOn(v.req)).req;
+  assert.deepEqual(await s.answer(on), { t: "res", ch: "bridge", id: on.id, ok: false, error: "not in this build" });
+  assert.equal(s.att.attachNew, false);
+  assert.deepEqual(await s.answer({ t: "req", id: "off", op: "bridge.attachNew", args: [false] }), { t: "res", ch: "bridge", id: "off", ok: true, data: null });
+});
+
 // ---- events ----
 
 // Fire a vector's chrome event on the fake.
@@ -333,13 +402,21 @@ test("an event above MAX_TO_DAEMON goes as bridge.tooLarge with what the relay n
   const big = "x".repeat(MAX_TO_DAEMON);
   s.f.chrome.debugger.onEvent.fire({ tabId: 7, sessionId: "A1B2C3" }, "Fetch.requestPaused", { requestId: "interception-job-4.0", request: { postData: big } });
   s.f.chrome.debugger.onEvent.fire({ tabId: 7 }, "Network.webSocketFrameReceived", { requestId: "9", response: { payloadData: big } });
+  s.f.chrome.tabs.onUpdated.fire(9, { title: big }, { id: 9, title: big });
+  s.f.chrome.tabs.onCreated.fire({ id: 10, pendingUrl: "data:text/html," + big });
+  s.f.chrome.webNavigation.onCreatedNavigationTarget.fire({ sourceTabId: 7, tabId: 11, url: "data:text/html," + big });
   s.f.chrome.downloads.onCreated.fire({ id: 3, url: "data:text/plain," + big });
   const want = V.eventVectors.filter((v) => v.ev.ev === "bridge.tooLarge").map((v) => v.ev);
+  const of = (name, method) => want.find((e) => e.of === name && e.method === method);
   assert.deepEqual(s.evs(), [
-    want.find((e) => e.method === "Fetch.requestPaused"),
-    want.find((e) => e.method === "Network.webSocketFrameReceived"),
-    { t: "ev", ch: "bridge", ev: "bridge.tooLarge", of: "downloads.onCreated", tabId: -1 },
+    of("debugger.onEvent", "Fetch.requestPaused"),
+    of("debugger.onEvent", "Network.webSocketFrameReceived"),
+    of("tabs.onUpdated"),
+    of("tabs.onCreated"),
+    of("webNavigation.onCreatedNavigationTarget"),
+    of("downloads.onCreated"),
   ]);
+  assert.equal(of("downloads.onCreated").tabId, -1, "a download names no tab");
 });
 
 // ---- the cleanup ----
@@ -347,8 +424,7 @@ test("an event above MAX_TO_DAEMON goes as bridge.tooLarge with what the relay n
 test("the cleanup at a link change: the eager attach goes off, every bridge tab and attached target is detached, except the restore tab", async () => {
   const s = await setup({ tabs: [{ id: 7, url: "https://a.example/" }, { id: 8, url: "https://a.example/" }] });
   await s.answer({ t: "req", id: "a7", op: "debugger.attach", args: [7] });
-  await s.answer({ t: "req", id: "on", op: "bridge.attachNew", args: [true] });
-  assert.equal(s.att.attachNew, true);
+  s.att.attachNew = true; // bridge.attachNew [true] comes with the hold
   s.att.markRestore(5);
   s.f.targets_ = [
     { id: "T5", tabId: 5, type: "page", attached: true },
