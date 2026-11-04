@@ -141,7 +141,21 @@ taylor, where the key lives:
 ```sh
 npm run pack:agent                  # writes dist/agent.crx (git-ignored); prints the ID and the version
 npm run pack:agent -- --key PATH    # another key file (or AGENT_KEY_PATH=PATH)
+npm run pack:agent -- --out release # writes release/agent.crx, the committed copy (below)
 ```
+
+- **The committed copy:** `release/agent.crx` is in the repository (board
+  task ab-v16.22). agentwatch pins a commit of this repository by its 40-hex
+  ID and installs that commit's `release/agent.crx`; it never runs the
+  script and never opens the key. The CRX holds no secret: only the archive,
+  the public key and the signature. The same files and the same key give
+  the same bytes, so a test (`test/pack-agent.test.mjs`) checks without the
+  key that the committed CRX has the agent ID, a valid signature and exactly
+  the files of `agent/`. So a change of `agent/` fails `npm test` until the
+  key holder repacks on taylor: raise `version` in `agent/manifest.json`
+  (Chrome installs an external CRX again only when its version is higher),
+  run `npm run pack:agent -- --out release`, and commit `release/agent.crx`
+  with the change.
 
 - **The key:** its working copy lives only on taylor, in
   `~/.config/agentwatch/browser/agent-extension.pem` (mode 0600, in a 0700

@@ -8,6 +8,8 @@ node_modules/
 dist/
 *.zip
 *.crx
+# The committed CRX that agentwatch pins (board task ab-v16.22).
+!/release/agent.crx
 *.pem
 
 # The live test run folder (profiles, X auth files, logs, screenshots).

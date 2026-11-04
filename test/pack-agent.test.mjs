@@ -407,3 +407,34 @@ test("the command's default output folder dist/ and the key and CRX files are gi
   const r = execFileSync("git", ["check-ignore", "dist/agent.crx", "agent-extension.pem"], { cwd: fileURLToPath(root), encoding: "utf8" });
   assert.equal(r, "dist/agent.crx\nagent-extension.pem\n");
 });
+
+// --- The committed CRX (board task ab-v16.22) ---
+
+// agentwatch pins a commit of this repository and installs release/agent.crx from it, so the
+// CRX at every commit must be the agent/ folder of that commit, signed with the agent key.
+const releaseCrx = fileURLToPath(new URL("release/agent.crx", root));
+const STALE = "release/agent.crx does not hold this agent/ folder: on taylor, raise the version in agent/manifest.json, then run npm run pack:agent -- --out release and commit release/agent.crx";
+
+test("release/agent.crx is tracked by git, and other CRX files stay ignored", () => {
+  const tracked = execFileSync("git", ["ls-files", "--error-unmatch", "release/agent.crx"], { cwd: fileURLToPath(root), encoding: "utf8" });
+  assert.equal(tracked, "release/agent.crx\n");
+  const r = spawnSync("git", ["check-ignore", "release/agent.crx"], { cwd: fileURLToPath(root), encoding: "utf8" });
+  assert.equal(r.status, 1, "release/agent.crx is not ignored");
+  const others = execFileSync("git", ["check-ignore", "release/other.crx", "agent/agent.crx", "release/agent-extension.pem"], { cwd: fileURLToPath(root), encoding: "utf8" });
+  assert.equal(others, "release/other.crx\nagent/agent.crx\nrelease/agent-extension.pem\n");
+});
+
+test("release/agent.crx has the agent ID, a valid signature of the agent key, and exactly the files of agent/", () => {
+  const manifest = JSON.parse(readFileSync(join(agentDir, "manifest.json"), "utf8"));
+  const crx = readCrx(readFileSync(releaseCrx));
+  assert.equal(crx.publicKey.toString("base64"), manifest.key, "the public key is the manifest key");
+  assert.ok(crx.crxId.equals(createHash("sha256").update(crx.publicKey).digest().subarray(0, 16)), "the crx_id");
+  assert.equal(extensionId(manifest.key), "ifhfjdmdbgbnmllffiadajepajbcdnai");
+  const publicKey = createPublicKey({ key: crx.publicKey, format: "der", type: "spki" });
+  assert.ok(verify("sha256", signedBytes(crx), publicKey, crx.signature), "the signature");
+  const files = readZip(crx.archive);
+  assert.deepEqual([...files.keys()], packageFiles(agentDir), STALE);
+  for (const [name, data] of files) {
+    if (!name.endsWith("/")) assert.ok(data.equals(readFileSync(join(agentDir, name))), `${name}: ${STALE}`);
+  }
+});
