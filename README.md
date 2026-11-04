@@ -111,8 +111,9 @@ site does not fill the memory of your tab.
 
 The receiver runs only in the agent's Chrome on the box. agentwatch starts that
 Chrome with `--load-extension=<agent folder>` on each launch; you do not
-install it yourself. Its ID is `dofdpnfachcncepdoondkeodcbnhipdc`. It needs
-Chrome 145 or later (its frame rule, below).
+install it yourself. Its ID is `dofdpnfachcncepdoondkeodcbnhipdc`. Its frame
+rule (below) needs Chrome 141; the package asks for Chrome 145 as a safe
+minimum.
 
 The native host `sh.agentwatch.browser` is agentwatch's, not this
 repository's. Its check that its parent Chrome runs on the agent profile
@@ -138,11 +139,13 @@ the receiver at all (measured), and then nothing blocks.
   sees the sent state. The answer holds counts and names only.
 - **The allowlist block:** a static rule blocks every top-level navigation,
   and one dynamic rule allows the allowlist's domains and their subdomains. So
-  the block holds from Chrome's first moment. A page of an allowlisted site
-  still loads frames and subresources from any host. A second dynamic rule
-  blocks every frame of a tab whose top-level page is not on the list (for
-  example `about:blank` with content that a CDP client wrote). When the list
-  changes, the receiver closes the tabs whose
+  the block holds from Chrome's first moment. In the same way, a second
+  static rule blocks every frame, `<object>` and `<embed>` document, and a
+  dynamic rule allows them in a tab whose top-level page is on the list. So a
+  page of an allowlisted site still loads frames and subresources from any
+  host, and a tab whose top-level page is not on the list (for example
+  `about:blank` with content that a CDP client wrote) loads none. When the
+  list changes, the receiver closes the tabs whose
   site left it, and it reports each blocked navigation (the host only) to the
   daemon. An entry that is not a valid host is refused and counted in the
   answer; the valid entries of the same list still apply. A site's service
@@ -162,7 +165,9 @@ the receiver at all (measured), and then nothing blocks.
   bridge passes on: the relay refuses a navigation to such a URL before it
   reaches the bridge (contract C11). A top-level navigation that the agent
   package starts sends `Sec-Fetch-Site: none`, as a typed URL does (a third
-  dynamic rule); Chrome would send `cross-site`. While the relay asks for it,
+  dynamic rule); Chrome would send `cross-site`. The rule acts only where
+  Chrome sends `Sec-Fetch-*` headers: `https:` and local `http:`. While the
+  relay asks for it,
   the bridge attaches each new tab at once and holds its first document
   request until the relay's client is ready, as Chrome's own
   `waitForDebuggerOnStart` does. Chrome starts the first request of some new

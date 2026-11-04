@@ -9,7 +9,8 @@
   "host_permissions": ["<all_urls>"],
   "declarative_net_request": {
     "rule_resources": [
-      { "id": "block_main_frame", "enabled": true, "path": "rules/block-main-frame.json" }
+      { "id": "block_main_frame", "enabled": true, "path": "rules/block-main-frame.json" },
+      { "id": "block_frames", "enabled": true, "path": "rules/block-frames.json" }
     ]
   },
   "background": { "service_worker": "sw.js", "type": "module" }

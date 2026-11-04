@@ -85,12 +85,12 @@ const agentTab = (c, [tabId]) => (c.att.isRestoreTab(tabId) ? "not an agent tab"
 // bridge did not attach.
 const attachedTab = (c, [target]) => (c.att.isBridgeTab(target.tabId) ? null : "not attached");
 
-// A client's Fetch.enable or Fetch.disable on a tab's own session: once it
-// has its answer, the tab's Fetch events are the client's (the hold, C10).
+// A client's Fetch.enable or Fetch.disable on a tab's own session changes
+// the hold of the tab (C10): the hold counts it as it goes to Chrome.
 function sendCommand(c, target, method, params) {
   const sent = c.chrome.debugger.sendCommand(target, method, params === undefined ? {} : params);
   if ((method === "Fetch.enable" || method === "Fetch.disable") && target.sessionId === undefined) {
-    Promise.resolve(sent).then(() => c.att.holds.clientFetch(target.tabId, method === "Fetch.enable"), () => {});
+    c.att.holds.clientFetch(target.tabId, method, sent);
   }
   return sent;
 }
@@ -253,9 +253,7 @@ export class Bridge {
       this.#emit("debugger.onEvent", { source, method, params: params === undefined ? {} : params });
     });
     c.debugger.onDetach.addListener((source, reason) => {
-      if (!source || !att.isBridgeTab(source.tabId)) return;
-      att.dropped(source.tabId);
-      this.#emit("debugger.onDetach", { source, reason });
+      if (source && att.dropped(source.tabId)) this.#emit("debugger.onDetach", { source, reason });
     });
     // While the eager attach is on, the event comes once the attach and the
     // hold of the tab are on (or failed); an event of the tab that Chrome

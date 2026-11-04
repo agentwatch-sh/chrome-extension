@@ -533,12 +533,14 @@ test("bridge.info: the brand Google Chrome first, else Chromium, else an empty f
 
 const POPUP = { id: 9, windowId: 1, index: 2, openerTabId: 7, active: true, url: "", pendingUrl: "https://a.example/popup", title: "", status: "loading" };
 const HOLD_PATTERNS = [{ urlPattern: "*", resourceType: "Document", requestStage: "Request" }];
-const paused = (requestId, url = "https://a.example/popup") => ({ requestId, request: { url, method: "GET" }, frameId: "F9", resourceType: "Document" });
+const paused = (requestId, url = "https://a.example/popup", frameId = "F9") => ({ requestId, request: { url, method: "GET" }, frameId, resourceType: "Document" });
 const pauseEv = (tabId, params) => ({ t: "ev", ch: "bridge", ev: "debugger.onEvent", source: { tabId }, method: "Fetch.requestPaused", params });
 const holdTimers = (s) => s.timers.filter((t) => t.ms === HOLD_MAX_MS && !t.cleared);
 
-// The eager attach on, and a new tab that it attached and holds.
+// The eager attach on, and a new tab that it attached and holds. Chrome's
+// target of the tab has the id of the tab's top frame ("F" + id, as paused()).
 async function heldTab(s, tab = POPUP) {
+  s.f.targets_.push({ id: "F" + tab.id, tabId: tab.id, type: "page", attached: false });
   await s.answer({ t: "req", id: "on" + tab.id, op: "bridge.attachNew", args: [true] });
   s.f.chrome.tabs.onCreated.fire(structuredClone(tab));
   await flush();
@@ -552,15 +554,17 @@ test("the eager attach: one op of the tab's chain attaches the new tab and start
   const mark = s.f.calls.length;
   const before = s.evs().length;
   s.f.chrome.tabs.onCreated.fire(structuredClone(POPUP));
-  // Both start in the listener: the hold's Fetch.enable does not wait for the
-  // attach's answer (measured: the first request leaves a few ms after the event).
+  // All start in the listener: the hold's Fetch.enable does not wait for the
+  // attach's answer (measured: the first request leaves a few ms after the
+  // event); the targets give the id of the tab's top frame.
   assert.deepEqual(callsSince(s.f, mark), [
     ["debugger.attach", [{ tabId: 9 }, "1.3"]],
     ["debugger.sendCommand", [{ tabId: 9 }, "Fetch.enable", { patterns: HOLD_PATTERNS }]],
+    ["debugger.getTargets", []],
   ]);
   assert.equal(s.att.isBridgeTab(9), false, "a bridge tab only once its hold is on");
   await flush();
-  assert.equal(callsSince(s.f, mark).length, 2);
+  assert.equal(callsSince(s.f, mark).length, 3);
   assert.deepEqual(s.evs().slice(before), [{ t: "ev", ch: "bridge", ev: "tabs.onCreated", tab: POPUP, attached: true, held: true }]);
   assert.equal(s.att.isBridgeTab(9), true);
   assert.equal(holdTimers(s).length, 1);
@@ -571,8 +575,8 @@ test("the eager attach: off, a tab of the agent's own origin, Chrome's refusal, 
   const cases = [
     ["off", { off: true }, { attached: false, held: false }, []],
     ["own origin", { tab: { ...POPUP, pendingUrl: own } }, { attached: false, held: false }, []],
-    ["Chrome refuses the attach", { attach: "Cannot access a chrome:// URL" }, { attached: false, held: false, error: "Cannot access a chrome:// URL" }, ["debugger.attach", "debugger.sendCommand"]],
-    ["Fetch.enable fails", { fetch: "No tab with given id 9." }, { attached: true, held: false }, ["debugger.attach", "debugger.sendCommand"]],
+    ["Chrome refuses the attach", { attach: "Cannot access a chrome:// URL" }, { attached: false, held: false, error: "Cannot access a chrome:// URL" }, ["debugger.attach", "debugger.sendCommand", "debugger.getTargets"]],
+    ["Fetch.enable fails", { fetch: "No tab with given id 9." }, { attached: true, held: false }, ["debugger.attach", "debugger.sendCommand", "debugger.getTargets"]],
   ];
   for (const [name, c, want, calls] of cases) {
     const s = await setup();
@@ -636,6 +640,26 @@ test("a link change during the eager attach: the tab is detached, no hold stays,
   }
 });
 
+test("a tab that closes during its eager attach: Chrome's detach before the answers; it is no bridge tab, and the event says so", async () => {
+  for (const at of ["attach", "Fetch.enable"]) {
+    const s = await setup();
+    await s.answer({ t: "req", id: "on", op: "bridge.attachNew", args: [true] });
+    let done;
+    if (at === "attach") s.f.impl["debugger.attach"] = () => new Promise((r) => (done = r));
+    else s.f.impl["debugger.sendCommand"] = (t, method) => (method === "Fetch.enable" ? new Promise((r) => (done = r)) : Promise.resolve({}));
+    s.f.chrome.tabs.onCreated.fire(structuredClone(POPUP));
+    await flush();
+    const before = s.evs().length;
+    s.f.chrome.debugger.onDetach.fire({ tabId: 9 }, "target_closed");
+    done({});
+    await flush();
+    assert.deepEqual(s.evs().slice(before), [{ t: "ev", ch: "bridge", ev: "tabs.onCreated", tab: POPUP, attached: false, held: false }], at);
+    assert.equal(s.att.isBridgeTab(9), false, at);
+    assert.equal(holdTimers(s).length, 0, at);
+    assert.deepEqual(s.f.callsTo("debugger.detach"), [], at);
+  }
+});
+
 test("the hold's own Fetch events never reach the relay; bridge.release continues the held request and ends the hold's Fetch", async () => {
   const s = await setup();
   await heldTab(s);
@@ -657,19 +681,38 @@ test("the hold's own Fetch events never reach the relay; bridge.release continue
   assert.deepEqual(callsSince(s.f, again), []);
 });
 
-test("the hold keeps the tab's first document request only: a later one that its Fetch pauses goes on at once", async () => {
+test("the hold keeps every paused document request of the tab's top frame; a frame's request goes on at once", async () => {
   const s = await setup();
   await heldTab(s);
   s.f.chrome.debugger.onEvent.fire({ tabId: 9 }, "Fetch.requestPaused", paused("h1"));
   const before = s.evs().length;
   const mark = s.f.calls.length;
   // For example a frame of a page whose own request left before the hold was on.
-  s.f.chrome.debugger.onEvent.fire({ tabId: 9 }, "Fetch.requestPaused", paused("f2", "https://c.example/frame"));
+  s.f.chrome.debugger.onEvent.fire({ tabId: 9 }, "Fetch.requestPaused", paused("f2", "https://c.example/frame", "F-child"));
   assert.deepEqual(cmds(s.f, mark), [["Fetch.continueRequest", { requestId: "f2" }]]);
+  // A second top-level navigation during the hold waits too.
+  s.f.chrome.debugger.onEvent.fire({ tabId: 9 }, "Fetch.requestPaused", paused("h3", "https://a.example/second"));
+  assert.equal(cmds(s.f, mark).length, 1);
   assert.equal(s.evs().length, before);
   const rel = s.f.calls.length;
   await s.answer({ t: "req", id: "rel", op: "bridge.release", args: [9] });
-  assert.deepEqual(cmds(s.f, rel), [["Fetch.continueRequest", { requestId: "h1" }], ["Fetch.disable", undefined]]);
+  assert.deepEqual(cmds(s.f, rel), [
+    ["Fetch.continueRequest", { requestId: "h1" }], ["Fetch.continueRequest", { requestId: "h3" }], ["Fetch.disable", undefined],
+  ]);
+  // Before the targets answer, the top frame is not known: the hold keeps every document request.
+  const t = await setup();
+  let targets;
+  t.f.impl["debugger.getTargets"] = () => new Promise((r) => (targets = r));
+  await t.answer({ t: "req", id: "on", op: "bridge.attachNew", args: [true] });
+  t.f.chrome.tabs.onCreated.fire(structuredClone(POPUP));
+  await flush();
+  const m2 = t.f.calls.length;
+  t.f.chrome.debugger.onEvent.fire({ tabId: 9 }, "Fetch.requestPaused", paused("x1", "https://c.example/frame", "F-child"));
+  assert.deepEqual(cmds(t.f, m2), []);
+  targets([{ id: "F9", tabId: 9, type: "page" }]);
+  await flush();
+  t.f.chrome.debugger.onEvent.fire({ tabId: 9 }, "Fetch.requestPaused", paused("x2", "https://c.example/frame", "F-child"));
+  assert.deepEqual(cmds(t.f, m2), [["Fetch.continueRequest", { requestId: "x2" }]]);
 });
 
 test("while the release runs, the hold continues a request that its Fetch still pauses; after Fetch.disable, events are the relay's", async () => {
@@ -690,14 +733,18 @@ test("while the release runs, the hold continues a request that its Fetch still 
   assert.deepEqual(s.evs().slice(before), [pauseEv(9, paused("c3"))]);
 });
 
-test("a client's Fetch.enable on the tab during the hold: the release sends the held request's event, and the client continues it", async () => {
+test("a client's Fetch command on the tab during the hold: Fetch.enable gives the held request to the client; Fetch.disable ends the hold", async () => {
+  // One FetchHandler serves the tab's session: a client's Fetch.enable replaces
+  // the hold's patterns, and a client's Fetch.disable continues every paused
+  // request and turns Fetch off.
   const cases = [
-    ["Fetch.enable of the tab", [[{ tabId: 9 }, "Fetch.enable", { patterns: [{ urlPattern: "*" }] }]], true],
-    ["Fetch.enable of a child session", [[{ tabId: 9, sessionId: "S1" }, "Fetch.enable", {}]], false],
-    ["Fetch.enable that failed", [[{ tabId: 9 }, "Fetch.enable", { bad: 1 }]], false],
-    ["Fetch.enable, then Fetch.disable", [[{ tabId: 9 }, "Fetch.enable", {}], [{ tabId: 9 }, "Fetch.disable", {}]], false],
+    ["Fetch.enable of the tab", [[{ tabId: 9 }, "Fetch.enable", { patterns: [{ urlPattern: "*" }] }]], "relay"],
+    ["Fetch.enable of a child session", [[{ tabId: 9, sessionId: "S1" }, "Fetch.enable", {}]], "hold"],
+    ["Fetch.enable that failed", [[{ tabId: 9 }, "Fetch.enable", { bad: 1 }]], "hold"],
+    ["Fetch.disable of the tab", [[{ tabId: 9 }, "Fetch.disable", {}]], "ended"],
+    ["Fetch.enable, then Fetch.disable", [[{ tabId: 9 }, "Fetch.enable", {}], [{ tabId: 9 }, "Fetch.disable", {}]], "ended"],
   ];
-  for (const [name, commands, toRelay] of cases) {
+  for (const [name, commands, outcome] of cases) {
     const s = await setup();
     await heldTab(s);
     s.f.chrome.debugger.onEvent.fire({ tabId: 9 }, "Fetch.requestPaused", paused("h1"));
@@ -708,15 +755,41 @@ test("a client's Fetch.enable on the tab during the hold: the release sends the 
     for (const [i, args] of commands.entries()) await s.answer({ t: "req", id: "c" + i, op: "debugger.sendCommand", args });
     const before = s.evs().length;
     const mark = s.f.calls.length;
-    if (toRelay) s.f.chrome.debugger.onEvent.fire({ tabId: 9 }, "Fetch.requestPaused", paused("c1", "https://a.example/app.js"));
+    if (outcome === "relay") s.f.chrome.debugger.onEvent.fire({ tabId: 9 }, "Fetch.requestPaused", paused("c1", "https://a.example/app.js"));
     await s.answer({ t: "req", id: "rel", op: "bridge.release", args: [9] });
-    if (toRelay) {
-      assert.deepEqual(cmds(s.f, mark), [], name);
-      assert.deepEqual(s.evs().slice(before), [pauseEv(9, paused("c1", "https://a.example/app.js")), pauseEv(9, paused("h1"))], name);
-    } else {
-      assert.deepEqual(cmds(s.f, mark), [["Fetch.continueRequest", { requestId: "h1" }], ["Fetch.disable", undefined]], name);
-      assert.deepEqual(s.evs().slice(before), [], name);
-    }
+    const want = {
+      relay: [[], [pauseEv(9, paused("c1", "https://a.example/app.js")), pauseEv(9, paused("h1"))]],
+      hold: [[["Fetch.continueRequest", { requestId: "h1" }], ["Fetch.disable", undefined]], []],
+      ended: [[], []],
+    }[outcome];
+    assert.deepEqual([cmds(s.f, mark), s.evs().slice(before)], want, name);
+    assert.equal(holdTimers(s).length, 0, name);
+  }
+});
+
+test("a client's Fetch command in flight when the hold ends: the release waits for its answer", async () => {
+  for (const [method, ok, wantCmds, wantEvs] of [
+    ["Fetch.enable", true, [], [pauseEv(9, paused("h1"))]],
+    ["Fetch.enable", false, [["Fetch.continueRequest", { requestId: "h1" }], ["Fetch.disable", undefined]], []],
+    ["Fetch.disable", true, [], []],
+  ]) {
+    const name = `${method} ${ok ? "answered" : "failed"}`;
+    const s = await setup();
+    await heldTab(s);
+    s.f.chrome.debugger.onEvent.fire({ tabId: 9 }, "Fetch.requestPaused", paused("h1"));
+    let answer;
+    s.f.impl["debugger.sendCommand"] = (t, m) => (m === method ? new Promise((res, rej) => (answer = () => (ok ? res({}) : rej(new Error("no"))))) : Promise.resolve({}));
+    s.send({ t: "req", id: "c", op: "debugger.sendCommand", args: [{ tabId: 9 }, method, {}] });
+    const before = s.evs().length;
+    const mark = s.f.calls.length;
+    s.send({ t: "req", id: "rel", op: "bridge.release", args: [9] });
+    holdTimers(s).forEach((t) => t.fn()); // HOLD_MAX_MS waits too
+    await flush();
+    assert.deepEqual([cmds(s.f, mark), s.evs().slice(before), s.resOf("rel")], [[], [], []], name);
+    answer();
+    await flush();
+    assert.deepEqual([cmds(s.f, mark), s.evs().slice(before)], [wantCmds, wantEvs], name);
+    assert.deepEqual(s.resOf("rel").map((m) => m.data), [null], name);
   }
 });
 
@@ -734,13 +807,16 @@ test("HOLD_MAX_MS: the receiver releases a hold itself, so a tab never waits for
   assert.deepEqual(callsSince(s.f, again), [], "the relay's late release finds no hold");
 });
 
-test("debugger.detach releases the hold, then detaches; Chrome's own detach ends the hold", async () => {
+test("debugger.detach releases the hold, then detaches, also with a client's Fetch on; Chrome's own detach ends the hold", async () => {
   const s = await setup();
   await heldTab(s);
   s.f.chrome.debugger.onEvent.fire({ tabId: 9 }, "Fetch.requestPaused", paused("h1"));
+  await s.answer({ t: "req", id: "fe", op: "debugger.sendCommand", args: [{ tabId: 9 }, "Fetch.enable", {}] });
+  const before = s.evs().length;
   const mark = s.f.calls.length;
   await s.answer({ t: "req", id: "d", op: "debugger.detach", args: [9] });
   assert.deepEqual(callsSince(s.f, mark).map(([p, a]) => (p === "debugger.sendCommand" ? a[1] : p)), ["Fetch.continueRequest", "Fetch.disable", "debugger.detach"]);
+  assert.equal(s.evs().length, before, "the relay gets no request of a tab that it detaches");
   assert.equal(holdTimers(s).length, 0);
   await heldTab(s, { ...POPUP, id: 11 });
   s.f.chrome.debugger.onDetach.fire({ tabId: 11 }, "target_closed");
