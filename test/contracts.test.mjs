@@ -232,6 +232,23 @@ test("bridge.tooLarge names what the relay needs for its default action", () => 
     assert.ok(C10.includes("`" + m + "`"), `C10 names the default action for ${m}`);
   }
   assert.ok(big.some((ev) => typeof ev.sessionId === "string"), "a vector of a child session");
+  // The action strings: the vector's note and C10 each carry them, not only the event names.
+  const actions = {
+    "Fetch.requestPaused": ["Fetch.continueRequest"],
+    "Fetch.authRequired": ["Fetch.continueWithAuth", "CancelAuth"],
+    "Page.javascriptDialogOpening": ["Page.handleJavaScriptDialog", "accept: false"],
+  };
+  const c10Actions = {
+    "Fetch.requestPaused": ["`Fetch.continueRequest` with the `requestId`"],
+    "Fetch.authRequired": ["`Fetch.continueWithAuth`", '{"response":"CancelAuth"}'],
+    "Page.javascriptDialogOpening": ["`Page.handleJavaScriptDialog` with", '{"accept":false}'],
+  };
+  const notes = bridge.eventVectors.filter((v) => v.ev.ev === "bridge.tooLarge");
+  for (const [m, strings] of Object.entries(actions)) {
+    const v = notes.find((n) => n.ev.method === m);
+    for (const str of strings) assert.ok(v.note.includes(str), `the vector note of ${m} names ${str}`);
+    for (const str of c10Actions[m]) assert.ok(C10.includes(str), `C10 names ${str} for ${m}`);
+  }
 });
 
 test("the result parts vector splits and joins as C4 parts do", () => {
@@ -328,7 +345,7 @@ test("C11 states every refusal template, and each refusal vector follows one", (
 
 // The refusals of C11 that depend on the params (page marks, cookies, URLs, contexts).
 const MAIN_WORLD = (name) => typeof name !== "string" || name === "";
-const NAVIGATE_OK = (url) => url === "about:blank" || /^(https?|data|blob):/i.test(url);
+const NAVIGATE_OK = (url) => url === "about:blank" || /^(https?|data):/i.test(url) || /^blob:https?:\/\//i.test(url);
 const NEW_TAB_OK = (url) => url === undefined || url === "" || url === "about:blank" || /^https?:/i.test(url);
 const schemeOf = (url) => /^([a-z][a-z0-9+.-]*:)/i.exec(url)?.[1].toLowerCase() ?? "relative";
 const named = (list, re) => Array.isArray(list) && list.some((h) => isObj(h) && re.test(String(h.name)));

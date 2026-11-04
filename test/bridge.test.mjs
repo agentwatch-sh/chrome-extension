@@ -7,7 +7,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import { Bridge, BRIDGE_VERSION, CONTENT_TYPES, OPS, WAIT_DEFAULT_MS, WAIT_MAX_MS } from "../agent/bridge.js";
 import { attachments } from "../agent/attach.js";
-import { HOLD_MAX_MS } from "../agent/hold.js";
+import { HOLD_MAX_MS, HOLD_FORCE_MS } from "../agent/hold.js";
 import { ReceiverLink } from "../agent/link.js";
 import { applyAllowlist } from "../agent/dnr.js";
 import { MAX_RESULT, MAX_TO_DAEMON, PART_BYTES, RESULT_PART_BYTES, splitParts } from "../agent/wire.js";
@@ -791,6 +791,24 @@ test("a client's Fetch command in flight when the hold ends: the release waits f
     assert.deepEqual([cmds(s.f, mark), s.evs().slice(before)], [wantCmds, wantEvs], name);
     assert.deepEqual(s.resOf("rel").map((m) => m.data), [null], name);
   }
+});
+
+test("a client's Fetch command that never answers: the release forces the finish after HOLD_FORCE_MS", async () => {
+  const s = await setup();
+  await heldTab(s);
+  s.f.chrome.debugger.onEvent.fire({ tabId: 9 }, "Fetch.requestPaused", paused("h1"));
+  s.f.impl["debugger.sendCommand"] = (t, m) => (m === "Fetch.enable" ? new Promise(() => {}) : Promise.resolve({}));
+  s.send({ t: "req", id: "c", op: "debugger.sendCommand", args: [{ tabId: 9 }, "Fetch.enable", {}] });
+  const mark = s.f.calls.length;
+  s.send({ t: "req", id: "rel", op: "bridge.release", args: [9] });
+  await flush();
+  assert.deepEqual([cmds(s.f, mark), s.resOf("rel")], [[], []], "the release waits for the client's command");
+  const force = s.timers.filter((t) => t.ms === HOLD_FORCE_MS && !t.cleared);
+  assert.equal(force.length, 1, "one short timer is armed");
+  force[0].fn();
+  await flush();
+  assert.deepEqual(cmds(s.f, mark), [["Fetch.continueRequest", { requestId: "h1" }], ["Fetch.disable", undefined]]);
+  assert.deepEqual(s.resOf("rel").map((m) => m.data), [null]);
 });
 
 test("HOLD_MAX_MS: the receiver releases a hold itself, so a tab never waits for a relay that does not answer", async () => {
