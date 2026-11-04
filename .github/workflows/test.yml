@@ -1,0 +1,28 @@
+# The unit tests (npm test) on each pull request and each push to main
+# (board task ab-v16.25). The tests need no key, no secret and no Chrome.
+# They run git (git ls-files, git check-ignore), so the job uses a checkout.
+# package.json has no dependencies and no lock file, so no npm ci.
+name: test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+          package-manager-cache: false
+      - run: node --version
+      - run: npm test
