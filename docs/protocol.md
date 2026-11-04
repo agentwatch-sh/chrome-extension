@@ -33,6 +33,13 @@ The sender is the operator package (`operator/`, operator mode). The receiver is
   see the README) have the same ID. The receiver ID before ab-v16.18 was
   `dofdpnfachcncepdoondkeodcbnhipdc`: E1's key was never kept, so no CRX could have that ID. A lost
   key means a new ID, and every pin of the ID changes again.
+- The committed CRX (board task ab-v16.22): `release/agent.crx` holds the packed `agent/` folder of
+  the same commit, signed with that key. agentwatch pins a commit of this repository (40-hex) and
+  installs its `release/agent.crx`; agentwatch never runs the pack script and never opens the key. A
+  test checks, without the key, that the committed CRX has this ID, a valid signature and exactly
+  the files of `agent/`. A change of `agent/` raises the `version` in `agent/manifest.json` (Chrome
+  installs an external CRX again only for a higher `external_version`) and repacks
+  (`npm run pack:agent -- --out release`) on taylor, in the same commit.
 - The pins of the receiver ID that agentwatch's stage 4 (board ab-v16.7) changes, in agentwatch main
   `4e483512`:
   - `agentwatch/tools/pins.py:32`: `CHROME_EXTENSION_RECEIVER_ID`.
