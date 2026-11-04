@@ -2,6 +2,10 @@
 
 Both repositories implement these contracts. Change them only in the agentwatch plan.
 
+C4 is the exception. Since the two-modes design (agent-browser
+`docs/superpowers/specs/2026-11-03-two-modes-playwright-design.md`, section 13), this file is the
+master for C4. The agentwatch plan's C4 text is older (`"v":1`, no channels).
+
 - Sender extension ID: `bpfkgknpndlpkcffmaaelkfcbpackiip`
 - Receiver extension ID: `dofdpnfachcncepdoondkeodcbnhipdc`
 
@@ -67,24 +71,74 @@ The fixes over the probe: `-0` survives; an object key `__proto__` is decoded wi
 
 One JSON object per native message. On the daemon's socket each message is one NDJSON line.
 
-- receiver -> daemon: `{"t":"hello","v":1,"version":"<manifest version>"}`;
-  `{"t":"res","id":"<id>","ok":true,"data":{...}}` or `{"t":"res","id":"<id>","ok":false,"error":"<text>"}`;
+- receiver -> daemon:
+  `{"t":"hello","v":2,"version":"<manifest version>","channels":["main","bridge"]}`;
+  `{"t":"res","id":"<id>","ok":true,"data":{...}}` or `{"t":"res","id":"<id>","ok":false,"error":"<text>"}`
+  (a res on the bridge channel also has `"ch":"bridge"`);
   `{"t":"blocked","tab":<tab id>,"host":"<host>"}`.
 - native host -> receiver: `{"t":"link","up":true}` after each connect to the daemon socket (the
   receiver answers with `hello`).
-- daemon -> receiver: only parts, `{"t":"part","id":"<id>","seq":<i>,"n":<count>,"b64":"<base64>"}`.
-  The daemon serializes the request as compact UTF-8 JSON, cuts the bytes into slices of
-  `PART_BYTES = 700000` (the last slice may be shorter; an empty request is never sent), and sends
-  slice `i` base64-encoded with `seq = i`, `n` = the slice count. The receiver joins the decoded slices
-  of one `id` in `seq` order once all `n` arrived, decodes UTF-8 and parses the request. Parts of
-  different ids may not interleave (the daemon sends one request at a time); a part with a new `id`
-  drops an unfinished one.
-- Requests: `{"t":"req","id":"<id>","op":"ping"}` -> `{}`;
+- daemon -> receiver: only parts,
+  `{"t":"part","ch":"<channel>","id":"<id>","seq":<i>,"n":<count>,"b64":"<base64>"}`; `ch` is
+  optional (see the channels below). The daemon serializes the request as compact UTF-8 JSON, cuts
+  the bytes into slices of `PART_BYTES = 700000` (the last slice may be shorter; an empty request is
+  never sent), and sends slice `i` base64-encoded with `seq = i`, `n` = the slice count. The receiver
+  joins the decoded slices of one `id` of one channel in `seq` order once all `n` arrived, decodes
+  UTF-8 and parses the request.
+- Requests (channel `main`): `{"t":"req","id":"<id>","op":"ping"}` -> `{}`;
   `{"t":"req","id":"<id>","op":"set_allowlist","domains":["a.example"]}` ->
   `{"rules":<1 if the valid list is not empty, else 0>,"closed":<tabs closed>,"refused":<entries refused>}`;
   `{"t":"req","id":"<id>","op":"import","state":<C2 payload>}` ->
   `{"cookies_removed":0,"cookies_set":0,"tabs_closed":0,"local":0,"session":0,"idb_databases":0,"idb_records":0,"cache_entries":0,"errors":["<store or cookie name>: <reason>"]}`.
 - Ids are strings. The daemon waits 10 s for `ping` and `set_allowlist`, 120 s for `import`.
+- A message from the receiver to the daemon is at most `MAX_TO_DAEMON = 8388608` bytes (8 MiB) of
+  UTF-8 JSON: one line on the daemon's socket, without its newline. The daemon drops the link at a
+  longer line, and that would fail a running import. So the receiver never sends a longer message. A
+  res above the limit goes as `{"t":"res","id":"<id>","ok":false,"error":"too large"}` (with its `ch`
+  on channel `bridge`). Any other message above the limit, and a res whose error is still above it,
+  is not sent.
+
+The channels. The link carries two channels. Channel `main` carries the requests above. Channel
+`bridge` carries the agent-mode bridge (C10). The receiver implements the channels; the daemon's
+side is stage 4 of the two-modes design (agentwatch).
+
+- Each part names its channel in `ch`: `"main"` or `"bridge"`. A part without `ch` is channel `main`,
+  so a daemon from before the channels keeps working. A part with any other `ch` is dropped; it
+  changes no channel.
+- Parts of one channel never interleave: the daemon sends every part of a request before the first
+  part of the next request of that channel. Parts of the two channels may interleave, and the daemon
+  mixes them on the socket: when both channels have parts to send, it sends them in turn. So a large
+  import does not hold a bridge request back on the socket, and a large bridge message does not hold
+  a main request back. A part with a new `id` drops an unfinished request of the same channel only,
+  and so does a bad part (a bad `seq`, `n` or base64). So a bridge part never drops an import part,
+  and a main part never drops a bridge part. An id is unique within its channel; the same id on the
+  two channels names two requests.
+- The receiver handles the two channels independently. Channel `main` runs one request at a time,
+  in arrival order, as before (the daemon sends one main request at a time). Channel `bridge` starts
+  each request as soon as its last part arrives: it never waits behind an import (an import can take
+  120 s) or behind another bridge request. Each bridge res comes when its request ends, so bridge
+  answers can come in any order.
+- A res on channel `bridge` has `"ch":"bridge"`. A res on channel `main` has no `ch`, as before. So
+  the daemon routes each res to its channel. The daemon ignores a res whose id it does not wait for
+  on that channel (for example the late answer to a request from before a reconnect).
+- On each `link` up the receiver drops the unfinished parts of both channels: they came from the
+  daemon connection that ended.
+- The hello says that the receiver knows the channels: `"v":2` and the `channels` list. A daemon
+  sends `ch`, and any bridge request, only to a receiver whose latest hello on the connection lists
+  `bridge` in `channels`. A hello without `channels` (`"v":1`) comes from an old receiver. An old
+  receiver ignores `ch` and joins all parts as one channel: a bridge part would drop an unfinished
+  import part, a bridge request would wait behind an import, and its res would have no `ch`. So the
+  daemon sends that receiver parts without `ch`, and no bridge request. A daemon from before the
+  channels reads only `version` in the hello, and its parts without `ch` are channel `main`.
+- C10 defines the bridge's ops, their data and the daemon's waits. Until C10 sets them, the daemon
+  waits 10 s for a bridge request. The daemon keeps at most N bridge requests in flight; C10 sets N.
+  The receiver sets no bound of its own: it starts each bridge request that it gets. A bridge request
+  with an op that the receiver does not know gets `{"t":"res","ch":"bridge","id":"<id>","ok":false,"error":"unknown op"}`.
+  The main ops are not bridge ops: `ping` on channel `bridge` is an unknown op too. A bridge request
+  never stops or delays channel `main`. Until C10 sets the waits, the receiver answers a bridge
+  request that runs 9 s with `"ok":false,"error":"timeout"`, before the daemon's 10 s.
+- The shared vectors: `test/vectors/parts.json` (parts without `ch`) and
+  `test/vectors/parts-bridge.json` (parts with `"ch":"bridge"`).
 
 ### C5. The allowlist and the block
 

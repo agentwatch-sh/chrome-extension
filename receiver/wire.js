@@ -1,7 +1,28 @@
 // Request parts (contract C4). The daemon is the real sender; splitParts is here
-// for tests and the shared vector.
+// for tests and the shared vectors.
 
 export const PART_BYTES = 700000;
+// "main" carries ping, set_allowlist and import; "bridge" carries the agent-mode
+// bridge (C10). A part without "ch" is main.
+export const CHANNELS = Object.freeze(["main", "bridge"]);
+// The daemon reads a line of at most 8 MiB from the native host and drops the
+// link at a longer one, which would fail a running import.
+export const MAX_TO_DAEMON = 8 * 1024 * 1024;
+
+// True when msg's JSON is over limit bytes of UTF-8 (Chrome sends the native
+// host the UTF-8 of its JSON). A value that JSON cannot carry is left to
+// postMessage, as before.
+export function jsonTooLarge(msg, limit = MAX_TO_DAEMON) {
+  let s;
+  try {
+    s = JSON.stringify(msg);
+  } catch {
+    return false;
+  }
+  if (typeof s !== "string" || s.length * 3 <= limit) return false; // a code unit is at most 3 bytes
+  if (s.length > limit) return true; // and at least 1
+  return new TextEncoder().encode(s).length > limit;
+}
 
 function toBase64(bytes) {
   let s = "";
@@ -11,13 +32,15 @@ function toBase64(bytes) {
   return btoa(s);
 }
 
-export function splitParts(id, request, partBytes = PART_BYTES) {
+// Without ch the parts name no channel (main, as a daemon before channels sends them).
+export function splitParts(id, request, partBytes = PART_BYTES, ch = undefined) {
   const bytes = new TextEncoder().encode(JSON.stringify(request));
   const n = Math.max(1, Math.ceil(bytes.length / partBytes));
   const parts = [];
   for (let seq = 0; seq < n; seq++) {
     const slice = bytes.subarray(seq * partBytes, (seq + 1) * partBytes);
-    parts.push({ t: "part", id, seq, n, b64: toBase64(slice) });
+    const b64 = toBase64(slice);
+    parts.push(ch === undefined ? { t: "part", id, seq, n, b64 } : { t: "part", ch, id, seq, n, b64 });
   }
   return parts;
 }
@@ -74,5 +97,22 @@ export class PartJoiner {
     } catch {
       return null;
     }
+  }
+}
+
+// One PartJoiner per channel. Parts of one channel never interleave, but the two
+// channels may: a new id (or a bad part) drops the unfinished request of its own
+// channel only, so a bridge part never drops an import part.
+export class ChannelJoiner {
+  #joiners = new Map(CHANNELS.map((ch) => [ch, new PartJoiner()]));
+
+  // Returns {ch, req} when the last part of a request arrives, else null. A part
+  // whose ch is not a known channel is dropped and changes no channel.
+  push(part) {
+    if (!part || typeof part !== "object") return null;
+    const ch = Object.hasOwn(part, "ch") ? part.ch : "main";
+    if (typeof ch !== "string" || !this.#joiners.has(ch)) return null;
+    const req = this.#joiners.get(ch).push(part);
+    return req === null ? null : { ch, req };
   }
 }
