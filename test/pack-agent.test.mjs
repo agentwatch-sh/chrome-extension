@@ -131,22 +131,38 @@ function checkVersion(table, version, sha) {
   }
 }
 
-// Throws when the table lost or changed an entry that an older table holds: older is [{commit, table}].
-function checkHistory(table, older) {
-  for (const { commit, table: old } of older) {
-    for (const [v, h] of Object.entries(old)) {
-      assert.ok(Object.hasOwn(table, v), `release/versions.json lost the entry of ${v} (commit ${commit} holds it): an entry never leaves the table`);
-      assert.ok(table[v] === h,
-        `release/versions.json changed the entry of ${v} (commit ${commit} holds ${h}): a released version never gets another content; raise the version instead`);
-    }
-  }
+// The base whose entries the table must keep: in GitHub Actions HEAD^1 (a pull_request run checks out
+// the merge of the PR into main, whose first parent is the main tip; a push to main has the main before
+// it as its first parent), elsewhere origin/main. A branch may change its own new entries: only the
+// base's entries are released.
+const baseRef = (env) => (env.GITHUB_ACTIONS ? "HEAD^1" : "origin/main");
+
+// {ref, commit, table} of the base. table is null for a base from before the table: no file of the base
+// names release/versions.json. The check fails, and never passes in silence, when the base commit is not
+// in the clone, or when the base names the table but does not hold it.
+function baseTable(dir, env = process.env) {
+  const ref = baseRef(env);
+  const run = (...args) => spawnSync("git", args, { cwd: dir, encoding: "utf8", env: gitEnv() });
+  const rev = run("rev-parse", "--verify", "--quiet", `${ref}^{commit}`);
+  assert.ok(rev.status === 0,
+    `the base ${ref} is not in this clone, so the version table cannot be checked: ${env.GITHUB_ACTIONS ? "the CI checkout needs fetch-depth: 2" : "run git fetch origin"}`);
+  const commit = rev.stdout.trim();
+  const show = run("show", `${commit}:release/versions.json`);
+  if (show.status === 0) return { ref, commit, table: JSON.parse(show.stdout) };
+  const named = run("grep", "-q", "-F", "release/versions.json", commit, "--");
+  assert.ok(named.status !== 0, `the base ${ref} (${commit}) names release/versions.json but does not hold it`);
+  assert.ok(named.status === 1, `git grep fails in the base ${ref} (${commit}): ${named.stderr.trim()}`);
+  return { ref, commit, table: null };
 }
 
-// The table at each commit that added or changed release/versions.json. A shallow clone holds fewer
-// commits, so the check there is weaker; a full clone checks the whole history.
-function committedTables() {
-  const commits = git(rootDir, "log", "--format=%H", "--diff-filter=AM", "--", "release/versions.json").split("\n").filter(Boolean);
-  return commits.map((commit) => ({ commit, table: JSON.parse(git(rootDir, "show", `${commit}:release/versions.json`)) }));
+// Throws when the table changed or lost an entry of the base table.
+function checkBase(table, { ref, commit, table: base }) {
+  for (const [v, h] of Object.entries(base ?? {})) {
+    assert.ok(Object.hasOwn(table, v),
+      `release/versions.json has no entry of ${v}, which the base ${ref} (${commit}) holds: an entry never leaves the table (a branch from before that entry merges ${ref} first)`);
+    assert.ok(table[v] === h,
+      `release/versions.json changed the entry of ${v} (the base ${ref}, ${commit}, holds ${h}): a released version never gets another content; raise the version instead`);
+  }
 }
 
 // --- An independent reader of the two formats ---
@@ -170,8 +186,10 @@ function varint(buf, at) {
 
 // A protocol buffer message of fields of wire type 2 (bytes), the only type CRX3 uses: field number
 // -> bytes. `known` lists the field numbers that the message may hold; another field is refused. A
-// repeated field is refused too: protobuf keeps the last copy of a field, so a reader that takes the
-// first copy would read another key, signature or ID than Chrome.
+// field that comes twice is refused too. For an optional field (public_key, signature,
+// signed_header_data, crx_id) protobuf keeps the last copy, so a reader of the first copy would read
+// another value than Chrome. sha256_with_rsa is a repeated field of crx3.proto, and Chrome checks
+// every proof in it; our CRX holds exactly one.
 function fields(buf, known) {
   const out = new Map();
   let at = 0;
@@ -231,8 +249,9 @@ function crc32(buf) {
 
 // A ZIP as the packer writes it, and nothing more: the end record, with no comment, at the end; the
 // central directory right before it; the local records from offset 0 with no gap, in the order of
-// the central directory, up to the central directory. No record has a flag, an extra field or a
-// comment, and no name repeats: each of them could make Chrome read other entries than this reader.
+// the central directory, up to the central directory. No record has an extra field or a comment, or
+// a flag other than bit 11 (UTF-8 names, which Chromium's own packer sets), and no name repeats: each
+// of them could make Chrome read other entries or bytes than this reader.
 function readZip(buf) {
   const end = buf.length - 22;
   assert.ok(end >= 0 && buf.readUInt32LE(end) === 0x06054b50, "the end of central directory record");
@@ -262,7 +281,7 @@ function readZip(buf) {
     const nameBytes = buf.subarray(at + 46, at + 46 + nlen);
     const name = nameBytes.toString("utf8");
     at += 46 + nlen;
-    assert.equal(flags, 0, `${name}: no flags`);
+    assert.equal(flags & ~0x800, 0, `${name}: no flags but bit 11`);
     assert.equal(xlen, 0, `${name}: no extra field`);
     assert.equal(clen, 0, `${name}: no comment`);
     assert.equal(disk, 0, `${name}: one disk`);
@@ -270,7 +289,7 @@ function readZip(buf) {
     // The local record starts where the one before it ends, and repeats the method, CRC, sizes and name.
     assert.equal(offset, next, `${name}: no gap before its local header`);
     assert.ok(offset + 30 <= cdOffset && buf.readUInt32LE(offset) === 0x04034b50, `the local header of ${name}`);
-    assert.equal(buf.readUInt16LE(offset + 6), 0, `${name}: no flags in the local header`);
+    assert.equal(buf.readUInt16LE(offset + 6), flags, `${name}: the same flags in the local header`);
     assert.equal(buf.readUInt16LE(offset + 8), method, name);
     assert.equal(buf.readUInt32LE(offset + 14), crc, name);
     assert.equal(buf.readUInt32LE(offset + 18), csize, name);
@@ -373,6 +392,18 @@ test("packageFiles packs only the files that git tracks: an ignored or untracked
     assert.deepEqual(packageFiles(dir), ["lib/", "lib/a.js", "manifest.json", "sw.js"]);
     assert.deepEqual(packageFiles(dir), trackedPackage(dir));
   });
+});
+
+test("packageFiles refuses a path that is not printable ASCII: a ZIP reader without flag bit 11 (Python zipfile: cp437) reads it as another name", () => {
+  for (const name of ["lib/na\u00efve.js", "\u00e9.js", "r\u00e9gles/a.json", "tab\there.js"]) {
+    withTemp((dir) => {
+      writeFileSync(join(dir, "manifest.json"), "{}");
+      mkdirSync(join(dir, name, ".."), { recursive: true });
+      writeFileSync(join(dir, name), "x");
+      track(dir);
+      assert.throws(() => packageFiles(dir), (e) => /is not printable ASCII/.test(e.message), JSON.stringify(name));
+    });
+  }
 });
 
 test("packageFiles refuses a folder outside a git work tree, a tracked file that is missing, and a tracked symlink", () => {
@@ -565,7 +596,7 @@ test("the reader reads the well-formed CRX header and ZIP that the bad cases bel
   assert.equal(files.get("b.txt").toString(), "two");
 });
 
-test("the reader refuses a repeated field of the CRX header: protobuf keeps the last copy, the reader would read the first", () => {
+test("the reader refuses a field of the CRX header that comes twice: protobuf keeps the last copy of an optional field, and Chrome checks every RSA proof of the repeated sha256_with_rsa, so our CRX holds exactly one", () => {
   const cases = [
     ["signed_header_data twice", Buffer.concat([proof(), pb(10000, pb(1, idA)), pb(10000, pb(1, idB))]), /field 10000 repeats/],
     ["two RSA proofs", Buffer.concat([proof(), proof(), pb(10000, pb(1, idA))]), /field 2 repeats/],
@@ -599,13 +630,20 @@ test("the reader refuses a ZIP that repeats a name: a map of the names would hid
   assert.throws(() => readZip(zip(files)), /repeats the name a\.txt/);
 });
 
-test("the reader refuses a ZIP with an extra field, a comment, a flag, or a gap between its records", () => {
+test("the reader accepts flag bit 11 (UTF-8 names), which Chromium's own packer sets", () => {
+  const files = readZip(rawZip(two, { flags: 0x800 }));
+  assert.deepEqual([...files.keys()], ["a.txt", "b.txt"]);
+});
+
+test("the reader refuses a ZIP with an extra field, a comment, a flag other than bit 11, or a gap between its records", () => {
   const cases = [
     ["an extra field in a local header", { localExtra: 4 }, /extra field/],
     ["an extra field in the central directory", { centralExtra: 4 }, /extra field/],
     ["a file comment", { comment: 3 }, /comment/],
     ["an archive comment", { endComment: 3 }, /end of central directory record|comment/],
     ["a data descriptor flag", { flags: 8 }, /flags/],
+    ["a data descriptor flag with the UTF-8 flag", { flags: 0x808 }, /flags/],
+    ["an encryption flag", { flags: 1 }, /flags/],
     ["a gap before each local record", { gap: 2 }, /gap/],
     ["a gap before the central directory", { endGap: 2 }, /gap/],
   ];
@@ -699,6 +737,26 @@ test("the command refuses a --src outside a git work tree, and a --src whose man
     assert.match(r.stderr, /git does not track .*manifest\.json/);
     assert.equal(existsSync(join(dir, "out")), false);
   });
+});
+
+test("the command lists and checks the package's files before it opens the key: a git error comes first", () => {
+  // The key path does not exist: an error of the key would say "cannot open the key file".
+  const cases = [
+    ["a --src outside a git work tree", (src) => rmSync(join(src, ".git"), { recursive: true, force: true }), /cannot list the files that git tracks in /],
+    ["an untracked manifest.json", (src) => git(src, "rm", "-q", "--cached", "manifest.json"), /git does not track .*manifest\.json/],
+    ["a tracked key file", (src) => { writeFileSync(join(src, "old.pem"), "a dummy file, not a key"); track(src); }, /never packed/],
+    ["a path that is not ASCII", (src) => { writeFileSync(join(src, "na\u00efve.js"), "x"); track(src); }, /is not printable ASCII/],
+  ];
+  for (const [what, spoil, message] of cases) {
+    withTemp((dir) => {
+      const src = agentCopy(dir);
+      spoil(src);
+      const r = run(dir, ["--key", join(dir, "missing.pem"), "--src", src, "--out", join(dir, "out")]);
+      assert.equal(r.status, 1, what);
+      assert.match(r.stderr, message, what);
+      assert.doesNotMatch(r.stderr, /key file/, what);
+    });
+  }
 });
 
 test("the command takes the key path from AGENT_KEY_PATH", () => {
@@ -854,10 +912,112 @@ test("checkVersion refuses a table entry that is not a Chrome version or not a S
   }
 });
 
-test("checkHistory refuses a table that lost or changed an entry that an older commit holds", () => {
-  checkHistory({ "0.2.0": A, "0.3.0": B }, [{ commit: "c1", table: { "0.2.0": A } }, { commit: "c2", table: {} }]);
-  assert.throws(() => checkHistory({ "0.2.0": B }, [{ commit: "c1", table: { "0.2.0": A } }]), /changed the entry of 0\.2\.0 \(commit c1 holds a{64}\)/);
-  assert.throws(() => checkHistory({ "0.3.0": B }, [{ commit: "c1", table: { "0.2.0": A } }]), /lost the entry of 0\.2\.0/);
+// Temp repositories for the base rule: commits by a test identity, with no signing and no hooks.
+const gitc = (dir, ...args) => git(dir, "-c", "user.name=test", "-c", "user.email=test@invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args);
+function commitTable(dir, table, message) {
+  if (table) {
+    mkdirSync(join(dir, "release"), { recursive: true });
+    writeFileSync(join(dir, "release", "versions.json"), JSON.stringify(table, null, 2) + "\n");
+  }
+  git(dir, "add", "-A", "-f", "--", ".");
+  gitc(dir, "commit", "-q", "--allow-empty", "-m", message);
+  return git(dir, "rev-parse", "HEAD").trim();
+}
+const tableOf = (dir) => JSON.parse(readFileSync(join(dir, "release", "versions.json"), "utf8"));
+function repoWithMain(dir, table) {
+  git(dir, "init", "-q", "-b", "main");
+  return commitTable(dir, table, "main");
+}
+
+test("checkBase refuses a table that changed or lost an entry of the base, and accepts new entries", () => {
+  const base = { ref: "origin/main", commit: "c1", table: { "0.2.0": A } };
+  checkBase({ "0.2.0": A, "0.3.0": B }, base);
+  checkBase({ "0.2.0": B }, { ref: "origin/main", commit: "c0", table: null }); // a base from before the table
+  assert.throws(() => checkBase({ "0.2.0": B }, base), /changed the entry of 0\.2\.0 \(the base origin\/main, c1, holds a{64}\)/);
+  assert.throws(() => checkBase({ "0.3.0": B }, base), /has no entry of 0\.2\.0, which the base origin\/main \(c1\) holds/);
+});
+
+test("outside CI the base is origin/main: a changed 0.2.0 entry fails against it", () => {
+  withTemp((dir) => {
+    const main = repoWithMain(dir, { "0.2.0": A });
+    git(dir, "update-ref", "refs/remotes/origin/main", main);
+    git(dir, "checkout", "-q", "-b", "topic");
+    commitTable(dir, { "0.2.0": B }, "topic: a changed 0.2.0 entry");
+    const base = baseTable(dir, {});
+    assert.deepEqual(base, { ref: "origin/main", commit: main, table: { "0.2.0": A } });
+    assert.throws(() => checkBase(tableOf(dir), base), /changed the entry of 0\.2\.0/);
+  });
+});
+
+test("a branch that adds 0.3.0 = A and then corrects it to B passes: only the base's entries are released", () => {
+  withTemp((dir) => {
+    const main = repoWithMain(dir, { "0.2.0": A });
+    git(dir, "update-ref", "refs/remotes/origin/main", main);
+    git(dir, "checkout", "-q", "-b", "topic");
+    commitTable(dir, { "0.2.0": A, "0.3.0": A }, "topic: add 0.3.0");
+    commitTable(dir, { "0.2.0": A, "0.3.0": B }, "topic: correct 0.3.0");
+    checkBase(tableOf(dir), baseTable(dir, {}));
+  });
+});
+
+test("in GitHub Actions the base is HEAD^1, the main tip of a pull_request merge commit; origin/main is not needed", () => {
+  withTemp((dir) => {
+    const main = repoWithMain(dir, { "0.2.0": A });
+    for (const [branch, table, ok] of [["bad", { "0.2.0": B }, false], ["good", { "0.2.0": A, "0.3.0": B }, true]]) {
+      git(dir, "checkout", "-q", "-b", branch, main);
+      commitTable(dir, table, `${branch}: the table`);
+      // As actions/checkout does for a pull_request: the merge of the branch into the main tip.
+      git(dir, "checkout", "-q", "--detach", main);
+      gitc(dir, "merge", "-q", "--no-ff", "-m", `Merge ${branch} into main`, branch);
+      assert.throws(() => baseTable(dir, {}), /the base origin\/main is not in this clone.*git fetch origin/);
+      const base = baseTable(dir, { GITHUB_ACTIONS: "true" });
+      assert.deepEqual(base, { ref: "HEAD^1", commit: main, table: { "0.2.0": A } });
+      if (ok) checkBase(tableOf(dir), base);
+      else assert.throws(() => checkBase(tableOf(dir), base), /changed the entry of 0\.2\.0 \(the base HEAD\^1/);
+    }
+  });
+});
+
+test("a CI clone of depth 1 has no HEAD^1: the check fails and asks for fetch-depth: 2; a clone of depth 2 passes", () => {
+  withTemp((dir) => {
+    const repo = join(dir, "repo");
+    mkdirSync(repo);
+    const main = repoWithMain(repo, { "0.2.0": A });
+    git(repo, "checkout", "-q", "-b", "topic");
+    commitTable(repo, { "0.2.0": A, "0.3.0": B }, "topic: add 0.3.0");
+    git(repo, "checkout", "-q", "-b", "pr-merge", main);
+    gitc(repo, "merge", "-q", "--no-ff", "-m", "Merge topic into main", "topic");
+    for (const depth of ["1", "2"]) {
+      const clone = join(dir, `depth-${depth}`);
+      git(dir, "clone", "-q", "--depth", depth, "--branch", "pr-merge", `file://${repo}`, clone);
+      if (depth === "1") {
+        assert.throws(() => baseTable(clone, { GITHUB_ACTIONS: "true" }), /the base HEAD\^1 is not in this clone.*fetch-depth: 2/);
+      } else {
+        const base = baseTable(clone, { GITHUB_ACTIONS: "true" });
+        assert.equal(base.commit, main);
+        checkBase(tableOf(clone), base);
+      }
+    }
+  });
+});
+
+test("a base from before the table passes; a base that names release/versions.json but lacks it fails", () => {
+  withTemp((dir) => {
+    writeFileSync(join(dir, "README.md"), "no table yet\n");
+    const old = repoWithMain(dir, null);
+    git(dir, "update-ref", "refs/remotes/origin/main", old);
+    assert.deepEqual(baseTable(dir, {}), { ref: "origin/main", commit: old, table: null });
+    writeFileSync(join(dir, "README.md"), "see release/versions.json\n");
+    const lost = commitTable(dir, null, "main: names the table, but has no table");
+    git(dir, "update-ref", "refs/remotes/origin/main", lost);
+    assert.throws(() => baseTable(dir, {}), /the base origin\/main \([0-9a-f]{40}\) names release\/versions\.json but does not hold it/);
+  });
+});
+
+test("release/versions.json keeps each entry of the base table: HEAD^1 in GitHub Actions, origin/main elsewhere", (t) => {
+  const base = baseTable(rootDir);
+  t.diagnostic(`base ${base.ref} = ${base.commit}${base.table ? "" : " (from before release/versions.json)"}`);
+  checkBase(JSON.parse(readFileSync(versionsFile, "utf8")), base);
 });
 
 test("release/versions.json has the entry of agent/manifest.json's version, and that entry is the content of agent/ and of release/agent.crx", () => {
@@ -868,6 +1028,3 @@ test("release/versions.json has the entry of agent/manifest.json's version, and 
   assert.equal(contentSha256(files), table[version], STALE);
 });
 
-test("release/versions.json keeps each entry that a commit in its git history holds", () => {
-  checkHistory(JSON.parse(readFileSync(versionsFile, "utf8")), committedTables());
-});

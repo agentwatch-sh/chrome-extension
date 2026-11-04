@@ -157,12 +157,25 @@ npm run pack:agent -- --out release # writes release/agent.crx, the committed co
 - **The checks** (`test/pack-agent.test.mjs`, board task ab-v16.24). The same
   files and the same key give the same bytes only with the same Node and zlib
   build: another zlib build can deflate the same files to other bytes. So the
-  tests compare content, not bytes, and they need no key. The committed CRX
-  must have the agent ID, a valid signature and exactly the tracked files of
-  `agent/`. `release/versions.json` holds each released version and the
-  SHA-256 of its content (its sorted file paths and bytes; the test says how).
-  The entry of the manifest version must match `agent/` and the CRX, that
-  version must be the highest in the table, and an entry never changes.
+  tests compare content, not bytes, and they need no key:
+  - The committed CRX has the agent ID, a valid signature and exactly the
+    tracked files of `agent/`.
+  - `release/versions.json` holds each released version and the content
+    SHA-256 of that version (below). The entry of the manifest version
+    matches `agent/` and the CRX, and that version is the highest in the
+    table, in Chrome's order.
+  - The table keeps each entry of its base: `origin/main`, or `HEAD^1` in
+    GitHub Actions (the main tip of a pull request's merge commit, or the
+    main before a push; the CI checkout has `fetch-depth: 2`). An entry that
+    the base holds never changes or leaves the table. A branch may correct
+    its own new entry. A base from before the table passes. A base commit
+    that is not in the clone fails the test.
+- **The content SHA-256:** take the files of the package (not its folders)
+  and sort them by the UTF-8 bytes of their paths. For each file, write its
+  path, a NUL byte, its size in decimal ASCII digits, a NUL byte and its
+  bytes. The SHA-256 of all of it, in lowercase hex, is the content SHA-256.
+  Each path is printable ASCII (the script refuses other paths), so each ZIP
+  reader (for example Python's `zipfile`) reads the same names.
 - **A change of `agent/`** fails `npm test` until the key holder repacks on
   taylor: raise `version` in `agent/manifest.json` (Chrome installs an
   external CRX again only when its version is higher), run `npm run

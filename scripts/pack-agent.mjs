@@ -94,12 +94,18 @@ export function trackedFiles(dir) {
   }
 }
 
+// A path of the package must be printable ASCII. The ZIP has no flag bit 11 (UTF-8 names), so a reader
+// such as Python's zipfile reads a name as cp437, which is the same as UTF-8 only for ASCII; the
+// content SHA-256 of release/versions.json then is the same with each reader.
+const PRINTABLE_ASCII = /^[\x20-\x7e]+$/;
+
 // Every file that git tracks in the package, and every folder (with a trailing /) on their paths,
 // sorted, with / as the separator. An ignored or untracked file stays out. Dotfiles stay out, as with
 // Chrome's own packer (a folder on the path up to the first dotted part stays in: lib/.keep keeps
 // lib/), and so does _metadata/, which Chromium writes into an unpacked folder that it loads. A file
-// named as a key or a CRX is refused, and so is the key file itself under any name (keyFile: its
-// {dev, ino}, for a hard link), a symlink and a tracked file that is missing.
+// named as a key or a CRX is refused, and so are a symlink, a tracked file that is missing, a path
+// that is not printable ASCII, and the key file itself under any name (keyFile: its {dev, ino}, for a
+// hard link).
 export function packageFiles(dir, keyFile = null) {
   const out = new Set();
   for (const name of trackedFiles(dir)) {
@@ -115,10 +121,23 @@ export function packageFiles(dir, keyFile = null) {
       throw new Error(`${join(dir, name)}: git tracks it, but it is missing`);
     }
     if (!st.isFile()) throw new Error(`${join(dir, name)} is not a regular file`);
-    if (keyFile && st.dev === keyFile.dev && st.ino === keyFile.ino) throw new Error(`${join(dir, name)} is the key file`);
     out.add(name);
   }
-  return [...out].sort();
+  for (const name of out) {
+    if (!PRINTABLE_ASCII.test(name)) throw new Error(`the path ${JSON.stringify(name)} in ${dir} is not printable ASCII`);
+  }
+  const names = [...out].sort();
+  if (keyFile) refuseKeyFile(dir, names, keyFile);
+  return names;
+}
+
+// The key file itself (keyFile: its {dev, ino}) under any name of the package, for a hard link.
+function refuseKeyFile(dir, names, keyFile) {
+  for (const name of names) {
+    if (name.endsWith("/")) continue;
+    const st = lstatSync(join(dir, name));
+    if (st.dev === keyFile.dev && st.ino === keyFile.ino) throw new Error(`${join(dir, name)} is the key file`);
+  }
 }
 
 // A ZIP of the entries in their order: [{name, data}], data null for a folder (a name with a
@@ -221,6 +240,9 @@ function main() {
   const src = resolve(values.src ?? join(repo, "agent"));
   const out = resolve(values.out ?? join(repo, "dist"));
 
+  // The files first: a git error, or a file that is never packed, stops the build before the key is in memory.
+  const names = packageFiles(src);
+  if (!names.includes("manifest.json")) throw new Error(`git does not track ${src}/manifest.json: a CRX holds only the files that git tracks`);
   const manifest = JSON.parse(readFileSync(join(src, "manifest.json"), "utf8"));
   if (typeof manifest.key !== "string") throw new Error(`${src}/manifest.json has no "key"`);
   const { key, file: keyFile } = readPrivateKey(keyPath);
@@ -228,8 +250,7 @@ function main() {
   if (der.toString("base64") !== manifest.key) {
     throw new Error(`the "key" of ${src}/manifest.json is not the public key of ${keyPath}: the CRX would get another ID`);
   }
-  const names = packageFiles(src, keyFile);
-  if (!names.includes("manifest.json")) throw new Error(`git does not track ${src}/manifest.json: a CRX holds only the files that git tracks`);
+  refuseKeyFile(src, names, keyFile);
   const archive = zip(names.map((name) => ({ name, data: name.endsWith("/") ? null : readFileSync(join(src, name)) })));
   const crx = crx3(archive, key);
 
