@@ -111,7 +111,8 @@ site does not fill the memory of your tab.
 
 The receiver runs only in the agent's Chrome on the box. agentwatch starts that
 Chrome with `--load-extension=<agent folder>` on each launch; you do not
-install it yourself. Its ID is `dofdpnfachcncepdoondkeodcbnhipdc`.
+install it yourself. Its ID is `dofdpnfachcncepdoondkeodcbnhipdc`. It needs
+Chrome 145 or later (its frame rule, below).
 
 The native host `sh.agentwatch.browser` is agentwatch's, not this
 repository's. Its check that its parent Chrome runs on the agent profile
@@ -137,8 +138,11 @@ the receiver at all (measured), and then nothing blocks.
   sees the sent state. The answer holds counts and names only.
 - **The allowlist block:** a static rule blocks every top-level navigation,
   and one dynamic rule allows the allowlist's domains and their subdomains. So
-  the block holds from Chrome's first moment. Frames and subresources from any
-  host still load. When the list changes, the receiver closes the tabs whose
+  the block holds from Chrome's first moment. A page of an allowlisted site
+  still loads frames and subresources from any host. A second dynamic rule
+  blocks every frame of a tab whose top-level page is not on the list (for
+  example `about:blank` with content that a CDP client wrote). When the list
+  changes, the receiver closes the tabs whose
   site left it, and it reports each blocked navigation (the host only) to the
   daemon. An entry that is not a valid host is refused and counted in the
   answer; the valid entries of the same list still apply. A site's service
@@ -156,8 +160,14 @@ the receiver at all (measured), and then nothing blocks.
   sets content settings only for allowlisted hosts, and has no cookie
   operation. A navigation is a CDP command (`Page.navigate`), which the
   bridge passes on: the relay refuses a navigation to such a URL before it
-  reaches the bridge (contract C11). At each link change the bridge detaches
-  every tab that it attached.
+  reaches the bridge (contract C11). A top-level navigation that the agent
+  package starts sends `Sec-Fetch-Site: none`, as a typed URL does (a third
+  dynamic rule); Chrome would send `cross-site`. While the relay asks for it,
+  the bridge attaches each new tab at once and holds its first document
+  request until the relay's client is ready, as Chrome's own
+  `waitForDebuggerOnStart` does. Chrome starts the first request of some new
+  tabs before the hold is on (measured; see contract C10). At each link
+  change the bridge detaches every tab that it attached.
 
 ### Its permissions, and why
 
@@ -167,7 +177,7 @@ the receiver at all (measured), and then nothing blocks.
 | `scripting` | to write the page storage on the restore page and then open the site |
 | `tabs` | to open the restore tab and to close the tabs that a send or a list change makes stale |
 | `webNavigation` | to know when the restore page has loaded, and to report a blocked navigation |
-| `declarativeNetRequest` | the allowlist block |
+| `declarativeNetRequest` | the allowlist block, the frame rule and the navigation header |
 | `nativeMessaging` | the link to the agentwatch daemon |
 | `debugger` | to serve the restore page from the extension (the site never sees that request) and to bypass the site's service worker during the import; the bridge's CDP commands |
 | `browsingData` | to remove the service workers when a site leaves the allowlist: a worker would otherwise answer a navigation to its host past the block |

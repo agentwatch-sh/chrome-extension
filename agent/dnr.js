@@ -1,8 +1,10 @@
-// The allowlist as one dynamic DNR rule, plus closing tabs the list no longer covers (contract C5).
+// The allowlist as dynamic DNR rules, plus closing tabs the list no longer covers (contract C5).
 import { normalizeEntry, covers } from "./lib/domains.js";
 import { closeTabs, tabUrl } from "./tabs.js";
 
 const RULE_ID = 2;
+const FRAME_RULE_ID = 3;
+const HEADER_RULE_ID = 4;
 
 // The last list that applied in full, per chrome object: one per worker
 // start, so the first call after a start counts as a shrink.
@@ -23,6 +25,35 @@ export function allowRule(domains) {
     priority: 2,
     action: { type: "allow" },
     condition: { requestDomains: [...domains], resourceTypes: ["main_frame"] },
+  };
+}
+
+// A raw CDP client can make a top-level document with no request
+// (about:blank, setContent) and put any host in a frame there. So every
+// sub_frame request of a tab whose top-level domain is not on the list is
+// blocked; the frames of an allowlisted page still load from any host (O11).
+// Two-modes design, section 8 (measured in its probe on Chromium 156).
+// excludedTopDomains needs Chrome 145 (the manifest's minimum).
+export function frameRule(domains) {
+  const condition = { resourceTypes: ["sub_frame"] };
+  if (domains.length > 0) condition.excludedTopDomains = [...domains];
+  return { id: FRAME_RULE_ID, priority: 1, action: { type: "block" }, condition };
+}
+
+// Chrome names the extension as the initiator of a Page.navigate, so the site
+// sees Sec-Fetch-Site: cross-site. This rule sets none for the top-level
+// requests that the agent package starts, and for no other: then a
+// Page.navigate sends none and ?1, as a typed URL, and a page script's
+// navigation keeps its own value (two-modes design, section 7, measured in
+// its probe). Chrome applies a modifyHeaders rule only above the priority of
+// every allow rule that matches, so its priority is above rule 2's; the block
+// (rule 1) still holds.
+export function headerRule(extensionId) {
+  return {
+    id: HEADER_RULE_ID,
+    priority: 3,
+    action: { type: "modifyHeaders", requestHeaders: [{ header: "sec-fetch-site", operation: "set", value: "none" }] },
+    condition: { resourceTypes: ["main_frame"], initiatorDomains: [extensionId] },
   };
 }
 
@@ -47,10 +78,13 @@ export async function applyAllowlist(chrome, input) {
     if (r.ok && r.entry === d) domains.push(d);
     else refused += 1;
   }
+  // The three rules change in one call. So the frame rule always has the
+  // list of the allow rule, and the header rule is in force before the
+  // daemon confirms a list to the relay (C11: no client connects before).
   const rule = allowRule(domains);
   await chrome.declarativeNetRequest.updateDynamicRules({
-    removeRuleIds: [RULE_ID],
-    addRules: rule ? [rule] : [],
+    removeRuleIds: [RULE_ID, FRAME_RULE_ID, HEADER_RULE_ID],
+    addRules: [...(rule ? [rule] : []), frameRule(domains), headerRule(chrome.runtime.id)],
   });
   ruled.set(chrome, domains);
   const previous = applied.get(chrome);
