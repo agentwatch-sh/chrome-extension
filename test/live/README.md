@@ -6,11 +6,13 @@ and a local stub daemon stand in for agentwatch. The test sends a site's full
 state from the operator's Chromium to the agent's Chromium and checks what the
 site's first script sees there. It also checks the allowlist block, and it
 drives the agent package's bridge (contract C10) through the stub daemon: the
-frame rule, the navigation-header rule, and the eager attach with the hold of
+frame rules, the navigation-header rule, and the eager attach with the hold of
 a new tab.
 
 It never contacts a real site and never signs in anywhere. All test sites are
-`*.localhost` hosts on one local server. All cookie and storage values are
+`*.localhost` hosts on one local server, and `www.plain.test`, which the agent
+Chromium maps to the same loopback server (`--host-resolver-rules`): a plain
+`http:` site that is not localhost. All cookie and storage values are
 made-up test values, and no log, result or screenshot holds one: the logs keep
 names and counts, and the server compares the two sides in memory.
 
@@ -56,7 +58,7 @@ too if you want a clean tree.
 | Piece | What it is |
 | --- | --- |
 | Two private displays | `Xvfb :N -nolisten tcp -auth <file>`, one for each Chromium. Each auth file (0600) holds one FamilyWild MIT-MAGIC-COOKIE-1 entry from `os.urandom`; the cookie never enters an argv. The script checks that a client without the cookie is refused. |
-| The agent Chromium | `--user-data-dir=<run>/agent --no-first-run --no-default-browser-check --password-store=basic --load-extension=<repo>/agent --silent-debugger-extension-api`, headed, no remote debugging. Its profile holds the native host manifest `NativeMessagingHosts/sh.agentwatch.browser.json` (allowed origin: the receiver ID), whose `path` is a 0700 wrapper that runs `host.py`. |
+| The agent Chromium | `--user-data-dir=<run>/agent --no-first-run --no-default-browser-check --password-store=basic --load-extension=<repo>/agent --silent-debugger-extension-api "--host-resolver-rules=MAP www.plain.test 127.0.0.1"`, headed, no remote debugging. Its profile holds the native host manifest `NativeMessagingHosts/sh.agentwatch.browser.json` (allowed origin: the receiver ID), whose `path` is a 0700 wrapper that runs `host.py`. |
 | The operator Chromium | A copy of `operator/` in `<run>/sender-copy/`, whose manifest gains a test-only `commands._execute_action` shortcut (Ctrl+Shift+U) so that xdotool can open the popup. The `key` stays, so the ID stays. The committed `operator/` is never changed. |
 | `server.py` | One HTTP server on 127.0.0.1, routed by the Host header: the test sites, and the stub box at `box.localhost` (`/login` sets a made-up login cookie; `GET /api/browser/targets`; `POST /api/browser/send` checks `Origin` and the cookie, caps the body at 33,554,432 bytes, then asks the stub daemon to add the domain to the allowlist and to import). The stub daemon listens on `<sockets>/daemon.sock` (0600) and speaks contract C4: it sends each request as parts of 700,000 bytes, one main request at a time. On channel `bridge` it sends the driver's bridge requests (C10) at the same time, and it logs each bridge event by its name, tab and outcome (of a paused request its id and path), never a header, a body or other params. A control socket `<sockets>/ctl.sock` serves the driver. |
 | `host.py` | The native messaging host for this test only: Chrome's stdio messages to one NDJSON line each on the stub daemon's socket, and back. After each connect it tells the receiver `{"t":"link","up":true}`. |
@@ -87,33 +89,35 @@ The test sites:
 - `www.big30.localhost` and `www.big33.localhost`: an IndexedDB database of 30
   or 33 records of 1 MiB each.
 - `/p/<name>` and `/f/<name>` (on any test site): a page and a frame whose path
-  names one check, because the request log keeps no query value.
+  names one check, because the request log keeps no query value. `/pf/<name>`:
+  a page with the one frame `/f/<name>`.
 
 ## Results
 
 Run of 2026-11-04 on taylor (Debian 13), Chromium 156.0.8078.79, `HOLD_TRIALS=10 test/live/run.sh`
 (`all` mode) from a clean run folder, against the agent package of board task ab-v16.17 (stage 2
-part B): **71 checks, 70 passed, 1 failed**. The one failure is the accepted test-site limit of the
-earlier runs (the partitioned cookie of an http `*.localhost` site, below). Every earlier case passed
-with the frame rule and the navigation-header rule in force; the O13 cases show that a page of an
-allowlisted site still loads its off-list frame. A run of the same cases just before the last change
-(the hold keeps one request only) had the same result. The new cases:
+part B, after its review): **73 checks, 72 passed, 1 failed**. The one failure is the accepted
+test-site limit of the earlier runs (the partitioned cookie of an http `*.localhost` site, below).
+Every earlier case passed with the frame rules and the navigation-header rule in force; the O13
+cases show that a page of an allowlisted site still loads its off-list frame. The new cases:
 
 | Case | Result | How measured |
 | --- | --- | --- |
 | bridge.info answers on channel bridge | pass | the stub daemon's bridge request: `bridge` 1, the receiver ID |
-| a Page.navigate sends Sec-Fetch-Site none and ?1, as a typed URL (rule 4) | pass | server request log (a `tabs.create` with a URL sends `none` and no `Sec-Fetch-User`) |
+| plain http to a host that is not localhost: no Sec-Fetch-* header, also with rule 5 | pass | server request log for `www.plain.test`: no `Sec-Fetch-Site`, `-User`, `-Dest` or `-Mode`, for a `Page.navigate` and a page script's navigation |
+| a Page.navigate sends Sec-Fetch-Site none and ?1, as a typed URL (rule 5) | pass | server request log (a `tabs.create` with a URL sends `none` and no `Sec-Fetch-User`) |
 | a page script's navigation keeps its own Sec-Fetch-Site | pass | server request log: `same-origin`, `?1` |
-| a Page.navigate to an off-list host is still blocked (rule 1 under rule 4) | pass | receiver `blocked` event; no request for the host |
-| no frame loads under an about:blank top page, from any host (rule 3) | pass | server request log: no request of either frame (off-list and allowlisted host) |
-| frames of an allowlisted top page load from any host (rule 3, O11) | pass | server request log and the frames' page log; an `about:blank` popup of the allowlisted page loads both frames too |
+| a Page.navigate to an off-list host is still blocked (rule 1 under rule 5) | pass | receiver `blocked` event; no request for the host |
+| no frame, `<object>` or `<embed>` loads under an about:blank top page, from any host (rules 3 and 4) | pass | server request log: no request of the six (each kind from an off-list and an allowlisted host) |
+| frames, `<object>` and `<embed>` of an allowlisted top page load from any host (rule 4, O11) | pass | server request log: all six; an `about:blank` popup of the allowlisted page loads all six too |
 | bridge.attachNew [true] answers null | pass | bridge answer |
 | eager attach: each new tab is attached and held | pass | `tabs.onCreated`: `attached` and `held` true for all 40 tabs |
 | the hold keeps a first request that starts after it until bridge.release; the page then loads | pass | the request's time at the server against `tabs.onCreated` and the release; page log; no hold event reached the relay |
-| HOLD_MAX_MS: a hold with no release ends after 5 s | pass | 4995 to 5001 ms from `tabs.onCreated` to the request (7 tabs) |
+| HOLD_MAX_MS: a hold with no release ends after 5 s | pass | 4992 to 5003 ms from `tabs.onCreated` to the request (7 tabs) |
 | a client's Fetch.enable during the hold: the held request's Fetch.requestPaused reaches the relay; the client continues it | pass | bridge `debugger.onEvent` (5 of 5); the request 4 to 6 ms after the client's `Fetch.continueRequest` |
 | a held request that redirects loads after the release | pass | server request time; page log (5 of 5) |
-| bridge.attachNew [false]: a new tab is neither attached nor held | pass | `tabs.onCreated`; the request 25 to 30 ms after the event |
+| a frame of a page that the hold missed loads at once, not at the release | pass | 3 of 3 `tabs.create` with a URL of a page with a frame: the frame's request came before the release |
+| bridge.attachNew [false]: a new tab is neither attached nor held | pass | `tabs.onCreated`; the request 14 to 20 ms after the event |
 | an import with the eager attach on: the restore tab is neither attached nor held | pass | import answer (ok); `tabs.onCreated` of the restore tab; no debugger event of it reached the relay |
 
 The hold, measured (`hold.json` in the run folder). Each trial opens one new tab with the eager
@@ -124,19 +128,20 @@ was on; none did.
 
 | New tab | Caught | Trigger to `tabs.onCreated` (min, median, max) |
 | --- | --- | --- |
-| `tabs.create` with `about:blank`, then a client's `Page.navigate` before the release | 10 of 10 | 41, 45, 87 ms |
-| `window.open` from an attached page (with `userGesture`) | 8 of 10; 23 of 25 with the trials of the other hold checks | 27, 34, 76 ms |
-| a link with `target=_blank` (`noopener`) | 0 of 10 | 38, 49, 117 ms |
-| `tabs.create` with a URL | 0 of 10 | 33, 39, 86 ms |
+| `tabs.create` with `about:blank`, then a client's `Page.navigate` before the release | 10 of 10 | 32, 38, 67 ms |
+| `window.open` from an attached page (with `userGesture`) | 9 of 10; 24 of 25 with the trials of the other hold checks | 24, 28, 60 ms |
+| a link with `target=_blank` (`noopener`) | 0 of 10 | 33, 37, 135 ms |
+| `tabs.create` with a URL | 0 of 10 | 26, 31, 70 ms |
 
-A caught request reached the server 4 to 16 ms (median 5) after the release. The run just before
-caught `window.open` 24 of 25, links 0 of 10 and `tabs.create` with a URL 0 of 10. With the receiver's
-own timestamps (a scratch build, not committed): Chrome creates the first request about 5 to 10 ms
-after `tabs.onCreated` reaches the worker; the attach takes 3 to 6 ms for a `window.open` popup and
-10 to 20 ms for a `noopener` popup; `tabs.create` starts its request before the event. While the
-hold's `Fetch.enable` waited for the attach's answer, `window.open` was caught 8 of 18 times; now
-`Fetch.enable` goes right behind the attach. The opener's own `Target.setAutoAttach` with
-`waitForDebuggerOnStart` does not attach a popup (measured: no `Target.attachedToTarget`).
+A caught request reached the server 4 to 15 ms (median 5) after the release. The two runs before
+the review fixes caught `window.open` 23 and 24 of 25, links 0 of 10 and `tabs.create` with a URL 0
+of 10. With the receiver's own timestamps (a scratch build, not committed): Chrome creates the first
+request about 5 to 10 ms after `tabs.onCreated` reaches the worker; the attach takes 3 to 6 ms for a
+`window.open` popup and 10 to 20 ms for a `noopener` popup; `tabs.create` starts its request before
+the event. While the hold's `Fetch.enable` waited for the attach's answer, `window.open` was caught
+8 of 18 times; now `Fetch.enable` goes right behind the attach. The opener's own
+`Target.setAutoAttach` with `waitForDebuggerOnStart` does not attach a popup (measured: no
+`Target.attachedToTarget`).
 
 Run of 2026-11-01 on taylor (Debian 13), Chromium 156.0.8078.73, `test/live/run.sh` (`all` mode) from a
 clean run folder, against head `33d0b74` after the fix wave plus the harness fix below: **57 checks,

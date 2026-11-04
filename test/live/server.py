@@ -867,7 +867,7 @@ def make_handler(world: World) -> type:
             try:
                 if self.host == BOX_HOST:
                     self._box()
-                elif self.host.endswith(".localhost"):
+                elif self.host.endswith(".localhost") or self.host == "www.plain.test":
                     self._site()
                 else:
                     self._send(404, "unknown host")
@@ -1007,6 +1007,9 @@ def make_handler(world: World) -> type:
             # check, since the request log keeps no query value.
             if p in ("/target", "/page") or p.startswith("/p/"):
                 return self._send(200, common(PAGE_HTML).replace("__HOST__", host))
+            if p.startswith("/pf/"):  # a page with one frame, /f/<name>
+                frame = '<iframe src="/f/%s"></iframe></body>' % html.escape(p[len("/pf/"):], quote=True)
+                return self._send(200, common(PAGE_HTML).replace("__HOST__", host).replace("</body>", frame))
             if p == "/frame" or p.startswith("/f/"):
                 return self._send(200, common(FRAME_HTML))
             if p == "/img.png":

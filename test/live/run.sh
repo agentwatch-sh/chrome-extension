@@ -146,7 +146,10 @@ EOF
     sleep 0.2
   done
 
-  start_chromium "$run" agent "$a" "$run/agent" "$RECEIVER" --silent-debugger-extension-api
+  # www.plain.test: a plain-http site that is not localhost (Chrome sends it no
+  # Sec-Fetch-* header), on the same loopback server; .test is never a real site.
+  start_chromium "$run" agent "$a" "$run/agent" "$RECEIVER" --silent-debugger-extension-api \
+    "--host-resolver-rules=MAP www.plain.test 127.0.0.1"
   start_chromium "$run" operator "$o" "$run/operator" "$run/sender-copy"
 
   cat >"$run/env.json" <<EOF
