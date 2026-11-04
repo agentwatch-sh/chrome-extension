@@ -9,7 +9,7 @@ C11 are only here. They bind three repositories: this one (the receiver), agent-
 and agentwatch (the daemon).
 
 - Sender extension ID: `bpfkgknpndlpkcffmaaelkfcbpackiip`
-- Receiver extension ID: `dofdpnfachcncepdoondkeodcbnhipdc`
+- Receiver extension ID: `ifhfjdmdbgbnmllffiadajepajbcdnai`
 
 The sender is the operator package (`operator/`, operator mode). The receiver is the agent package
 (`agent/`, agent mode). Both packages come from this one source tree (two-modes design, section 3.1).
@@ -17,10 +17,31 @@ The sender is the operator package (`operator/`, operator mode). The receiver is
 ### C1. Names and IDs
 
 - Native messaging host name: `sh.agentwatch.browser`.
-- Extension IDs: fixed by the manifest `key` of each extension. Task E1 generates two fresh RSA-2048
-  keys (the private key goes through a pipe and is never written), puts the base64 DER public key into
-  each manifest, computes each ID (SHA-256 of the DER, first 32 hex digits, `0-9a-f` -> `a-p`) and
-  records both IDs in `docs/protocol.md`. Task A1 copies them into `tools/pins.py`.
+- Extension IDs: fixed by the manifest `key` of each extension, the base64 DER public key
+  (SubjectPublicKeyInfo). The ID is SHA-256 of the DER, first 32 hex digits, `0-9a-f` -> `a-p`
+  (`scripts/extension-id.mjs`). Both IDs are recorded here. Task A1 copies them into agentwatch's
+  `tools/pins.py`.
+- The sender's key: task E1 generated a fresh RSA-2048 key (the private key went through a pipe and was
+  never written) and put its public key into `operator/manifest.json`.
+- The receiver's key: Chrome's external extensions file takes a packed extension (a CRX), and the key
+  that signs the CRX fixes its ID. So board task ab-v16.18 generated a new RSA-2048 key, once, on
+  taylor. The private key lives only in `~/.config/agentwatch/browser/agent-extension.pem` on taylor
+  (mode 0600, in a 0700 folder); the operator keeps a backup in their password manager. It is never in
+  a repository, a commit, a log, an argv or a mail. Its public key is the `key` of
+  `agent/manifest.json`, so an unpacked load (`--load-extension`) and the CRX (`npm run pack:agent`,
+  see the README) have the same ID. The receiver ID before ab-v16.18 was
+  `dofdpnfachcncepdoondkeodcbnhipdc`: E1's key was never kept, so no CRX could have that ID. A lost
+  key means a new ID, and every pin of the ID changes again.
+- The pins of the receiver ID that agentwatch's stage 4 (board ab-v16.7) changes, in agentwatch main
+  `4e483512`:
+  - `agentwatch/tools/pins.py:32`: `CHROME_EXTENSION_RECEIVER_ID`.
+  - `agentwatch/tests/daemon/browser/test_unit.py:40`: `RECEIVER_ID`.
+  - `agentwatch/tests/daemon/browser/test_host_files.py:40`: the native host manifest's
+    `allowed_origins`.
+  - `docs/superpowers/handoff/agent-browser-state.md:99`: a handoff note that names the ID.
+
+  Stage 4 also moves `CHROME_EXTENSION_COMMIT` (`agentwatch/tools/pins.py:30`) to a commit of this
+  repository that holds the new `key`.
 
 ### C2. The send payload (sender -> gateway -> daemon -> receiver)
 

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createPublicKey } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -114,6 +115,17 @@ test("the block rules are C5 rules 1 and 3", () => {
   assert.deepEqual(json("agent/rules/block-frames.json"), [
     { id: 3, priority: 1, action: { type: "block" }, condition: { resourceTypes: ["sub_frame", "object"] } },
   ]);
+});
+
+// The receiver's key signs its CRX (scripts/pack-agent.mjs, contract C1): the manifest holds the
+// public key only, as a canonical base64 SubjectPublicKeyInfo of an RSA-2048 key.
+test("the agent manifest key is the public key of an RSA-2048 key, in canonical base64 DER", () => {
+  const der = Buffer.from(receiver.key, "base64");
+  assert.equal(der.toString("base64"), receiver.key);
+  const key = createPublicKey({ key: der, format: "der", type: "spki" });
+  assert.equal(key.asymmetricKeyType, "rsa");
+  assert.equal(key.asymmetricKeyDetails.modulusLength, 2048);
+  assert.ok(key.export({ type: "spki", format: "der" }).equals(der));
 });
 
 test("ids match docs/protocol.md", () => {

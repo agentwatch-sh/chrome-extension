@@ -26,7 +26,8 @@ to 5.16) and the two-modes design; the messages and fixed values are in
 | `shared/` | both (copied into `operator/lib/` and `agent/lib/` by `npm run sync`) | the value codec, the cookie conversions, the allowlist rules |
 
 Both are Manifest V3 extensions in plain JavaScript, with no build step and no
-dependencies. The operator package holds no `debugger`, `nativeMessaging` or
+dependencies; each folder loads as it is (the agent package also comes as a
+packed CRX, below). The operator package holds no `debugger`, `nativeMessaging` or
 `declarativeNetRequest` permission, so it can never control your Chrome; a
 test fails the build if it gains one.
 
@@ -111,9 +112,12 @@ site does not fill the memory of your tab.
 
 The receiver runs only in the agent's Chrome on the box. agentwatch starts that
 Chrome with `--load-extension=<agent folder>` on each launch; you do not
-install it yourself. Its ID is `dofdpnfachcncepdoondkeodcbnhipdc`. Its frame
-rule (below) needs Chrome 141; the package asks for Chrome 145 as a safe
-minimum.
+install it yourself. Google Chrome ignores that option, so for a Google Chrome
+the receiver comes as a packed CRX through Chrome's external extensions file
+(see [The packed CRX](#the-packed-crx)); agentwatch's stage 4 (board ab-v16.7)
+builds that install. Its ID is `ifhfjdmdbgbnmllffiadajepajbcdnai`, from the
+`key` in its manifest, unpacked and packed. Its frame rule (below) needs Chrome
+141; the package asks for Chrome 145 as a safe minimum.
 
 The native host `sh.agentwatch.browser` is agentwatch's, not this
 repository's. Its check that its parent Chrome runs on the agent profile
@@ -124,7 +128,46 @@ does not check its parent.
 Chromium writes its indexed ruleset into `_metadata/` in the agent folder
 when it loads the receiver. So the folder must be writable by the OS user that
 runs the agent's Chrome: from a read-only folder, Chromium 156 does not load
-the receiver at all (measured), and then nothing blocks.
+the receiver at all (measured), and then nothing blocks. A CRX does not have
+this limit: Chrome unpacks it into the profile (`Extensions/<ID>/<version>_0/`)
+and writes `_metadata/` there (measured).
+
+### The packed CRX
+
+Chrome's external extensions file takes a packed extension (a CRX) that a
+private key signs, and that key fixes the extension's ID. Build the CRX on
+taylor, where the key lives:
+
+```sh
+npm run pack:agent                  # writes dist/agent.crx (git-ignored); prints the ID and the version
+npm run pack:agent -- --key PATH    # another key file (or AGENT_KEY_PATH=PATH)
+```
+
+- **The key** lives on taylor only, in
+  `~/.config/agentwatch/browser/agent-extension.pem` (mode 0600, in a 0700
+  folder). It was generated once there (board task ab-v16.18). It never goes
+  into this repository, a commit, a log, an argv or a mail. The script reads
+  the key from that path (or from the path that you give it) and refuses a
+  key file that is not yours or that group or others can open. It never
+  prints, logs or copies the key.
+- **The backup** of the key is the operator's: the operator keeps a copy in
+  their password manager. Agents never copy or send the key.
+- **The ID.** The manifest's `key` is the public key of that file, so the
+  unpacked folder and the CRX get the same ID. The script refuses to pack
+  when the two differ.
+- **A lost key means a new ID.** Then generate a new key, put its public key
+  into `agent/manifest.json` (the base64 of `openssl pkey -in <key> -pubout
+  -outform DER`), write the new ID into docs/protocol.md, and change every
+  pin of the ID in agentwatch again (contract C1 lists them).
+
+Chrome reads `<the folder of the Chrome binary>/extensions/<ID>.json` at its
+start, with `{"external_crx": "<path of agent.crx>", "external_version":
+"<manifest version>"}`; the script prints that line. Measured on taylor on
+2026-11-04 (Chromium 156.0.8078.79, a private copy of `/usr/lib/chromium`, a
+private Xvfb display, a new profile): Chromium installed the CRX with the ID
+`ifhfjdmdbgbnmllffiadajepajbcdnai`, location 2 (external file), enabled with
+no disable reason; its worker started, both static rulesets were indexed,
+and no prompt showed.
 
 ### What it does
 
@@ -217,8 +260,9 @@ the receiver at all (measured), and then nothing blocks.
 ## Development
 
 ```sh
-npm test        # the unit tests (node --test, no dependencies)
-npm run sync    # copy shared/ into operator/lib/ and agent/lib/
+npm test             # the unit tests (node --test, no dependencies)
+npm run sync         # copy shared/ into operator/lib/ and agent/lib/
+npm run pack:agent   # the packed CRX of agent/ (see The packed CRX)
 ```
 
 `test/live/` holds a live test of both packages in real Chromium on a Linux

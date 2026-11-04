@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test test/",
-    "sync": "node scripts/sync-shared.mjs"
+    "sync": "node scripts/sync-shared.mjs",
+    "pack:agent": "node scripts/pack-agent.mjs"
   }
 }
