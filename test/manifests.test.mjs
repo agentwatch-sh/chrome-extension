@@ -33,12 +33,13 @@ test("scripts/extension-id.mjs prints both IDs when it runs, also from a path wi
   }
 });
 
-test("sender manifest", () => {
+test("operator manifest", () => {
   assert.equal(sender.manifest_version, 3);
-  assert.equal(sender.version, "0.1.0");
-  assert.equal(sender.name, "agentwatch sender");
+  assert.equal(sender.version, "0.2.0");
+  assert.equal(sender.name, "agentwatch \u2014 operator mode");
   assert.equal(sender.minimum_chrome_version, "132");
   assert.equal(typeof sender.description, "string");
+  assert.ok(sender.description.length <= 132, "Chrome's description limit");
   assert.deepEqual(sender.permissions, ["cookies", "activeTab", "scripting", "storage"]);
   assert.deepEqual(sender.optional_host_permissions, ["*://*/*"]);
   assert.equal("host_permissions" in sender, false);
@@ -57,16 +58,40 @@ test("sender manifest", () => {
   }
 });
 
-test("receiver manifest", () => {
+// Two-modes design, section 3.4: operator mode can never control the
+// operator's Chrome. Chrome gives an extension without these permissions no
+// chrome.debugger, no native port and no network rules; without these keys it
+// has no inbound channel. Optional permissions count too: a package can ask
+// for them later.
+const CONTROL_PERMISSIONS = [
+  "debugger", "nativeMessaging", "declarativeNetRequest", "declarativeNetRequestWithHostAccess",
+  "declarativeNetRequestFeedback", "webRequest", "webRequestBlocking", "proxy", "management",
+];
+const INBOUND_KEYS = ["content_scripts", "externally_connectable", "web_accessible_resources", "declarative_net_request"];
+
+test("the operator package has no control permission, no debugger and no inbound channel", () => {
+  for (const list of ["permissions", "optional_permissions"]) {
+    for (const p of sender[list] ?? []) assert.ok(!CONTROL_PERMISSIONS.includes(p), `operator ${list}: ${p}`);
+  }
+  for (const k of INBOUND_KEYS) assert.equal(k in sender, false, k);
+  // The agent package holds the control permissions, so the list is not empty by mistake.
+  for (const p of ["debugger", "nativeMessaging", "declarativeNetRequest"]) assert.ok(receiver.permissions.includes(p), p);
+});
+
+test("agent manifest", () => {
   assert.equal(receiver.manifest_version, 3);
-  assert.equal(receiver.version, "0.1.0");
-  assert.equal(receiver.name, "agentwatch receiver");
+  assert.equal(receiver.version, "0.2.0");
+  assert.equal(receiver.name, "agentwatch \u2014 agent mode (agent browser only)");
   assert.equal(receiver.minimum_chrome_version, "120");
   assert.equal(typeof receiver.description, "string");
+  assert.ok(receiver.description.length <= 132, "Chrome's description limit");
+  // Two-modes design, section 3.1; downloads and contentSettings for the bridge (C10).
   assert.deepEqual(receiver.permissions, [
     "cookies", "scripting", "tabs", "webNavigation",
     "declarativeNetRequest", "nativeMessaging", "debugger", "browsingData",
+    "downloads", "contentSettings",
   ]);
+  assert.equal("optional_permissions" in receiver, false);
   assert.deepEqual(receiver.host_permissions, ["<all_urls>"]);
   assert.deepEqual(receiver.declarative_net_request.rule_resources, [
     { id: "block_main_frame", enabled: true, path: "rules/block-main-frame.json" },
