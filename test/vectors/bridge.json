@@ -1,0 +1,240 @@
+{
+  "contract": "C10, docs/protocol.md. The receiver (stage 2) and the relay (stage 3) check their code against these vectors. Every value is a sample.",
+  "constants": {
+    "BRIDGE_VERSION": 1,
+    "WAIT_DEFAULT_MS": 30000,
+    "WAIT_MAX_MS": 600000,
+    "WAIT_SLACK_MS": 2000,
+    "MAX_IN_FLIGHT": 128,
+    "MAX_REQUEST": 134217728,
+    "MAX_TO_DAEMON": 8388608,
+    "PART_BYTES": 700000,
+    "HOLD_MAX_MS": 5000
+  },
+  "kinds": {
+    "id": "an integer of 0 or more: a tab, window or download id",
+    "object": "a JSON object",
+    "string": "a string that is not empty",
+    "boolean": "true or false",
+    "target": "{\"tabId\": <id>} or {\"tabId\": <id>, \"sessionId\": \"<child session>\"}, with no other key",
+    "contentType": "one of contentTypes"
+  },
+  "contentTypes": ["location", "notifications", "camera", "microphone", "clipboard", "automaticDownloads"],
+  "ops": [
+    { "op": "debugger.attach", "args": ["tabId"], "kinds": ["id"], "required": 1, "result": "`{\"already\": <bool>}`" },
+    { "op": "debugger.detach", "args": ["tabId"], "kinds": ["id"], "required": 1, "result": "`null`" },
+    { "op": "debugger.sendCommand", "args": ["target", "method", "params?"], "kinds": ["target", "string", "object"], "required": 2, "result": "the CDP result" },
+    { "op": "debugger.getTargets", "args": [], "kinds": [], "required": 0, "result": "`[TargetInfo]`" },
+    { "op": "tabs.create", "args": ["createProperties"], "kinds": ["object"], "required": 1, "result": "`Tab`" },
+    { "op": "tabs.get", "args": ["tabId"], "kinds": ["id"], "required": 1, "result": "`Tab`" },
+    { "op": "tabs.query", "args": ["queryInfo"], "kinds": ["object"], "required": 1, "result": "`[Tab]`" },
+    { "op": "tabs.update", "args": ["tabId", "updateProperties"], "kinds": ["id", "object"], "required": 2, "result": "`Tab`" },
+    { "op": "tabs.remove", "args": ["tabId"], "kinds": ["id"], "required": 1, "result": "`null`" },
+    { "op": "windows.get", "args": ["windowId", "queryOptions?"], "kinds": ["id", "object"], "required": 1, "result": "`Window`" },
+    { "op": "windows.create", "args": ["createData"], "kinds": ["object"], "required": 1, "result": "`Window`" },
+    { "op": "windows.update", "args": ["windowId", "updateInfo"], "kinds": ["id", "object"], "required": 2, "result": "`Window`" },
+    { "op": "downloads.search", "args": ["query"], "kinds": ["object"], "required": 1, "result": "`[DownloadItem]`" },
+    { "op": "downloads.cancel", "args": ["downloadId"], "kinds": ["id"], "required": 1, "result": "`null`" },
+    { "op": "contentSettings.set", "args": ["type", "details"], "kinds": ["contentType", "object"], "required": 2, "result": "`null`" },
+    { "op": "contentSettings.clear", "args": ["type"], "kinds": ["contentType"], "required": 1, "result": "`null`" },
+    { "op": "bridge.info", "args": [], "kinds": [], "required": 0, "result": "an object (below)" },
+    { "op": "bridge.attachNew", "args": ["on"], "kinds": ["boolean"], "required": 1, "result": "`null`" },
+    { "op": "bridge.release", "args": ["tabId"], "kinds": ["id"], "required": 1, "result": "`null`" }
+  ],
+  "requests": [
+    {
+      "req": { "t": "req", "id": "5f3a9c01-1", "op": "debugger.attach", "args": [7] },
+      "chrome": ["debugger.attach", [{ "tabId": 7 }, "1.3"]],
+      "res": { "t": "res", "ch": "bridge", "id": "5f3a9c01-1", "ok": true, "data": { "already": false } }
+    },
+    {
+      "req": { "t": "req", "id": "5f3a9c01-2", "op": "debugger.sendCommand", "args": [{ "tabId": 7 }, "Runtime.evaluate", { "expression": "Promise.resolve(1 + 1)", "awaitPromise": true, "returnByValue": true }], "wait": 600000 },
+      "chrome": ["debugger.sendCommand", [{ "tabId": 7 }, "Runtime.evaluate", { "expression": "Promise.resolve(1 + 1)", "awaitPromise": true, "returnByValue": true }]],
+      "res": { "t": "res", "ch": "bridge", "id": "5f3a9c01-2", "ok": true, "data": { "result": { "type": "number", "value": 2, "description": "2" } } }
+    },
+    {
+      "note": "A command of a child session (a frame or a worker); a missing params goes to Chrome as {}.",
+      "req": { "t": "req", "id": "5f3a9c01-3", "op": "debugger.sendCommand", "args": [{ "tabId": 7, "sessionId": "A1B2C3" }, "Runtime.enable"] },
+      "chrome": ["debugger.sendCommand", [{ "tabId": 7, "sessionId": "A1B2C3" }, "Runtime.enable", {}]],
+      "res": { "t": "res", "ch": "bridge", "id": "5f3a9c01-3", "ok": true, "data": {} }
+    },
+    {
+      "req": { "t": "req", "id": "5f3a9c01-4", "op": "debugger.detach", "args": [7] },
+      "chrome": ["debugger.detach", [{ "tabId": 7 }]],
+      "res": { "t": "res", "ch": "bridge", "id": "5f3a9c01-4", "ok": true, "data": null }
+    },
+    {
+      "req": { "t": "req", "id": "5f3a9c01-5", "op": "debugger.getTargets", "args": [] },
+      "chrome": ["debugger.getTargets", []],
+      "res": { "t": "res", "ch": "bridge", "id": "5f3a9c01-5", "ok": true, "data": [{ "id": "D1E2F3", "tabId": 7, "type": "page", "title": "a", "url": "https://a.example/", "attached": true }] }
+    },
+    {
+      "req": { "t": "req", "id": "5f3a9c01-6", "op": "tabs.create", "args": [{ "url": "about:blank", "active": false }] },
+      "chrome": ["tabs.create", [{ "url": "about:blank", "active": false }]],
+      "res": { "t": "res", "ch": "bridge", "id": "5f3a9c01-6", "ok": true, "data": { "id": 8, "windowId": 1, "index": 1, "active": false, "url": "", "pendingUrl": "about:blank", "title": "", "status": "loading" } }
+    },
+    {
+      "req": { "t": "req", "id": "5f3a9c01-7", "op": "tabs.get", "args": [8] },
+      "chrome": ["tabs.get", [8]],
+      "res": { "t": "res", "ch": "bridge", "id": "5f3a9c01-7", "ok": true, "data": { "id": 8, "windowId": 1, "index": 1, "active": false, "url": "about:blank", "title": "about:blank", "status": "complete" } }
+    },
+    {
+      "req": { "t": "req", "id": "5f3a9c01-8", "op": "tabs.query", "args": [{}] },
+      "chrome": ["tabs.query", [{}]],
+      "res": { "t": "res", "ch": "bridge", "id": "5f3a9c01-8", "ok": true, "data": [{ "id": 8, "windowId": 1, "index": 1, "active": false, "url": "about:blank", "title": "about:blank", "status": "complete" }] }
+    },
+    {
+      "req": { "t": "req", "id": "5f3a9c01-9", "op": "tabs.update", "args": [8, { "active": true }] },
+      "chrome": ["tabs.update", [8, { "active": true }]],
+      "res": { "t": "res", "ch": "bridge", "id": "5f3a9c01-9", "ok": true, "data": { "id": 8, "windowId": 1, "index": 1, "active": true, "url": "about:blank", "title": "about:blank", "status": "complete" } }
+    },
+    {
+      "req": { "t": "req", "id": "5f3a9c01-10", "op": "tabs.remove", "args": [8] },
+      "chrome": ["tabs.remove", [8]],
+      "res": { "t": "res", "ch": "bridge", "id": "5f3a9c01-10", "ok": true, "data": null }
+    },
+    {
+      "req": { "t": "req", "id": "5f3a9c01-11", "op": "windows.get", "args": [1] },
+      "chrome": ["windows.get", [1]],
+      "res": { "t": "res", "ch": "bridge", "id": "5f3a9c01-11", "ok": true, "data": { "id": 1, "left": 0, "top": 0, "width": 1280, "height": 800, "state": "normal", "type": "normal", "focused": false } }
+    },
+    {
+      "req": { "t": "req", "id": "5f3a9c01-12", "op": "windows.create", "args": [{ "url": "about:blank", "focused": false }] },
+      "chrome": ["windows.create", [{ "url": "about:blank", "focused": false }]],
+      "res": { "t": "res", "ch": "bridge", "id": "5f3a9c01-12", "ok": true, "data": { "id": 2, "left": 0, "top": 0, "width": 1280, "height": 800, "state": "normal", "type": "normal", "focused": false, "tabs": [{ "id": 9, "windowId": 2, "index": 0, "active": true, "url": "", "pendingUrl": "about:blank", "title": "", "status": "loading" }] } }
+    },
+    {
+      "req": { "t": "req", "id": "5f3a9c01-13", "op": "windows.update", "args": [2, { "width": 1000, "height": 700 }] },
+      "chrome": ["windows.update", [2, { "width": 1000, "height": 700 }]],
+      "res": { "t": "res", "ch": "bridge", "id": "5f3a9c01-13", "ok": true, "data": { "id": 2, "left": 0, "top": 0, "width": 1000, "height": 700, "state": "normal", "type": "normal", "focused": false } }
+    },
+    {
+      "req": { "t": "req", "id": "5f3a9c01-14", "op": "downloads.search", "args": [{ "id": 3 }] },
+      "chrome": ["downloads.search", [{ "id": 3 }]],
+      "res": { "t": "res", "ch": "bridge", "id": "5f3a9c01-14", "ok": true, "data": [{ "id": 3, "url": "https://a.example/f.txt", "filename": "/var/agent/downloads/f.txt", "state": "complete", "danger": "safe", "bytesReceived": 19, "totalBytes": 19 }] }
+    },
+    {
+      "req": { "t": "req", "id": "5f3a9c01-15", "op": "downloads.cancel", "args": [3] },
+      "chrome": ["downloads.cancel", [3]],
+      "res": { "t": "res", "ch": "bridge", "id": "5f3a9c01-15", "ok": true, "data": null }
+    },
+    {
+      "req": { "t": "req", "id": "5f3a9c01-16", "op": "contentSettings.set", "args": ["location", { "primaryPattern": "https://a.example/*", "setting": "allow" }] },
+      "chrome": ["contentSettings.location.set", [{ "primaryPattern": "https://a.example/*", "setting": "allow" }]],
+      "res": { "t": "res", "ch": "bridge", "id": "5f3a9c01-16", "ok": true, "data": null }
+    },
+    {
+      "req": { "t": "req", "id": "5f3a9c01-17", "op": "contentSettings.clear", "args": ["location"] },
+      "chrome": ["contentSettings.location.clear", [{}]],
+      "res": { "t": "res", "ch": "bridge", "id": "5f3a9c01-17", "ok": true, "data": null }
+    },
+    {
+      "req": { "t": "req", "id": "5f3a9c01-18", "op": "bridge.info", "args": [] },
+      "chrome": null,
+      "res": { "t": "res", "ch": "bridge", "id": "5f3a9c01-18", "ok": true, "data": { "bridge": 1, "version": "0.2.0", "id": "abcdefghijklmnopabcdefghijklmnop", "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/1.0.0.0 Safari/537.36", "fullVersion": "1.0.0.0" } }
+    },
+    {
+      "req": { "t": "req", "id": "5f3a9c01-19", "op": "bridge.attachNew", "args": [true] },
+      "chrome": null,
+      "res": { "t": "res", "ch": "bridge", "id": "5f3a9c01-19", "ok": true, "data": null }
+    },
+    {
+      "req": { "t": "req", "id": "5f3a9c01-20", "op": "bridge.release", "args": [9] },
+      "chrome": null,
+      "res": { "t": "res", "ch": "bridge", "id": "5f3a9c01-20", "ok": true, "data": null }
+    }
+  ],
+  "badRequests": [
+    { "note": "No cookie op exists (C11, ab-8mf).", "req": { "t": "req", "id": "b1", "op": "cookies.getAll", "args": [{}] }, "error": "unknown op", "res": { "t": "res", "ch": "bridge", "id": "b1", "ok": false, "error": "unknown op" } },
+    { "note": "A main op is not a bridge op (C4).", "req": { "t": "req", "id": "b2", "op": "ping" }, "error": "unknown op", "res": { "t": "res", "ch": "bridge", "id": "b2", "ok": false, "error": "unknown op" } },
+    { "req": { "t": "req", "id": "b3", "op": "tabs.get", "args": ["7"] }, "error": "bad args", "res": { "t": "res", "ch": "bridge", "id": "b3", "ok": false, "error": "bad args" } },
+    { "req": { "t": "req", "id": "b4", "op": "tabs.update", "args": [7] }, "error": "bad args", "res": { "t": "res", "ch": "bridge", "id": "b4", "ok": false, "error": "bad args" } },
+    { "req": { "t": "req", "id": "b5", "op": "tabs.remove", "args": [7, 8] }, "error": "bad args", "res": { "t": "res", "ch": "bridge", "id": "b5", "ok": false, "error": "bad args" } },
+    { "req": { "t": "req", "id": "b6", "op": "debugger.sendCommand", "args": [{ "tabId": 7, "extensionId": "x" }, "Page.enable"] }, "error": "bad args", "res": { "t": "res", "ch": "bridge", "id": "b6", "ok": false, "error": "bad args" } },
+    { "req": { "t": "req", "id": "b7", "op": "contentSettings.set", "args": ["cookies", { "primaryPattern": "<all_urls>", "setting": "allow" }] }, "error": "bad args", "res": { "t": "res", "ch": "bridge", "id": "b7", "ok": false, "error": "bad args" } },
+    { "req": { "t": "req", "id": "b8", "op": "tabs.get", "args": [7], "wait": 0 }, "error": "bad wait", "res": { "t": "res", "ch": "bridge", "id": "b8", "ok": false, "error": "bad wait" } },
+    { "req": { "t": "req", "id": "b9", "op": "tabs.get", "args": [7], "wait": 600001 }, "error": "bad wait", "res": { "t": "res", "ch": "bridge", "id": "b9", "ok": false, "error": "bad wait" } },
+    { "req": { "t": "req", "id": "b10", "op": "tabs.get", "args": [7], "wait": 1.5 }, "error": "bad wait", "res": { "t": "res", "ch": "bridge", "id": "b10", "ok": false, "error": "bad wait" } },
+    { "note": "Tab 9 is not attached by the bridge.", "req": { "t": "req", "id": "b11", "op": "debugger.sendCommand", "args": [{ "tabId": 9 }, "Page.enable", {}] }, "error": "not attached", "res": { "t": "res", "ch": "bridge", "id": "b11", "ok": false, "error": "not attached" } },
+    { "note": "Tab 5 is the restore tab of a running import (C6).", "req": { "t": "req", "id": "b12", "op": "debugger.attach", "args": [5] }, "error": "not an agent tab", "res": { "t": "res", "ch": "bridge", "id": "b12", "ok": false, "error": "not an agent tab" } }
+  ],
+  "events": [
+    { "ev": "debugger.onEvent", "fields": ["source", "method", "params"] },
+    { "ev": "debugger.onDetach", "fields": ["source", "reason"] },
+    { "ev": "tabs.onCreated", "fields": ["tab", "attached", "held"] },
+    { "ev": "tabs.onUpdated", "fields": ["tabId", "changeInfo", "tab"] },
+    { "ev": "tabs.onRemoved", "fields": ["tabId", "removeInfo"] },
+    { "ev": "tabs.onReplaced", "fields": ["addedTabId", "removedTabId"] },
+    { "ev": "webNavigation.onCreatedNavigationTarget", "fields": ["details"] },
+    { "ev": "webNavigation.onErrorOccurred", "fields": ["details"] },
+    { "ev": "downloads.onCreated", "fields": ["item"] },
+    { "ev": "downloads.onChanged", "fields": ["delta"] },
+    { "ev": "bridge.tooLarge", "fields": ["of", "tabId"] }
+  ],
+  "eventVectors": [
+    {
+      "chrome": ["debugger.onEvent", [{ "tabId": 7 }, "Page.loadEventFired", { "timestamp": 12.5 }]],
+      "ev": { "t": "ev", "ch": "bridge", "ev": "debugger.onEvent", "source": { "tabId": 7 }, "method": "Page.loadEventFired", "params": { "timestamp": 12.5 } }
+    },
+    {
+      "note": "An event of a child session (a frame or a worker).",
+      "chrome": ["debugger.onEvent", [{ "tabId": 7, "sessionId": "A1B2C3" }, "Runtime.executionContextCreated", { "context": { "id": 3, "origin": "https://c.example", "name": "", "uniqueId": "u3" } }]],
+      "ev": { "t": "ev", "ch": "bridge", "ev": "debugger.onEvent", "source": { "tabId": 7, "sessionId": "A1B2C3" }, "method": "Runtime.executionContextCreated", "params": { "context": { "id": 3, "origin": "https://c.example", "name": "", "uniqueId": "u3" } } }
+    },
+    {
+      "chrome": ["debugger.onDetach", [{ "tabId": 7 }, "target_closed"]],
+      "ev": { "t": "ev", "ch": "bridge", "ev": "debugger.onDetach", "source": { "tabId": 7 }, "reason": "target_closed" }
+    },
+    {
+      "note": "The eager attach is on: the receiver attached the new tab and holds its first document request.",
+      "chrome": ["tabs.onCreated", [{ "id": 9, "windowId": 1, "index": 2, "openerTabId": 7, "active": true, "url": "", "pendingUrl": "https://a.example/popup", "title": "", "status": "loading" }]],
+      "ev": { "t": "ev", "ch": "bridge", "ev": "tabs.onCreated", "tab": { "id": 9, "windowId": 1, "index": 2, "openerTabId": 7, "active": true, "url": "", "pendingUrl": "https://a.example/popup", "title": "", "status": "loading" }, "attached": true, "held": true }
+    },
+    {
+      "note": "The eager attach failed: the event names Chrome's error.",
+      "chrome": ["tabs.onCreated", [{ "id": 10, "windowId": 1, "index": 3, "active": true, "url": "", "pendingUrl": "chrome://newtab/", "title": "", "status": "loading" }]],
+      "ev": { "t": "ev", "ch": "bridge", "ev": "tabs.onCreated", "tab": { "id": 10, "windowId": 1, "index": 3, "active": true, "url": "", "pendingUrl": "chrome://newtab/", "title": "", "status": "loading" }, "attached": false, "held": false, "error": "Cannot access a chrome:// URL" }
+    },
+    {
+      "chrome": ["tabs.onUpdated", [9, { "status": "complete" }, { "id": 9, "windowId": 1, "index": 2, "active": true, "url": "https://a.example/popup", "title": "Popup", "status": "complete" }]],
+      "ev": { "t": "ev", "ch": "bridge", "ev": "tabs.onUpdated", "tabId": 9, "changeInfo": { "status": "complete" }, "tab": { "id": 9, "windowId": 1, "index": 2, "active": true, "url": "https://a.example/popup", "title": "Popup", "status": "complete" } }
+    },
+    {
+      "chrome": ["tabs.onRemoved", [9, { "windowId": 1, "isWindowClosing": false }]],
+      "ev": { "t": "ev", "ch": "bridge", "ev": "tabs.onRemoved", "tabId": 9, "removeInfo": { "windowId": 1, "isWindowClosing": false } }
+    },
+    {
+      "chrome": ["tabs.onReplaced", [11, 9]],
+      "ev": { "t": "ev", "ch": "bridge", "ev": "tabs.onReplaced", "addedTabId": 11, "removedTabId": 9 }
+    },
+    {
+      "chrome": ["webNavigation.onCreatedNavigationTarget", [{ "sourceTabId": 7, "sourceFrameId": 0, "sourceProcessId": 12, "tabId": 9, "url": "https://a.example/popup", "timeStamp": 1700000000000 }]],
+      "ev": { "t": "ev", "ch": "bridge", "ev": "webNavigation.onCreatedNavigationTarget", "details": { "sourceTabId": 7, "sourceFrameId": 0, "sourceProcessId": 12, "tabId": 9, "url": "https://a.example/popup", "timeStamp": 1700000000000 } }
+    },
+    {
+      "note": "Main frame only, and only these four fields.",
+      "chrome": ["webNavigation.onErrorOccurred", [{ "tabId": 7, "frameId": 0, "parentFrameId": -1, "processId": 12, "documentId": "DOC1", "url": "https://b.example/", "error": "net::ERR_BLOCKED_BY_CLIENT", "timeStamp": 1700000000000 }]],
+      "ev": { "t": "ev", "ch": "bridge", "ev": "webNavigation.onErrorOccurred", "details": { "tabId": 7, "frameId": 0, "url": "https://b.example/", "error": "net::ERR_BLOCKED_BY_CLIENT" } }
+    },
+    {
+      "chrome": ["downloads.onCreated", [{ "id": 3, "url": "https://a.example/f.txt", "filename": "", "state": "in_progress", "danger": "safe", "bytesReceived": 0, "totalBytes": 19 }]],
+      "ev": { "t": "ev", "ch": "bridge", "ev": "downloads.onCreated", "item": { "id": 3, "url": "https://a.example/f.txt", "filename": "", "state": "in_progress", "danger": "safe", "bytesReceived": 0, "totalBytes": 19 } }
+    },
+    {
+      "chrome": ["downloads.onChanged", [{ "id": 3, "state": { "previous": "in_progress", "current": "complete" } }]],
+      "ev": { "t": "ev", "ch": "bridge", "ev": "downloads.onChanged", "delta": { "id": 3, "state": { "previous": "in_progress", "current": "complete" } } }
+    },
+    {
+      "note": "In place of a debugger.onEvent whose message is above MAX_TO_DAEMON.",
+      "chrome": null,
+      "ev": { "t": "ev", "ch": "bridge", "ev": "bridge.tooLarge", "of": "debugger.onEvent", "tabId": 7, "method": "Network.webSocketFrameReceived" }
+    }
+  ],
+  "daemonErrors": ["not connected", "disconnected", "timeout"],
+  "daemonLines": [
+    { "t": "link", "up": true, "version": "0.2.0" },
+    { "t": "link", "up": false },
+    { "t": "allowlist", "domains": ["a.example"] },
+    { "t": "end_scope", "scope": "ab-lead" }
+  ]
+}
