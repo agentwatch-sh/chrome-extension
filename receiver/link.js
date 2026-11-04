@@ -2,7 +2,7 @@
 // "main" runs its requests one at a time in arrival order (an import can take
 // 115 s); "bridge" starts each request as soon as it is joined, so a bridge
 // request never waits behind an import or behind another bridge request.
-import { CHANNELS, ChannelJoiner } from "./wire.js";
+import { CHANNELS, ChannelJoiner, jsonTooLarge } from "./wire.js";
 
 const HOST_NAME = "sh.agentwatch.browser";
 const MAX_DELAY_MS = 30000;
@@ -18,6 +18,17 @@ const DEFAULT_TIMEOUT_MS = 9000;
 // during a daemon outage of a running host still reaches only the host, which
 // drops it.
 const MAX_WAITING = 100;
+
+// The daemon drops the link at a message over MAX_TO_DAEMON (wire.js). So a res
+// over it goes as the error "too large", and any other message over it (or a
+// res whose error is still too large) is never sent.
+function fitForDaemon(msg) {
+  if (!jsonTooLarge(msg)) return msg;
+  if (msg.t !== "res") return null;
+  const fields = { id: msg.id, ok: false, error: "too large" };
+  const res = Object.hasOwn(msg, "ch") ? { t: "res", ch: msg.ch, ...fields } : { t: "res", ...fields };
+  return jsonTooLarge(res) ? null : res;
+}
 
 export class ReceiverLink {
   #chrome;
@@ -53,8 +64,10 @@ export class ReceiverLink {
       return;
     }
     if (!this.#port) return;
+    const out = fitForDaemon(msg);
+    if (out === null) return;
     try {
-      this.#port.postMessage(msg);
+      this.#port.postMessage(out);
     } catch {
       // The port is closing; onDisconnect schedules the reconnect.
     }
@@ -91,6 +104,8 @@ export class ReceiverLink {
     if (!msg || typeof msg !== "object") return;
     if (msg.t === "link") {
       if (msg.up === true) {
+        // A new daemon connection: the unfinished parts came from the old one.
+        this.#joiner = new ChannelJoiner();
         this.#linkUp = true;
         this.#hello();
         const waiting = this.#waiting;
@@ -116,7 +131,7 @@ export class ReceiverLink {
   #withTimeout(promise, ch, op) {
     let handle;
     const timeout = new Promise((_, reject) => {
-      const table = TIMEOUT_MS[ch];
+      const table = TIMEOUT_MS[ch] ?? {};
       const ms = Object.hasOwn(table, op) ? table[op] : DEFAULT_TIMEOUT_MS;
       handle = this.#setTimer(() => reject(new Error("timeout")), ms);
     });

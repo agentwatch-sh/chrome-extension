@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ReceiverLink, watchBlocked } from "../receiver/link.js";
-import { PART_BYTES, splitParts } from "../receiver/wire.js";
+import { PART_BYTES, MAX_TO_DAEMON, splitParts } from "../receiver/wire.js";
 import { makeFakeChrome } from "./fake-chrome.mjs";
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -21,6 +21,7 @@ const sendReq = (port, req, ch) => {
 };
 const HELLO = { t: "hello", v: 2, version: "0.1.0", channels: ["main", "bridge"] };
 const resOf = (port) => port.posted.filter((m) => m.t === "res");
+const byId = (list) => list.slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
 test("connect posts hello and a link up posts hello again; the hello names the channels", () => {
   const { f } = setup();
@@ -289,10 +290,10 @@ test("bridge requests do not wait for each other; each res comes when its reques
   sendReq(port, { t: "req", id: "f", op: "fast" }, "bridge");
   sendReq(port, { t: "req", id: "x", op: "fail" }, "bridge");
   await tick();
-  assert.deepEqual(resOf(port), [
+  assert.deepEqual(byId(resOf(port)), [
     { t: "res", ch: "bridge", id: "f", ok: true, data: { n: 2 } },
     { t: "res", ch: "bridge", id: "x", ok: false, error: "no tab" },
-  ]);
+  ], "the two that ended answered; the slow one still runs");
   release();
   await tick();
   assert.deepEqual(resOf(port).at(-1), { t: "res", ch: "bridge", id: "s", ok: true, data: { n: 1 } });
@@ -319,24 +320,100 @@ test("a part with an unknown channel gets no answer and runs nothing", async () 
   assert.deepEqual(resOf(port), []);
 });
 
-test("a disconnect mutes the in-flight bridge answers, and a new connection joins afresh", async () => {
+test("a disconnect mutes the in-flight answers of both channels, also on the next connection, and a new connection joins afresh", async () => {
   const { gate, release } = gated();
-  const { f, timers } = setup({}, { slow: async () => { await gate; return {}; }, call: async () => ({}) });
+  const { f, timers } = setup({ ping: async () => { await gate; return {}; } }, { slow: async () => { await gate; return {}; }, call: async () => ({}) });
   const port = f.ports[0];
+  sendReq(port, { t: "req", id: "m", op: "ping" });
   sendReq(port, { t: "req", id: "s", op: "slow" }, "bridge");
   const half = splitParts("h", { t: "req", id: "h", op: "call", pad: "h".repeat(800000) }, PART_BYTES, "bridge");
   port.fireMessage(half[0]);
   await tick();
   port.fireDisconnect();
+  timers.at(-1).fn(); // the reconnect, before the old requests end
+  const next = f.ports[1];
   release();
   await tick();
+  await tick();
   assert.deepEqual(resOf(port), []);
-  timers.at(-1).fn();
-  const next = f.ports[1];
+  assert.deepEqual(resOf(next), [], "the old requests' answers never reach the new connection");
   next.fireMessage(half[1]);
   await tick();
   assert.deepEqual(resOf(next), [], "a part of the old connection never completes a request");
   sendReq(next, { t: "req", id: "c", op: "call" }, "bridge");
   await tick();
   assert.deepEqual(resOf(next), [{ t: "res", ch: "bridge", id: "c", ok: true, data: {} }]);
+});
+
+test("a link up drops the unfinished parts of both channels: they came from the daemon connection that ended", async () => {
+  const seen = [];
+  const { f } = setup({ import: async (r) => (seen.push(r.id), {}) }, { call: async (r) => (seen.push(r.id), {}) });
+  const port = f.ports[0];
+  const imp = splitParts("i", { t: "req", id: "i", op: "import", state: {}, pad: "s".repeat(800000) });
+  const br = splitParts("b", { t: "req", id: "b", op: "call", pad: "b".repeat(800000) }, PART_BYTES, "bridge");
+  port.fireMessage(imp[0]);
+  port.fireMessage(br[0]);
+  port.fireMessage({ t: "link", up: true }); // the native host connected to the daemon again
+  port.fireMessage(imp[1]);
+  port.fireMessage(br[1]);
+  await tick();
+  assert.deepEqual(seen, []);
+  assert.deepEqual(resOf(port), []);
+  sendReq(port, { t: "req", id: "i2", op: "import", state: {} });
+  sendReq(port, { t: "req", id: "b2", op: "call" }, "bridge");
+  await tick();
+  assert.deepEqual(seen.sort(), ["b2", "i2"]);
+});
+
+test("the waits are per channel: import gets 115 s on main only, every other request 9 s", async () => {
+  const never = () => new Promise(() => {});
+  const { f, timers } = setup({ import: never, ping: never }, { import: never, call: never });
+  const port = f.ports[0];
+  sendReq(port, { t: "req", id: "bi", op: "import" }, "bridge");
+  sendReq(port, { t: "req", id: "bc", op: "call" }, "bridge");
+  sendReq(port, { t: "req", id: "mi", op: "import", state: {} });
+  sendReq(port, { t: "req", id: "mp", op: "ping" });
+  await tick();
+  assert.deepEqual(timers.map((t) => t.ms), [9000, 9000, 115000]);
+  timers[2].fn(); // the main import times out, so the main ping starts
+  await tick();
+  await tick();
+  assert.deepEqual(timers.map((t) => t.ms), [9000, 9000, 115000, 9000]);
+});
+
+test("a res over 8 MiB goes as ok:false \"too large\" on both channels; one at the limit goes as it is", async () => {
+  const atLimit = (res) => "x".repeat(MAX_TO_DAEMON - JSON.stringify(res).length);
+  const mainFit = atLimit({ t: "res", id: "m2", ok: true, data: { s: "" } });
+  const bridgeFit = atLimit({ t: "res", ch: "bridge", id: "b2", ok: true, data: { s: "" } });
+  const { f } = setup(
+    { ping: async (r) => ({ s: r.id === "m1" ? mainFit + "x" : mainFit }) },
+    { call: async (r) => ({ s: r.id === "b1" ? bridgeFit + "x" : bridgeFit }) },
+  );
+  const port = f.ports[0];
+  for (const id of ["m1", "m2"]) sendReq(port, { t: "req", id, op: "ping" });
+  for (const id of ["b1", "b2"]) sendReq(port, { t: "req", id, op: "call" }, "bridge");
+  await tick();
+  await tick();
+  const res = resOf(port);
+  assert.deepEqual(byId(res).map((m) => [m.id, m.ok, m.error]), [
+    ["b1", false, "too large"], ["b2", true, undefined], ["m1", false, "too large"], ["m2", true, undefined],
+  ]);
+  assert.deepEqual(res.find((m) => m.id === "m1"), { t: "res", id: "m1", ok: false, error: "too large" });
+  assert.deepEqual(res.find((m) => m.id === "b1"), { t: "res", ch: "bridge", id: "b1", ok: false, error: "too large" });
+  for (const m of res.filter((x) => x.ok)) assert.equal(new TextEncoder().encode(JSON.stringify(m)).length, MAX_TO_DAEMON);
+});
+
+test("a message over 8 MiB that cannot become a short res is never sent", async () => {
+  const { f, link } = setup();
+  const port = f.ports[0];
+  port.fireMessage({ t: "link", up: true });
+  const before = port.posted.length;
+  link.send({ t: "blocked", tab: 1, host: "h".repeat(MAX_TO_DAEMON) });
+  const id = "i".repeat(MAX_TO_DAEMON); // even its error res is too large
+  sendReq(port, { t: "req", id, op: "ping" });
+  await tick();
+  assert.equal(port.posted.length, before);
+  sendReq(port, { t: "req", id: "p", op: "ping" });
+  await tick();
+  assert.deepEqual(port.posted.slice(before), [{ t: "res", id: "p", ok: true, data: {} }], "the link goes on");
 });

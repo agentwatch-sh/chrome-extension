@@ -4,7 +4,25 @@
 export const PART_BYTES = 700000;
 // "main" carries ping, set_allowlist and import; "bridge" carries the agent-mode
 // bridge (C10). A part without "ch" is main.
-export const CHANNELS = ["main", "bridge"];
+export const CHANNELS = Object.freeze(["main", "bridge"]);
+// The daemon reads a line of at most 8 MiB from the native host and drops the
+// link at a longer one, which would fail a running import.
+export const MAX_TO_DAEMON = 8 * 1024 * 1024;
+
+// True when msg's JSON is over limit bytes of UTF-8 (Chrome sends the native
+// host the UTF-8 of its JSON). A value that JSON cannot carry is left to
+// postMessage, as before.
+export function jsonTooLarge(msg, limit = MAX_TO_DAEMON) {
+  let s;
+  try {
+    s = JSON.stringify(msg);
+  } catch {
+    return false;
+  }
+  if (typeof s !== "string" || s.length * 3 <= limit) return false; // a code unit is at most 3 bytes
+  if (s.length > limit) return true; // and at least 1
+  return new TextEncoder().encode(s).length > limit;
+}
 
 function toBase64(bytes) {
   let s = "";

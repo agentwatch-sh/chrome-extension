@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { PART_BYTES, CHANNELS, splitParts, PartJoiner, ChannelJoiner } from "../receiver/wire.js";
+import { PART_BYTES, CHANNELS, MAX_TO_DAEMON, splitParts, PartJoiner, ChannelJoiner, jsonTooLarge } from "../receiver/wire.js";
 
 const big = () => ({ t: "req", id: "x", op: "import", pad: "a".repeat(1500001 - 43) });
 
@@ -88,6 +88,7 @@ const noCh = ({ ch, ...part }) => part;
 
 test("the channels are main and bridge; splitParts names a channel only when asked", () => {
   assert.deepEqual(CHANNELS, ["main", "bridge"]);
+  assert.ok(Object.isFrozen(CHANNELS));
   assert.ok(!Object.hasOwn(splitParts("a", ping("a"))[0], "ch"));
   const parts = splitParts("b", big(), PART_BYTES, "bridge");
   assert.equal(parts.length, 3);
@@ -159,6 +160,7 @@ test("a bad part drops its own channel's request only", () => {
   assert.equal(j.push(imp[0]), null);
   assert.equal(j.push(br[0]), null);
   assert.equal(j.push({ ...br[1], b64: "!!!" }), null);
+  assert.equal(j.push(br[1]), null, "the dropped id stays dropped");
   assert.equal(j.push(br[2]), null);
   assert.equal(j.push(imp[1]), null);
   assert.deepEqual(j.push(imp[2]), { ch: "main", req: big() });
@@ -174,4 +176,23 @@ test("the shared bridge vector splits and joins exactly", () => {
   let out = null;
   for (const p of v.parts) out = j.push(p);
   assert.deepEqual(out, { ch: "bridge", req: v.request });
+});
+
+// ---- the size of a message to the daemon ----
+
+test("a message to the daemon is at most 8 MiB of UTF-8 JSON", () => {
+  assert.equal(MAX_TO_DAEMON, 8388608);
+  const msg = (s) => ({ t: "res", id: "a", ok: true, data: { s } });
+  const pad = MAX_TO_DAEMON - JSON.stringify(msg("")).length;
+  assert.equal(jsonTooLarge(msg("x".repeat(pad))), false, "exactly the limit");
+  assert.equal(jsonTooLarge(msg("x".repeat(pad + 1))), true, "one byte more");
+  const two = "\u00e9"; // 2 bytes in UTF-8, 1 code unit
+  const k = Math.floor(pad / 2);
+  assert.equal(jsonTooLarge(msg(two.repeat(k))), false);
+  assert.equal(jsonTooLarge(msg(two.repeat(k + 1))), true, "the bytes count, not the code units");
+  assert.equal(jsonTooLarge({ s: two }, 10), false, '{"s":"\u00e9"} is 10 bytes');
+  assert.equal(jsonTooLarge({ s: two }, 9), true);
+  assert.equal(jsonTooLarge({ s: "\u{1f600}" }, 12), false, "a pair of surrogates is 4 bytes");
+  assert.equal(jsonTooLarge({ s: "\u{1f600}" }, 11), true);
+  assert.equal(jsonTooLarge({ n: 1n }), false, "a value that JSON cannot carry is left to postMessage");
 });
