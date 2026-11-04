@@ -9,13 +9,15 @@
 //   The file must be a regular file of this user that group and others cannot
 //   open (mode 0600 or 0400). This script never prints, logs or copies the key.
 // --out DIR: where agent.crx goes. Default dist/ (git-ignored).
-// --src DIR: the package folder. Default agent/.
+// --src DIR: the package folder, in a git work tree. Default agent/. Only the files that git tracks
+//   there go into the CRX: an ignored or untracked file (agent/notes.zip, agent/attach.js~) stays out.
 //
 // The manifest's "key" must be the public key of that private key, so that the
 // unpacked folder and the CRX have the same extension ID. A file of the package
 // named *.pem, *.key, *.der or *.crx, or the key file itself, stops the build.
+import { execFileSync } from "node:child_process";
 import { createHash, createPrivateKey, createPublicKey, sign } from "node:crypto";
-import { closeSync, constants, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -75,35 +77,48 @@ export function publicKeyDer(privateKey) {
 
 // --- The package and the ZIP ---
 
-// A key or a CRX in the package folder (git ignores *.pem and *.crx, so a copy there is easy
-// to miss) would go into a CRX that anyone can unpack.
+// A key or a CRX that git tracks in the package folder (git add -f passes the ignore rules for
+// *.pem and *.crx) would go into a CRX that anyone can unpack.
 const NEVER_PACKED = /\.(pem|key|der|crx)$/i;
 
-// Every folder (with a trailing /) and file of the package, sorted, with / as the separator.
-// Dotfiles stay out, as with Chrome's own packer, and so does _metadata/, which Chromium writes
-// into an unpacked folder that it loads. A file named as a key or a CRX is refused, and so is
-// the key file itself under any name (keyFile: its {dev, ino}, for a hard link).
+// The files that git tracks in the package folder, relative to it, with / as the separator.
+export function trackedFiles(dir) {
+  try {
+    return execFileSync("git", ["ls-files", "-z", "--", "."], { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
+      .split("\0")
+      .filter(Boolean);
+  } catch (e) {
+    // git's own words (not a git repository, git not found): the folder's path, never a file's content.
+    const why = String(e.stderr ?? "").trim().split("\n")[0] || e.code || e.message;
+    throw new Error(`cannot list the files that git tracks in ${dir} (${why}): a CRX holds only those files`);
+  }
+}
+
+// Every file that git tracks in the package, and every folder (with a trailing /) on their paths,
+// sorted, with / as the separator. An ignored or untracked file stays out. Dotfiles stay out, as with
+// Chrome's own packer (a folder on the path up to the first dotted part stays in: lib/.keep keeps
+// lib/), and so does _metadata/, which Chromium writes into an unpacked folder that it loads. A file
+// named as a key or a CRX is refused, and so is the key file itself under any name (keyFile: its
+// {dev, ino}, for a hard link), a symlink and a tracked file that is missing.
 export function packageFiles(dir, keyFile = null) {
-  const out = [];
-  const walk = (rel) => {
-    for (const e of readdirSync(join(dir, rel), { withFileTypes: true })) {
-      if (e.name.startsWith(".") || (rel === "" && e.name === "_metadata")) continue;
-      const name = rel + e.name;
-      if (e.isDirectory()) {
-        out.push(name + "/");
-        walk(name + "/");
-      } else if (e.isFile()) {
-        if (NEVER_PACKED.test(e.name)) throw new Error(`${join(dir, name)}: a key or a CRX is never packed`);
-        const st = keyFile && statSync(join(dir, name));
-        if (st && st.dev === keyFile.dev && st.ino === keyFile.ino) throw new Error(`${join(dir, name)} is the key file`);
-        out.push(name);
-      } else {
-        throw new Error(`${join(dir, name)} is not a regular file or folder`);
-      }
+  const out = new Set();
+  for (const name of trackedFiles(dir)) {
+    const parts = name.split("/");
+    if (parts[0] === "_metadata") continue;
+    for (let i = 1; i < parts.length && !parts[i - 1].startsWith("."); i++) out.add(parts.slice(0, i).join("/") + "/");
+    if (parts.some((p) => p.startsWith("."))) continue;
+    if (NEVER_PACKED.test(name)) throw new Error(`${join(dir, name)}: a key or a CRX is never packed`);
+    let st;
+    try {
+      st = lstatSync(join(dir, name));
+    } catch {
+      throw new Error(`${join(dir, name)}: git tracks it, but it is missing`);
     }
-  };
-  walk("");
-  return out.sort();
+    if (!st.isFile()) throw new Error(`${join(dir, name)} is not a regular file`);
+    if (keyFile && st.dev === keyFile.dev && st.ino === keyFile.ino) throw new Error(`${join(dir, name)} is the key file`);
+    out.add(name);
+  }
+  return [...out].sort();
 }
 
 // A ZIP of the entries in their order: [{name, data}], data null for a folder (a name with a
@@ -214,6 +229,7 @@ function main() {
     throw new Error(`the "key" of ${src}/manifest.json is not the public key of ${keyPath}: the CRX would get another ID`);
   }
   const names = packageFiles(src, keyFile);
+  if (!names.includes("manifest.json")) throw new Error(`git does not track ${src}/manifest.json: a CRX holds only the files that git tracks`);
   const archive = zip(names.map((name) => ({ name, data: name.endsWith("/") ? null : readFileSync(join(src, name)) })));
   const crx = crx3(archive, key);
 

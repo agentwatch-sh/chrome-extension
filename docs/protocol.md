@@ -34,12 +34,17 @@ The sender is the operator package (`operator/`, operator mode). The receiver is
   `dofdpnfachcncepdoondkeodcbnhipdc`: E1's key was never kept, so no CRX could have that ID. A lost
   key means a new ID, and every pin of the ID changes again.
 - The committed CRX (board task ab-v16.22): `release/agent.crx` holds the packed `agent/` folder of
-  the same commit, signed with that key. agentwatch pins a commit of this repository (40-hex) and
-  installs its `release/agent.crx`; agentwatch never runs the pack script and never opens the key. A
-  test checks, without the key, that the committed CRX has this ID, a valid signature and exactly
-  the files of `agent/`. A change of `agent/` raises the `version` in `agent/manifest.json` (Chrome
-  installs an external CRX again only for a higher `external_version`) and repacks
-  (`npm run pack:agent -- --out release`) on taylor, in the same commit.
+  the same commit (the files that git tracks there), signed with that key. agentwatch pins a commit
+  of this repository (40-hex) and the SHA-256 of its `release/agent.crx`, and installs that CRX;
+  agentwatch never runs the pack script and never opens the key. A test checks, without the key,
+  that the committed CRX has this ID, a valid signature and exactly the tracked files of `agent/`.
+  `release/versions.json` (board task ab-v16.24) holds each released `version` and the SHA-256 of
+  its content (its sorted file paths and bytes, not the CRX bytes, which depend on the zlib build). A
+  test checks that the entry of the manifest `version` matches `agent/` and the CRX, that this
+  version is the highest in the table, and that no entry changes. A change of `agent/` raises the
+  `version` in `agent/manifest.json` (Chrome installs an external CRX again only for a higher
+  `external_version`), repacks (`npm run pack:agent -- --out release`) on taylor and adds the entry
+  of the new version, in the same commit.
 - The pins of the receiver ID that agentwatch's stage 4 (board ab-v16.7) changes, in agentwatch main
   `4e483512`:
   - `agentwatch/tools/pins.py:32`: `CHROME_EXTENSION_RECEIVER_ID`.
@@ -49,7 +54,9 @@ The sender is the operator package (`operator/`, operator mode). The receiver is
   - `docs/superpowers/handoff/agent-browser-state.md:99`: a handoff note that names the ID.
 
   Stage 4 also moves `CHROME_EXTENSION_COMMIT` (`agentwatch/tools/pins.py:30`) to a commit of this
-  repository that holds the new `key`.
+  repository that holds the new `key` and `release/agent.crx`, and pins the SHA-256 of that CRX. A
+  change of `agent/` reaches the boxes only after agentwatch moves both pins: the commit and the CRX
+  SHA-256.
 
 ### C2. The send payload (sender -> gateway -> daemon -> receiver)
 
