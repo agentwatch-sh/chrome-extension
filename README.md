@@ -294,6 +294,8 @@ npm run sync         # copy shared/ into operator/lib/ and agent/lib/
 npm run pack:agent   # the packed CRX of agent/ (see The packed CRX)
 ```
 
+CI (`.github/workflows/test.yml`) runs `npm test` on each PR and each push to main.
+
 `test/live/` holds a live test of both packages in real Chromium on a Linux
 box with Xvfb. See [test/live/README.md](test/live/README.md).
 
