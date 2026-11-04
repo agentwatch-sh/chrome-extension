@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, createPublicKey, generateKeyPairSync, verify } from "node:crypto";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -190,8 +190,12 @@ test("readPrivateKey refuses a key file that group or others can read, and a key
 
 test("readPrivateKey reads a 0600 key, and publicKeyDer gives its SubjectPublicKeyInfo DER", () => {
   withTemp((dir) => {
-    const key = readPrivateKey(writeKey(dir));
+    const path = writeKey(dir);
+    const { key, file } = readPrivateKey(path);
     assert.ok(publicKeyDer(key).equals(der));
+    // The file's identity, for packageFiles.
+    const st = statSync(path);
+    assert.deepEqual(file, { dev: st.dev, ino: st.ino });
   });
 });
 
@@ -217,6 +221,36 @@ test("packageFiles of agent/ holds the manifest, the rules and the lib files", (
   assert.ok(!files.some((f) => f.split("/").some((p) => p.startsWith(".")) || f.startsWith("_metadata")), "no dotfile, no _metadata");
 });
 
+test("packageFiles refuses a key or CRX file by its name: .pem, .key, .der, .crx, in any case", () => {
+  for (const name of ["agent-extension.pem", "lib/signing.key", "rules/public.DER", "old.crx", "x.Pem"]) {
+    withTemp((dir) => {
+      mkdirSync(join(dir, "lib"));
+      mkdirSync(join(dir, "rules"));
+      writeFileSync(join(dir, "manifest.json"), "{}");
+      writeFileSync(join(dir, name), "a dummy file, not a key");
+      assert.throws(() => packageFiles(dir), (e) => e.message.includes(name) && /never packed/.test(e.message), name);
+    });
+  }
+});
+
+test("packageFiles refuses a file that is the key file itself (the same device and inode), under any name", () => {
+  withTemp((dir) => {
+    const pkg = join(dir, "pkg");
+    mkdirSync(join(pkg, "lib"), { recursive: true });
+    writeFileSync(join(pkg, "manifest.json"), "{}");
+    const dummy = join(dir, "dummy.txt");
+    writeFileSync(dummy, "a dummy file, not a key");
+    linkSync(dummy, join(pkg, "lib", "notes.txt"));
+    const st = statSync(dummy);
+    assert.throws(() => packageFiles(pkg, { dev: st.dev, ino: st.ino }), /lib\/notes\.txt is the key file/);
+    // Without the key file's identity, or with another file's, the same folder packs.
+    assert.deepEqual(packageFiles(pkg), ["lib/", "lib/notes.txt", "manifest.json"]);
+    writeFileSync(join(dir, "other.txt"), "another dummy file, outside the package");
+    const other = statSync(join(dir, "other.txt"));
+    assert.deepEqual(packageFiles(pkg, { dev: other.dev, ino: other.ino }), ["lib/", "lib/notes.txt", "manifest.json"]);
+  });
+});
+
 test("zip writes a ZIP that an independent reader reads back byte for byte, the same bytes each time", () => {
   const big = Buffer.from("x".repeat(10000) + "y");
   const entries = [
@@ -240,7 +274,7 @@ test("zip writes a ZIP that an independent reader reads back byte for byte, the 
 
 test("crx3 writes a CRX3 file: magic, version 3, one RSA proof of the key, the crx_id, a valid signature", () => {
   withTemp((dir) => {
-    const key = readPrivateKey(writeKey(dir));
+    const { key } = readPrivateKey(writeKey(dir));
     const archive = zip([{ name: "manifest.json", data: Buffer.from("{}") }]);
     const crx = readCrx(crx3(archive, key));
     assert.ok(crx.publicKey.equals(der), "the proof's public key is the SubjectPublicKeyInfo DER");
@@ -270,8 +304,14 @@ function agentCopy(dir, keyDer = der) {
   return src;
 }
 
-function run(args, env = {}) {
-  const r = spawnSync(process.execPath, [script, ...args], { encoding: "utf8", env: { ...process.env, AGENT_KEY_PATH: "", ...env } });
+// HOME is the test's temp folder, so the default key path never reaches a real key.
+function run(dir, args, env = {}) {
+  const r = spawnSync(process.execPath, [script, ...args], {
+    encoding: "utf8",
+    timeout: 20000,
+    env: { ...process.env, HOME: dir, AGENT_KEY_PATH: "", ...env },
+  });
+  assert.equal(r.error, undefined, "the command ends in time");
   // The command never prints the key, in any form.
   const body = pem.split("\n").filter((l) => l && !l.startsWith("-----"));
   const keyDer = pair.privateKey.export({ type: "pkcs8", format: "der" });
@@ -287,7 +327,7 @@ test("the command packs a copy of agent/ into <out>/agent.crx with the key from 
   withTemp((dir) => {
     const src = agentCopy(dir);
     const out = join(dir, "out");
-    const r = run(["--key", writeKey(dir), "--src", src, "--out", out]);
+    const r = run(dir, ["--key", writeKey(dir), "--src", src, "--out", out]);
     assert.equal(r.status, 0, r.stderr);
     const id = extensionId(der.toString("base64"));
     assert.match(r.stdout, new RegExp(`ID ${id}`));
@@ -306,7 +346,7 @@ test("the command packs a copy of agent/ into <out>/agent.crx with the key from 
 
 test("the command takes the key path from AGENT_KEY_PATH", () => {
   withTemp((dir) => {
-    const r = run(["--src", agentCopy(dir), "--out", join(dir, "out")], { AGENT_KEY_PATH: writeKey(dir) });
+    const r = run(dir, ["--src", agentCopy(dir), "--out", join(dir, "out")], { AGENT_KEY_PATH: writeKey(dir) });
     assert.equal(r.status, 0, r.stderr);
     assert.ok(existsSync(join(dir, "out", "agent.crx")));
   });
@@ -314,7 +354,7 @@ test("the command takes the key path from AGENT_KEY_PATH", () => {
 
 test("the command refuses a key file that group or others can read, and writes nothing", () => {
   withTemp((dir) => {
-    const r = run(["--key", writeKey(dir, pem, 0o644), "--src", agentCopy(dir), "--out", join(dir, "out")]);
+    const r = run(dir, ["--key", writeKey(dir, pem, 0o644), "--src", agentCopy(dir), "--out", join(dir, "out")]);
     assert.equal(r.status, 1);
     assert.match(r.stderr, /group or others/);
     assert.equal(existsSync(join(dir, "out")), false);
@@ -324,9 +364,39 @@ test("the command refuses a key file that group or others can read, and writes n
 test("the command refuses a key whose public key is not the manifest key: the CRX would get another ID", () => {
   withTemp((dir) => {
     const other = generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ type: "spki", format: "der" });
-    const r = run(["--key", writeKey(dir), "--src", agentCopy(dir, other), "--out", join(dir, "out")]);
+    const r = run(dir, ["--key", writeKey(dir), "--src", agentCopy(dir, other), "--out", join(dir, "out")]);
     assert.equal(r.status, 1);
     assert.match(r.stderr, /not the public key of/);
+    assert.equal(existsSync(join(dir, "out")), false);
+  });
+});
+
+test("the command with no --key and no AGENT_KEY_PATH reads the default path under HOME", () => {
+  withTemp((dir) => {
+    const r = run(dir, ["--src", agentCopy(dir), "--out", join(dir, "out")]);
+    assert.equal(r.status, 1);
+    assert.ok(r.stderr.includes(`cannot open the key file ${join(dir, ".config", "agentwatch", "browser", "agent-extension.pem")}`), r.stderr);
+  });
+});
+
+test("the command refuses a FIFO as the key file at once: it does not wait for a writer", () => {
+  withTemp((dir) => {
+    const fifo = join(dir, "key.fifo");
+    execFileSync("mkfifo", ["-m", "600", fifo]);
+    const r = run(dir, ["--key", fifo, "--src", agentCopy(dir), "--out", join(dir, "out")]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /is not a regular file/);
+  });
+});
+
+test("the command refuses to pack the key file when a hard link of it is in the package, and writes nothing", () => {
+  withTemp((dir) => {
+    const key = writeKey(dir);
+    const src = agentCopy(dir);
+    linkSync(key, join(src, "lib", "notes.txt"));
+    const r = run(dir, ["--key", key, "--src", src, "--out", join(dir, "out")]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /lib\/notes\.txt is the key file/);
     assert.equal(existsSync(join(dir, "out")), false);
   });
 });

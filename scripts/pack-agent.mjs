@@ -12,9 +12,10 @@
 // --src DIR: the package folder. Default agent/.
 //
 // The manifest's "key" must be the public key of that private key, so that the
-// unpacked folder and the CRX have the same extension ID.
+// unpacked folder and the CRX have the same extension ID. A file of the package
+// named *.pem, *.key, *.der or *.crx, or the key file itself, stops the build.
 import { createHash, createPrivateKey, createPublicKey, sign } from "node:crypto";
-import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -32,19 +33,22 @@ export function keyFileProblem(st, uid) {
   return null;
 }
 
-// The private key of a PEM file, as a KeyObject. The checks run on the open
-// file itself, so the file that is read is the file that was checked. No error
-// holds the file's content.
+// The private key of a PEM file, as {key: a KeyObject, file: {dev, ino}}. The
+// checks run on the open file itself, so the file that is read is the file that
+// was checked; O_NONBLOCK lets a FIFO open at once, and the check then refuses
+// it. No error holds the file's content.
 export function readPrivateKey(path) {
   let fd;
+  let st;
   try {
-    fd = openSync(path, "r");
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
   } catch {
     throw new Error(`cannot open the key file ${path}`);
   }
   let pem;
   try {
-    const problem = keyFileProblem(fstatSync(fd), process.getuid());
+    st = fstatSync(fd);
+    const problem = keyFileProblem(st, process.getuid());
     if (problem) throw new Error(`the key file ${path} ${problem}`);
     pem = readFileSync(fd);
   } finally {
@@ -61,7 +65,7 @@ export function readPrivateKey(path) {
   if (key.asymmetricKeyType !== "rsa" || key.asymmetricKeyDetails.modulusLength < 2048) {
     throw new Error(`the key file ${path} holds no RSA key of at least 2048 bits`);
   }
-  return key;
+  return { key, file: { dev: st.dev, ino: st.ino } };
 }
 
 // The SubjectPublicKeyInfo DER of a private key: the manifest's "key" (in base64) and the CRX's public key.
@@ -71,10 +75,15 @@ export function publicKeyDer(privateKey) {
 
 // --- The package and the ZIP ---
 
+// A key or a CRX in the package folder (git ignores *.pem and *.crx, so a copy there is easy
+// to miss) would go into a CRX that anyone can unpack.
+const NEVER_PACKED = /\.(pem|key|der|crx)$/i;
+
 // Every folder (with a trailing /) and file of the package, sorted, with / as the separator.
 // Dotfiles stay out, as with Chrome's own packer, and so does _metadata/, which Chromium writes
-// into an unpacked folder that it loads.
-export function packageFiles(dir) {
+// into an unpacked folder that it loads. A file named as a key or a CRX is refused, and so is
+// the key file itself under any name (keyFile: its {dev, ino}, for a hard link).
+export function packageFiles(dir, keyFile = null) {
   const out = [];
   const walk = (rel) => {
     for (const e of readdirSync(join(dir, rel), { withFileTypes: true })) {
@@ -84,6 +93,9 @@ export function packageFiles(dir) {
         out.push(name + "/");
         walk(name + "/");
       } else if (e.isFile()) {
+        if (NEVER_PACKED.test(e.name)) throw new Error(`${join(dir, name)}: a key or a CRX is never packed`);
+        const st = keyFile && statSync(join(dir, name));
+        if (st && st.dev === keyFile.dev && st.ino === keyFile.ino) throw new Error(`${join(dir, name)} is the key file`);
         out.push(name);
       } else {
         throw new Error(`${join(dir, name)} is not a regular file or folder`);
@@ -196,12 +208,12 @@ function main() {
 
   const manifest = JSON.parse(readFileSync(join(src, "manifest.json"), "utf8"));
   if (typeof manifest.key !== "string") throw new Error(`${src}/manifest.json has no "key"`);
-  const key = readPrivateKey(keyPath);
+  const { key, file: keyFile } = readPrivateKey(keyPath);
   const der = publicKeyDer(key);
   if (der.toString("base64") !== manifest.key) {
     throw new Error(`the "key" of ${src}/manifest.json is not the public key of ${keyPath}: the CRX would get another ID`);
   }
-  const names = packageFiles(src);
+  const names = packageFiles(src, keyFile);
   const archive = zip(names.map((name) => ({ name, data: name.endsWith("/") ? null : readFileSync(join(src, name)) })));
   const crx = crx3(archive, key);
 

@@ -143,13 +143,15 @@ npm run pack:agent                  # writes dist/agent.crx (git-ignored); print
 npm run pack:agent -- --key PATH    # another key file (or AGENT_KEY_PATH=PATH)
 ```
 
-- **The key** lives on taylor only, in
+- **The key:** its working copy lives only on taylor, in
   `~/.config/agentwatch/browser/agent-extension.pem` (mode 0600, in a 0700
   folder). It was generated once there (board task ab-v16.18). It never goes
   into this repository, a commit, a log, an argv or a mail. The script reads
   the key from that path (or from the path that you give it) and refuses a
-  key file that is not yours or that group or others can open. It never
-  prints, logs or copies the key.
+  key file that is not yours, that group or others can open, or that is not
+  a regular file. It never prints, logs or copies the key, and it refuses to
+  pack a file of the package that is named as a key or a CRX (`.pem`,
+  `.key`, `.der`, `.crx`) or that is the key file itself.
 - **The backup** of the key is the operator's: the operator keeps a copy in
   their password manager. Agents never copy or send the key.
 - **The ID.** The manifest's `key` is the public key of that file, so the

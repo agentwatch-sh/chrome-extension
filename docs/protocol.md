@@ -25,9 +25,10 @@ The sender is the operator package (`operator/`, operator mode). The receiver is
   never written) and put its public key into `operator/manifest.json`.
 - The receiver's key: Chrome's external extensions file takes a packed extension (a CRX), and the key
   that signs the CRX fixes its ID. So board task ab-v16.18 generated a new RSA-2048 key, once, on
-  taylor. The private key lives only in `~/.config/agentwatch/browser/agent-extension.pem` on taylor
-  (mode 0600, in a 0700 folder); the operator keeps a backup in their password manager. It is never in
-  a repository, a commit, a log, an argv or a mail. Its public key is the `key` of
+  taylor. The working copy of the private key lives only on taylor, in
+  `~/.config/agentwatch/browser/agent-extension.pem` (mode 0600, in a 0700 folder); the operator keeps
+  a backup in their password manager. The key is never in a repository, a commit, a log, an argv or a
+  mail. Its public key is the `key` of
   `agent/manifest.json`, so an unpacked load (`--load-extension`) and the CRX (`npm run pack:agent`,
   see the README) have the same ID. The receiver ID before ab-v16.18 was
   `dofdpnfachcncepdoondkeodcbnhipdc`: E1's key was never kept, so no CRX could have that ID. A lost
