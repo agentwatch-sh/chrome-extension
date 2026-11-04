@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { PART_BYTES, CHANNELS, MAX_TO_DAEMON, splitParts, PartJoiner, ChannelJoiner, jsonTooLarge } from "../receiver/wire.js";
+import { PART_BYTES, CHANNELS, MAX_TO_DAEMON, splitParts, PartJoiner, ChannelJoiner, jsonTooLarge } from "../agent/wire.js";
 
 const big = () => ({ t: "req", id: "x", op: "import", pad: "a".repeat(1500001 - 43) });
 

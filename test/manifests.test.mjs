@@ -8,8 +8,8 @@ import { extensionId } from "../scripts/extension-id.mjs";
 
 const read = (p) => readFileSync(new URL("../" + p, import.meta.url), "utf8");
 const json = (p) => JSON.parse(read(p));
-const sender = json("sender/manifest.json");
-const receiver = json("receiver/manifest.json");
+const sender = json("operator/manifest.json");
+const receiver = json("agent/manifest.json");
 const protocol = read("docs/protocol.md");
 
 test("extensionId known vector", () => {
@@ -19,12 +19,12 @@ test("extensionId known vector", () => {
 test("scripts/extension-id.mjs prints both IDs when it runs, also from a path with a space or through a symlink", () => {
   const dir = mkdtempSync(join(tmpdir(), "extension id "));
   try {
-    for (const p of ["scripts/extension-id.mjs", "sender/manifest.json", "receiver/manifest.json"]) {
+    for (const p of ["scripts/extension-id.mjs", "operator/manifest.json", "agent/manifest.json"]) {
       mkdirSync(dirname(join(dir, p)), { recursive: true });
       copyFileSync(new URL("../" + p, import.meta.url), join(dir, p));
     }
     symlinkSync(join(dir, "scripts", "extension-id.mjs"), join(dir, "id-link.mjs"));
-    const want = `sender: ${extensionId(sender.key)}\nreceiver: ${extensionId(receiver.key)}\n`;
+    const want = `operator: ${extensionId(sender.key)}\nagent: ${extensionId(receiver.key)}\n`;
     for (const script of [join(dir, "scripts", "extension-id.mjs"), join(dir, "id-link.mjs")]) {
       assert.equal(execFileSync(process.execPath, [script], { encoding: "utf8" }), want, script);
     }
@@ -46,14 +46,14 @@ test("sender manifest", () => {
   assert.equal(sender.options_page, "options.html");
   assert.deepEqual(sender.background, { service_worker: "sw.js", type: "module" });
   assert.equal(typeof sender.key, "string");
-  assert.ok(existsSync(new URL("../sender/sw.js", import.meta.url)));
+  assert.ok(existsSync(new URL("../operator/sw.js", import.meta.url)));
   for (const n of ["16", "32", "48", "128"]) {
     assert.equal(sender.icons[n], `icons/icon-${n}.png`);
     assert.equal(sender.action.default_icon[n], `icons/icon-${n}.png`);
-    assert.ok(existsSync(new URL("../sender/" + sender.icons[n], import.meta.url)));
+    assert.ok(existsSync(new URL("../operator/" + sender.icons[n], import.meta.url)));
   }
   for (const f of ["popup.html", "popup.js", "popup.css", "options.html", "options.js", "send.js", "read-page.js"]) {
-    assert.ok(existsSync(new URL("../sender/" + f, import.meta.url)), f);
+    assert.ok(existsSync(new URL("../operator/" + f, import.meta.url)), f);
   }
 });
 
@@ -75,11 +75,11 @@ test("receiver manifest", () => {
     assert.equal(k in receiver, false, k);
   }
   assert.equal(typeof receiver.key, "string");
-  assert.ok(existsSync(new URL("../receiver/sw.js", import.meta.url)));
+  assert.ok(existsSync(new URL("../agent/sw.js", import.meta.url)));
 });
 
 test("block rule is C5 rule 1", () => {
-  assert.deepEqual(json("receiver/rules/block-main-frame.json"), [
+  assert.deepEqual(json("agent/rules/block-main-frame.json"), [
     { id: 1, priority: 1, action: { type: "block" }, condition: { resourceTypes: ["main_frame"] } },
   ]);
 });

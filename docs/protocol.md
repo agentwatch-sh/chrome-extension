@@ -11,6 +11,9 @@ and agentwatch (the daemon).
 - Sender extension ID: `bpfkgknpndlpkcffmaaelkfcbpackiip`
 - Receiver extension ID: `dofdpnfachcncepdoondkeodcbnhipdc`
 
+The sender is the operator package (`operator/`, operator mode). The receiver is the agent package
+(`agent/`, agent mode). Both packages come from this one source tree (two-modes design, section 3.1).
+
 ### C1. Names and IDs
 
 - Native messaging host name: `sh.agentwatch.browser`.
@@ -238,7 +241,7 @@ new tab (below). This file is the master for C10. The vectors: `test/vectors/bri
 
 | Part | Side | Stage of the two-modes design |
 | --- | --- | --- |
-| The ops, the checks, the events, the receiver's waits, the result parts, the hold, the stop rules | The receiver (this repo: `receiver/`, later `agent/`) | 2 (board ab-v16.5) |
+| The ops, the checks, the events, the receiver's waits, the result parts, the hold, the stop rules | The receiver (this repo: `agent/`) | 2 (board ab-v16.5) |
 | The requests and their waits, `MAX_IN_FLIGHT_PER_TAB`, the actions after a timeout, its standard input and output | agent-browser's relay (`agent-browser relay`) | 3 (board ab-v16.6) |
 | The parts to the receiver, the join of result parts, `MAX_BYTES_IN_FLIGHT`, the daemon's waits and answers, the lines to the relay, the relay's start and stop | The agentwatch daemon | 4 (board ab-v16.7) |
 
@@ -331,7 +334,7 @@ first document request of a new tab (below).
 - A res above `MAX_RESULT` goes as `too large`. An event never goes in parts (`bridge.tooLarge`,
   below).
 - The vector: `resultParts` in `test/vectors/bridge.json` (made with `splitParts` of
-  `receiver/wire.js`).
+  `agent/wire.js`).
 
 **The ops.** An arg name with `?` is optional. The default wait is the deadline of a request without
 `wait`.

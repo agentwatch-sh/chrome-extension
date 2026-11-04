@@ -1,6 +1,7 @@
 #!/bin/sh
-# Live test of the sender and receiver extensions in real Chromium on a Linux
-# box with Xvfb, xdotool and ffmpeg (written on taylor). See README.md here.
+# Live test of the operator and agent packages (the sender and the receiver)
+# in real Chromium on a Linux box with Xvfb, xdotool and ffmpeg (written on
+# taylor). See README.md here.
 #
 #   test/live/run.sh             start everything, run every case, stop everything
 #   test/live/run.sh up          start everything; print the run folder
@@ -8,7 +9,7 @@
 #   test/live/run.sh down DIR    stop every process of that run
 #
 # Environment: CHROMIUM (default /usr/bin/chromium), LIVE_PORT (default 8771),
-# RECEIVER (the receiver folder to load; default the repository's receiver/).
+# RECEIVER (the agent package folder to load; default the repository's agent/).
 #
 # The two Unix sockets of a run live in a short private folder
 # /tmp/aw-live.XXXXXX (0700; env.json names it), because a socket path holds at
@@ -23,7 +24,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
 CHROMIUM=${CHROMIUM:-/usr/bin/chromium}
 PORT=${LIVE_PORT:-8771}
-RECEIVER=${RECEIVER:-$REPO/receiver}  # another receiver folder, for example agentwatch's pinned copy
+RECEIVER=${RECEIVER:-$REPO/agent}  # another agent package folder, for example agentwatch's pinned copy
 
 say() { echo "run.sh: $*" >&2; }
 
@@ -113,7 +114,7 @@ up() {
 
   # The operator's sender: a copy whose manifest gains a test-only shortcut
   # for the popup. The key stays, so the extension ID stays.
-  cp -R "$REPO/sender" "$run/sender-copy"
+  cp -R "$REPO/operator" "$run/sender-copy"
   python3 - "$run/sender-copy/manifest.json" <<'EOF'
 import json, sys
 path = sys.argv[1]

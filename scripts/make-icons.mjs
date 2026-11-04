@@ -1,4 +1,4 @@
-// Draw the sender's icons: a dark rounded square with a light "a" ring-and-stem
+// Draw the operator package's icons: a dark rounded square with a light "a" ring-and-stem
 // monogram, as PNGs of 16, 32, 48 and 128 px. Plain code, no third-party art.
 // Run: node scripts/make-icons.mjs
 import { deflateSync } from "node:zlib";
@@ -74,7 +74,7 @@ function render(size) {
   ]);
 }
 
-const dir = new URL("../sender/icons/", import.meta.url);
+const dir = new URL("../operator/icons/", import.meta.url);
 mkdirSync(dir, { recursive: true });
 for (const size of [16, 32, 48, 128]) writeFileSync(new URL(`icon-${size}.png`, dir), render(size));
 console.log("wrote 4 icons");

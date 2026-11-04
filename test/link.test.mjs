@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ReceiverLink, watchBlocked } from "../receiver/link.js";
-import { PART_BYTES, MAX_TO_DAEMON, splitParts } from "../receiver/wire.js";
+import { ReceiverLink, watchBlocked } from "../agent/link.js";
+import { PART_BYTES, MAX_TO_DAEMON, splitParts } from "../agent/wire.js";
 import { makeFakeChrome } from "./fake-chrome.mjs";
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
