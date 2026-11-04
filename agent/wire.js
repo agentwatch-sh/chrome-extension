@@ -8,6 +8,10 @@ export const CHANNELS = Object.freeze(["main", "bridge"]);
 // The daemon reads a line of at most 8 MiB from the native host and drops the
 // link at a longer one, which would fail a running import.
 export const MAX_TO_DAEMON = 8 * 1024 * 1024;
+// A bridge res above MAX_TO_DAEMON goes to the daemon in parts of
+// RESULT_PART_BYTES, up to MAX_RESULT bytes of UTF-8 JSON (contract C10).
+export const MAX_RESULT = 128 * 1024 * 1024;
+export const RESULT_PART_BYTES = 4 * 1024 * 1024;
 
 // True when msg's JSON is over limit bytes of UTF-8 (Chrome sends the native
 // host the UTF-8 of its JSON). A value that JSON cannot carry is left to
@@ -34,7 +38,11 @@ function toBase64(bytes) {
 
 // Without ch the parts name no channel (main, as a daemon before channels sends them).
 export function splitParts(id, request, partBytes = PART_BYTES, ch = undefined) {
-  const bytes = new TextEncoder().encode(JSON.stringify(request));
+  return splitBytes(id, new TextEncoder().encode(JSON.stringify(request)), partBytes, ch);
+}
+
+// The parts of a message's UTF-8 JSON bytes.
+export function splitBytes(id, bytes, partBytes, ch = undefined) {
   const n = Math.max(1, Math.ceil(bytes.length / partBytes));
   const parts = [];
   for (let seq = 0; seq < n; seq++) {

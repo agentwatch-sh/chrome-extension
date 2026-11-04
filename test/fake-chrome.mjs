@@ -6,6 +6,9 @@
 // fake.autoNavigate is true (the default), tabs.update fires
 // debugger.onEvent "Fetch.requestPaused" for the new URL, and a later
 // "Fetch.fulfillRequest" for that request fires webNavigation.onCompleted.
+//
+// For the bridge (C10): fake.targets_ is what debugger.getTargets returns,
+// and runtime.id is the agent package's ID in the bridge vector.
 
 function makeEvent() {
   const listeners = [];
@@ -52,6 +55,7 @@ export function makeFakeChrome() {
     permissionAnswer: true,
     pageResult: { local: 0, session: 0, idb_databases: 0, idb_records: 0, cache_entries: 0, errors: [] },
     manifest: { version: "0.1.0" },
+    targets_: [],
     chrome: null,
   };
   const rec = (path, impl) => (...args) => {
@@ -104,6 +108,8 @@ export function makeFakeChrome() {
   }
   const chrome = {
     runtime: {
+      id: "abcdefghijklmnopabcdefghijklmnop",
+      getURL: (path) => "chrome-extension://abcdefghijklmnopabcdefghijklmnop/" + path,
       get lastError() {
         calls.push(["runtime.lastError", []]);
         return undefined;
@@ -149,7 +155,28 @@ export function makeFakeChrome() {
         if (fake.autoNavigate) fake.pauseRequest(tabId, props.url);
         return { id: tabId, ...props };
       }),
+      onCreated: makeEvent(),
+      onUpdated: makeEvent(),
+      onRemoved: makeEvent(),
+      onReplaced: makeEvent(),
     },
+    windows: {
+      get: rec("windows.get", async (windowId) => ({ id: windowId })),
+      create: rec("windows.create", async (data) => ({ id: 800 + calls.length, ...data })),
+      update: rec("windows.update", async (windowId, info) => ({ id: windowId, ...info })),
+    },
+    downloads: {
+      search: rec("downloads.search", async () => []),
+      cancel: rec("downloads.cancel", async () => {}),
+      onCreated: makeEvent(),
+      onChanged: makeEvent(),
+    },
+    contentSettings: Object.fromEntries(
+      ["location", "notifications", "camera", "microphone", "clipboard", "automaticDownloads", "cookies"].map((type) => [type, {
+        set: rec("contentSettings." + type + ".set", async () => {}),
+        clear: rec("contentSettings." + type + ".clear", async () => {}),
+      }]),
+    ),
     cookies: {
       // Without partitionKey: unpartitioned cookies only. With partitionKey {}:
       // every cookie, so the two reads overlap (as in Chrome).
@@ -163,6 +190,7 @@ export function makeFakeChrome() {
     debugger: {
       attach: rec("debugger.attach", async () => {}),
       detach: rec("debugger.detach", async () => {}),
+      getTargets: rec("debugger.getTargets", async () => fake.targets_.map((t) => ({ ...t }))),
       sendCommand: rec("debugger.sendCommand", async (target, method, params) => {
         if (method === "Fetch.fulfillRequest" && fake.paused.has(params.requestId)) {
           const { tabId, url } = fake.paused.get(params.requestId);
@@ -203,6 +231,7 @@ export function makeFakeChrome() {
     webNavigation: {
       onErrorOccurred: makeEvent(),
       onCompleted: makeEvent(),
+      onCreatedNavigationTarget: makeEvent(),
     },
   };
   fake.chrome = chrome;

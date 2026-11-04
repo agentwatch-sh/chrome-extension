@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { importState } from "../receiver/importer.js";
-import { replacePageState } from "../receiver/page-state.js";
+import { importState } from "../agent/importer.js";
+import { attachments } from "../agent/attach.js";
+import { replacePageState } from "../agent/page-state.js";
 import { makeFakeChrome } from "./fake-chrome.mjs";
 
 // Made-up values only. No error text or rejection may ever hold SECRET.
@@ -412,6 +413,7 @@ test("a step that passes its 20 s deadline fails with its name; a late tab is cl
   resolveCreate({ id: 77 });
   await settle();
   assert.deepEqual(f.callsTo("tabs.remove"), [[77]]);
+  assert.equal(attachments(f.chrome).isRestoreTab(77), false, "the late tab is no restore tab of a running import");
 });
 
 test("the whole import has one deadline; the running step is named", async () => {
@@ -609,8 +611,8 @@ test("an invalid state is refused before any chrome call", async () => {
   }
 });
 
-test("receiver/sw.js routes import to importState", () => {
-  const src = readFileSync(new URL("../receiver/sw.js", import.meta.url), "utf8");
+test("agent/sw.js routes import to importState", () => {
+  const src = readFileSync(new URL("../agent/sw.js", import.meta.url), "utf8");
   assert.match(src, /import \{ importState \} from "\.\/importer\.js";/);
   assert.match(src, /import: \(req\) => importState\(chrome, req\.state\)/);
   assert.ok(!src.includes("not available yet"));
@@ -735,9 +737,9 @@ test("the free-name check catches an outside reference", () => {
 });
 
 test("page-state.js has no import and exports only replacePageState", async () => {
-  const src = readFileSync(new URL("../receiver/page-state.js", import.meta.url), "utf8");
+  const src = readFileSync(new URL("../agent/page-state.js", import.meta.url), "utf8");
   assert.ok(!/^\s*import\b/m.test(src));
-  assert.deepEqual(Object.keys(await import("../receiver/page-state.js")), ["replacePageState"]);
+  assert.deepEqual(Object.keys(await import("../agent/page-state.js")), ["replacePageState"]);
 });
 
 const realSetTimeout = globalThis.setTimeout;

@@ -8,8 +8,8 @@ import { extensionId } from "../scripts/extension-id.mjs";
 
 const read = (p) => readFileSync(new URL("../" + p, import.meta.url), "utf8");
 const json = (p) => JSON.parse(read(p));
-const sender = json("sender/manifest.json");
-const receiver = json("receiver/manifest.json");
+const sender = json("operator/manifest.json");
+const receiver = json("agent/manifest.json");
 const protocol = read("docs/protocol.md");
 
 test("extensionId known vector", () => {
@@ -19,12 +19,12 @@ test("extensionId known vector", () => {
 test("scripts/extension-id.mjs prints both IDs when it runs, also from a path with a space or through a symlink", () => {
   const dir = mkdtempSync(join(tmpdir(), "extension id "));
   try {
-    for (const p of ["scripts/extension-id.mjs", "sender/manifest.json", "receiver/manifest.json"]) {
+    for (const p of ["scripts/extension-id.mjs", "operator/manifest.json", "agent/manifest.json"]) {
       mkdirSync(dirname(join(dir, p)), { recursive: true });
       copyFileSync(new URL("../" + p, import.meta.url), join(dir, p));
     }
     symlinkSync(join(dir, "scripts", "extension-id.mjs"), join(dir, "id-link.mjs"));
-    const want = `sender: ${extensionId(sender.key)}\nreceiver: ${extensionId(receiver.key)}\n`;
+    const want = `operator: ${extensionId(sender.key)}\nagent: ${extensionId(receiver.key)}\n`;
     for (const script of [join(dir, "scripts", "extension-id.mjs"), join(dir, "id-link.mjs")]) {
       assert.equal(execFileSync(process.execPath, [script], { encoding: "utf8" }), want, script);
     }
@@ -33,40 +33,66 @@ test("scripts/extension-id.mjs prints both IDs when it runs, also from a path wi
   }
 });
 
-test("sender manifest", () => {
+test("operator manifest", () => {
   assert.equal(sender.manifest_version, 3);
-  assert.equal(sender.version, "0.1.0");
-  assert.equal(sender.name, "agentwatch sender");
+  assert.equal(sender.version, "0.2.0");
+  assert.equal(sender.name, "agentwatch \u2014 operator mode");
   assert.equal(sender.minimum_chrome_version, "132");
   assert.equal(typeof sender.description, "string");
+  assert.ok(sender.description.length <= 132, "Chrome's description limit");
   assert.deepEqual(sender.permissions, ["cookies", "activeTab", "scripting", "storage"]);
   assert.deepEqual(sender.optional_host_permissions, ["*://*/*"]);
   assert.equal("host_permissions" in sender, false);
+  assert.equal("optional_permissions" in sender, false);
   assert.equal(sender.action.default_popup, "popup.html");
   assert.equal(sender.options_page, "options.html");
   assert.deepEqual(sender.background, { service_worker: "sw.js", type: "module" });
   assert.equal(typeof sender.key, "string");
-  assert.ok(existsSync(new URL("../sender/sw.js", import.meta.url)));
+  assert.ok(existsSync(new URL("../operator/sw.js", import.meta.url)));
   for (const n of ["16", "32", "48", "128"]) {
     assert.equal(sender.icons[n], `icons/icon-${n}.png`);
     assert.equal(sender.action.default_icon[n], `icons/icon-${n}.png`);
-    assert.ok(existsSync(new URL("../sender/" + sender.icons[n], import.meta.url)));
+    assert.ok(existsSync(new URL("../operator/" + sender.icons[n], import.meta.url)));
   }
   for (const f of ["popup.html", "popup.js", "popup.css", "options.html", "options.js", "send.js", "read-page.js"]) {
-    assert.ok(existsSync(new URL("../sender/" + f, import.meta.url)), f);
+    assert.ok(existsSync(new URL("../operator/" + f, import.meta.url)), f);
   }
 });
 
-test("receiver manifest", () => {
+// Two-modes design, section 3.4: operator mode can never control the
+// operator's Chrome. Chrome gives an extension without these permissions no
+// chrome.debugger, no native port and no network rules; without these keys it
+// has no inbound channel. Optional permissions count too: a package can ask
+// for them later.
+const CONTROL_PERMISSIONS = [
+  "debugger", "nativeMessaging", "declarativeNetRequest", "declarativeNetRequestWithHostAccess",
+  "declarativeNetRequestFeedback", "webRequest", "webRequestBlocking", "proxy", "management",
+];
+const INBOUND_KEYS = ["content_scripts", "externally_connectable", "web_accessible_resources", "declarative_net_request"];
+
+test("the operator package has no control permission, no debugger and no inbound channel", () => {
+  for (const list of ["permissions", "optional_permissions"]) {
+    for (const p of sender[list] ?? []) assert.ok(!CONTROL_PERMISSIONS.includes(p), `operator ${list}: ${p}`);
+  }
+  for (const k of INBOUND_KEYS) assert.equal(k in sender, false, k);
+  // The agent package holds the control permissions, so the list is not empty by mistake.
+  for (const p of ["debugger", "nativeMessaging", "declarativeNetRequest"]) assert.ok(receiver.permissions.includes(p), p);
+});
+
+test("agent manifest", () => {
   assert.equal(receiver.manifest_version, 3);
-  assert.equal(receiver.version, "0.1.0");
-  assert.equal(receiver.name, "agentwatch receiver");
+  assert.equal(receiver.version, "0.2.0");
+  assert.equal(receiver.name, "agentwatch \u2014 agent mode (agent browser only)");
   assert.equal(receiver.minimum_chrome_version, "120");
   assert.equal(typeof receiver.description, "string");
+  assert.ok(receiver.description.length <= 132, "Chrome's description limit");
+  // Two-modes design, section 3.1; downloads and contentSettings for the bridge (C10).
   assert.deepEqual(receiver.permissions, [
     "cookies", "scripting", "tabs", "webNavigation",
     "declarativeNetRequest", "nativeMessaging", "debugger", "browsingData",
+    "downloads", "contentSettings",
   ]);
+  assert.equal("optional_permissions" in receiver, false);
   assert.deepEqual(receiver.host_permissions, ["<all_urls>"]);
   assert.deepEqual(receiver.declarative_net_request.rule_resources, [
     { id: "block_main_frame", enabled: true, path: "rules/block-main-frame.json" },
@@ -75,11 +101,11 @@ test("receiver manifest", () => {
     assert.equal(k in receiver, false, k);
   }
   assert.equal(typeof receiver.key, "string");
-  assert.ok(existsSync(new URL("../receiver/sw.js", import.meta.url)));
+  assert.ok(existsSync(new URL("../agent/sw.js", import.meta.url)));
 });
 
 test("block rule is C5 rule 1", () => {
-  assert.deepEqual(json("receiver/rules/block-main-frame.json"), [
+  assert.deepEqual(json("agent/rules/block-main-frame.json"), [
     { id: 1, priority: 1, action: { type: "block" }, condition: { resourceTypes: ["main_frame"] } },
   ]);
 });

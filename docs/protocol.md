@@ -11,6 +11,9 @@ and agentwatch (the daemon).
 - Sender extension ID: `bpfkgknpndlpkcffmaaelkfcbpackiip`
 - Receiver extension ID: `dofdpnfachcncepdoondkeodcbnhipdc`
 
+The sender is the operator package (`operator/`, operator mode). The receiver is the agent package
+(`agent/`, agent mode). Both packages come from this one source tree (two-modes design, section 3.1).
+
 ### C1. Names and IDs
 
 - Native messaging host name: `sh.agentwatch.browser`.
@@ -142,8 +145,9 @@ side is stage 4 of the two-modes design (agentwatch).
   request that it gets. A bridge request with an op that the receiver does not know gets
   `{"t":"res","ch":"bridge","id":"<id>","ok":false,"error":"unknown op"}`. The main ops are not
   bridge ops: `ping` on channel `bridge` is an unknown op too. A bridge request never stops or delays
-  channel `main`. The receiver of today (before stage 2 of the two-modes design) knows no bridge op,
-  so it answers each bridge request with `unknown op`. Stage 2 builds the C10 ops and waits.
+  channel `main`. A receiver before stage 2 of the two-modes design (before version 0.2.0) knows no
+  bridge op, so it answers each bridge request with `unknown op`. The agent package from version
+  0.2.0 on has the C10 ops and waits (board ab-v16.5).
 - The shared vectors: `test/vectors/parts.json` (parts without `ch`) and
   `test/vectors/parts-bridge.json` (parts with `"ch":"bridge"`).
 
@@ -238,7 +242,7 @@ new tab (below). This file is the master for C10. The vectors: `test/vectors/bri
 
 | Part | Side | Stage of the two-modes design |
 | --- | --- | --- |
-| The ops, the checks, the events, the receiver's waits, the result parts, the hold, the stop rules | The receiver (this repo: `receiver/`, later `agent/`) | 2 (board ab-v16.5) |
+| The ops, the checks, the events, the receiver's waits, the result parts, the hold, the stop rules | The receiver (this repo: `agent/`) | 2 (board ab-v16.5) |
 | The requests and their waits, `MAX_IN_FLIGHT_PER_TAB`, the actions after a timeout, its standard input and output | agent-browser's relay (`agent-browser relay`) | 3 (board ab-v16.6) |
 | The parts to the receiver, the join of result parts, `MAX_BYTES_IN_FLIGHT`, the daemon's waits and answers, the lines to the relay, the relay's start and stop | The agentwatch daemon | 4 (board ab-v16.7) |
 
@@ -331,7 +335,7 @@ first document request of a new tab (below).
 - A res above `MAX_RESULT` goes as `too large`. An event never goes in parts (`bridge.tooLarge`,
   below).
 - The vector: `resultParts` in `test/vectors/bridge.json` (made with `splitParts` of
-  `receiver/wire.js`).
+  `agent/wire.js`).
 
 **The ops.** An arg name with `?` is optional. The default wait is the deadline of a request without
 `wait`.
@@ -390,6 +394,8 @@ first document request of a new tab (below).
 - The receiver sends no bridge event on a daemon connection before the first bridge request on that
   connection. So a daemon that does not use the bridge gets no bridge event.
 - An event above `MAX_TO_DAEMON` (C4) is not sent. The receiver sends `bridge.tooLarge` in its place.
+  Its `tabId` is the tab of the event: `source.tabId`, `tabId`, `addedTabId`, `tab.id` or
+  `details.tabId`. A download event names no tab: its `tabId` is -1 (Chrome's `tabs.TAB_ID_NONE`).
   The relay logs the method and gives the client nothing. So that the page never waits for an
   answer that cannot come, the relay then takes a default action on the event's session (`tabId`,
   and `sessionId` when there is one):

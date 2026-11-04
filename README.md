@@ -1,29 +1,36 @@
-# agentwatch Chrome extensions
+# agentwatch Chrome extension
 
-Send a sign-in from your own Chrome to the agent browser on an agentwatch box.
+Send a sign-in from your own Chrome to the agent browser on an agentwatch box,
+and let agents drive that agent browser.
 
 You sign in to a site in your own Chrome, with your password manager, 2FA or a
-passkey. You click the **sender** extension's button, pick a box, and the
-sender sends that site's cookies and page storage to the box's agentwatch web
-viewer. On the box, agentwatch hands them to the **receiver** extension in the
-agent's Chrome, which replaces the site's state there. The same step adds the
-site to the box's allowlist. The receiver also blocks every top-level
-navigation to a site that is not on the allowlist.
+passkey. You click the **operator mode** extension's button (the sender), pick
+a box, and it sends that site's cookies and page storage to the box's
+agentwatch web viewer. On the box, agentwatch hands them to the **agent mode**
+extension (the receiver) in the agent's Chrome, which replaces the site's state
+there. The same step adds the site to the box's allowlist. Agent mode also
+blocks every top-level navigation to a site that is not on the allowlist, and
+it carries the bridge that lets agent-browser's relay drive the agent's Chrome
+(contract C10).
 
-This repository holds both extensions. agentwatch pins a tag of it. The design
-is in agentwatch's agent browser design (sections 5.14 to 5.16); the messages
-and fixed values are in [docs/protocol.md](docs/protocol.md).
+This repository holds one source tree and builds two packages from it, one for
+each mode (agent-browser's two-modes design, section 3.1). agentwatch pins a
+tag of it. The design is in agentwatch's agent browser design (sections 5.14
+to 5.16) and the two-modes design; the messages and fixed values are in
+[docs/protocol.md](docs/protocol.md).
 
 | Folder | Runs in | Does |
 | --- | --- | --- |
-| [`sender/`](sender/) | your own Chrome | reads one site's state on your click and sends it to your box |
-| [`receiver/`](receiver/) | the agent's Chrome on the box | writes a sent state; blocks sites that are not on the allowlist |
-| `shared/` | both (copied into `sender/lib/` and `receiver/lib/` by `npm run sync`) | the value codec, the cookie conversions, the allowlist rules |
+| [`operator/`](operator/) | your own Chrome | operator mode: reads one site's state on your click and sends it to your box |
+| [`agent/`](agent/) | the agent's Chrome on the box | agent mode: writes a sent state; blocks sites that are not on the allowlist; the bridge |
+| `shared/` | both (copied into `operator/lib/` and `agent/lib/` by `npm run sync`) | the value codec, the cookie conversions, the allowlist rules |
 
 Both are Manifest V3 extensions in plain JavaScript, with no build step and no
-dependencies.
+dependencies. The operator package holds no `debugger`, `nativeMessaging` or
+`declarativeNetRequest` permission, so it can never control your Chrome; a
+test fails the build if it gains one.
 
-## The sender
+## Operator mode (the sender)
 
 ### What it reads
 
@@ -64,10 +71,10 @@ login. An agent cannot start a send.
 
 ### Load it (unpacked) and add a box
 
-1. Get this repository (or the sender folder that your box's web viewer offers
+1. Get this repository (or the `operator/` folder that your box's web viewer offers
    for download). The sender needs Chrome 132 or later.
 2. In Chrome, open `chrome://extensions`, turn on **Developer mode**, click
-   **Load unpacked** and pick the `sender/` folder. The extension's ID is fixed
+   **Load unpacked** and pick the `operator/` folder. The extension's ID is fixed
    by the `key` in its manifest: `bpfkgknpndlpkcffmaaelkfcbpackiip`.
 3. Open the extension's options (**Details**, then **Extension options**), type
    the address of your box's web viewer (for example `box.example.com`) and
@@ -100,13 +107,19 @@ Chrome, and the message names the largest database (or cache). The reader
 reads in batches and stops as soon as the state passes 32 MiB, so a very large
 site does not fill the memory of your tab.
 
-## The receiver
+## Agent mode (the receiver)
 
 The receiver runs only in the agent's Chrome on the box. agentwatch starts that
-Chrome with `--load-extension=<receiver folder>` on each launch; you do not
+Chrome with `--load-extension=<agent folder>` on each launch; you do not
 install it yourself. Its ID is `dofdpnfachcncepdoondkeodcbnhipdc`.
 
-Chromium writes its indexed ruleset into `_metadata/` in the receiver folder
+The native host `sh.agentwatch.browser` is agentwatch's, not this
+repository's. Its check that its parent Chrome runs on the agent profile
+(two-modes design, section 3.2) is built in agentwatch, with stage 4 (board
+ab-v16.7). `test/live/host.py` here is a host for the live test only, and it
+does not check its parent.
+
+Chromium writes its indexed ruleset into `_metadata/` in the agent folder
 when it loads the receiver. So the folder must be writable by the OS user that
 runs the agent's Chrome: from a read-only folder, Chromium 156 does not load
 the receiver at all (measured), and then nothing blocks.
@@ -133,6 +146,18 @@ the receiver at all (measured), and then nothing blocks.
   the list loses a site, the receiver removes every service worker of the
   profile before it closes the tabs; the sites that stay register theirs
   again on their next visit.
+- **The bridge (agent mode, contract C10):** on a second channel of the same
+  native link, agent-browser's relay calls a fixed list of 19 `chrome.*`
+  operations (attach, CDP commands, tabs, windows, downloads, content
+  settings) and gets a fixed list of Chrome events. The bridge checks each
+  request before it reaches Chrome: a new tab or window opens only
+  `about:blank` or an `http:` or `https:` URL (never a `chrome:`, `file:` or
+  `javascript:` URL); it never touches the restore tab of a running send,
+  sets content settings only for allowlisted hosts, and has no cookie
+  operation. A navigation is a CDP command (`Page.navigate`), which the
+  bridge passes on: the relay refuses a navigation to such a URL before it
+  reaches the bridge (contract C11). At each link change the bridge detaches
+  every tab that it attached.
 
 ### Its permissions, and why
 
@@ -144,8 +169,10 @@ the receiver at all (measured), and then nothing blocks.
 | `webNavigation` | to know when the restore page has loaded, and to report a blocked navigation |
 | `declarativeNetRequest` | the allowlist block |
 | `nativeMessaging` | the link to the agentwatch daemon |
-| `debugger` | to serve the restore page from the extension (the site never sees that request) and to bypass the site's service worker during the import |
+| `debugger` | to serve the restore page from the extension (the site never sees that request) and to bypass the site's service worker during the import; the bridge's CDP commands |
 | `browsingData` | to remove the service workers when a site leaves the allowlist: a worker would otherwise answer a navigation to its host past the block |
+| `downloads` | the bridge: the relay follows and cancels downloads |
+| `contentSettings` | the bridge: the relay grants permissions (location, camera and others) for allowlisted hosts only |
 | host permission `<all_urls>` | the allowlist changes at run time, and an optional permission would need a click in a Chrome that nobody watches |
 
 ## What is not moved
@@ -176,10 +203,10 @@ the receiver at all (measured), and then nothing blocks.
 
 ```sh
 npm test        # the unit tests (node --test, no dependencies)
-npm run sync    # copy shared/ into sender/lib/ and receiver/lib/
+npm run sync    # copy shared/ into operator/lib/ and agent/lib/
 ```
 
-`test/live/` holds a live test of both extensions in real Chromium on a Linux
+`test/live/` holds a live test of both packages in real Chromium on a Linux
 box with Xvfb. See [test/live/README.md](test/live/README.md).
 
 ## Licence

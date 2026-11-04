@@ -1,15 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import "../sender/lib/codec.js";
+import "../operator/lib/codec.js";
 import {
   MAX_SEND_BYTES, buildPayload, byteLength, sendState, resultText, runSend, fetchTargets, userChoices,
   domainOptions, domainChoices, readableSites, visibleStatus, queueSend, resumeSend, PENDING_MS,
   BOX_TEXT, MOVED_TEXT, SendStop, boxHosts, isBoxSite, boxGetsCookie, KEEPALIVE_MS, readerTooLargeText,
-} from "../sender/send.js";
-import { readPageState } from "../sender/read-page.js";
-import { onSendClick } from "../sender/popup.js";
-import { parseBoxOrigin, addBox, removeBox } from "../sender/options.js";
+} from "../operator/send.js";
+import { readPageState } from "../operator/read-page.js";
+import { onSendClick } from "../operator/popup.js";
+import { parseBoxOrigin, addBox, removeBox } from "../operator/options.js";
 import { makeFakeChrome } from "./fake-chrome.mjs";
 
 const SECRET = "SENTINEL-not-a-real-value-7f3a";
@@ -353,7 +353,7 @@ test("a pending send with a bad domain is dropped with an error", async () => {
 });
 
 test("the worker resumes a pending send on storage.onChanged and permissions.onAdded only", () => {
-  const src = readFileSync(new URL("../sender/sw.js", import.meta.url), "utf8");
+  const src = readFileSync(new URL("../operator/sw.js", import.meta.url), "utf8");
   assert.match(src, /chrome\.storage\.onChanged\.addListener/);
   assert.match(src, /chrome\.permissions\.onAdded\.addListener/);
   assert.equal((src.match(/resumeSend\(chrome, fetch\)/g) || []).length, 2);
@@ -746,7 +746,7 @@ test("readPageState on another origin reads nothing and returns that origin", as
 
 test("the pages hold no inline script and no external resource", () => {
   for (const p of ["popup.html", "options.html"]) {
-    const html = readFileSync(new URL("../sender/" + p, import.meta.url), "utf8");
+    const html = readFileSync(new URL("../operator/" + p, import.meta.url), "utf8");
     for (const m of html.matchAll(/<script\b([^>]*)>/g)) assert.match(m[1], /\bsrc="[a-z-]+\.js"/);
     assert.equal(/<script[^>]*>\s*\S/.test(html.replace(/<script[^>]*src=[^>]*><\/script>/g, "")), false);
     assert.equal(/https?:\/\//.test(html), false);

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { allowRule, applyAllowlist } from "../receiver/dnr.js";
+import { allowRule, applyAllowlist } from "../agent/dnr.js";
 import { makeFakeChrome } from "./fake-chrome.mjs";
 
 test("allowRule is C5 rule 2", () => {

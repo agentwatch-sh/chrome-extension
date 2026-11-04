@@ -12,7 +12,7 @@ export function extensionId(base64Der) {
 // Run as a script: Node loads the main module from its real path (a symlink resolved), and
 // pathToFileURL encodes that path as import.meta.url does (a space is %20).
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
-  for (const p of ["sender", "receiver"]) {
+  for (const p of ["operator", "agent"]) {
     const m = JSON.parse((await import("node:fs")).readFileSync(new URL(`../${p}/manifest.json`, import.meta.url), "utf8"));
     console.log(`${p}: ${extensionId(m.key)}`);
   }

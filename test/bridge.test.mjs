@@ -1,0 +1,529 @@
+// The bridge (contract C10) against the shared vectors (test/vectors/bridge.json),
+// wired as agent/sw.js wires it: the fake chrome, the real ReceiverLink and
+// the Bridge. The eager attach and the hold of a new tab come in a later part
+// of stage 2; their two tabs.onCreated vectors wait for it.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync, readdirSync } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
+import { Bridge, BRIDGE_VERSION, CONTENT_TYPES, OPS, WAIT_DEFAULT_MS, WAIT_MAX_MS } from "../agent/bridge.js";
+import { attachments } from "../agent/attach.js";
+import { ReceiverLink } from "../agent/link.js";
+import { applyAllowlist } from "../agent/dnr.js";
+import { MAX_RESULT, MAX_TO_DAEMON, PART_BYTES, RESULT_PART_BYTES, splitParts } from "../agent/wire.js";
+import { makeFakeChrome } from "./fake-chrome.mjs";
+
+const V = JSON.parse(readFileSync(new URL("./vectors/bridge.json", import.meta.url), "utf8"));
+const tick = () => new Promise((r) => setTimeout(r, 0));
+const flush = async () => {
+  for (let i = 0; i < 6; i++) await tick();
+};
+const infoVector = V.requests.find((v) => v.req.op === "bridge.info").res.data;
+const NAV = {
+  userAgent: infoVector.userAgent,
+  userAgentData: {
+    getHighEntropyValues: async () => ({ fullVersionList: [{ brand: "Not.A/Brand", version: "99.0.0.0" }, { brand: "Chromium", version: "1.0.0.0" }] }),
+  },
+};
+
+async function setup({ navigator = NAV, allowlist = V.allowlist, tabs = [] } = {}) {
+  const f = makeFakeChrome();
+  f.manifest = { version: "0.2.0" };
+  f.setTabs(tabs);
+  const timers = [];
+  const setTimer = (fn, ms) => {
+    const t = { fn, ms, cleared: false };
+    timers.push(t);
+    return t;
+  };
+  const clearTimer = (t) => {
+    if (t) t.cleared = true;
+  };
+  const link = new ReceiverLink(f.chrome, { main: {}, bridge: (req) => bridge.handle(req) }, { onLinkChange: () => bridge.reset() });
+  const bridge = new Bridge(f.chrome, link, { setTimer, clearTimer, navigator });
+  await bridge.reset(); // the worker's start
+  link.start();
+  const port = () => f.ports.at(-1);
+  port().fireMessage({ t: "link", up: true });
+  if (allowlist) await applyAllowlist(f.chrome, allowlist);
+  await flush();
+  const send = (req) => {
+    for (const p of splitParts(req.id, req, PART_BYTES, "bridge")) port().fireMessage(p);
+  };
+  const resOf = (id) => port().posted.filter((m) => m.t === "res" && m.id === id);
+  const answer = async (req) => {
+    send(req);
+    await flush();
+    const got = resOf(req.id);
+    assert.equal(got.length, 1, `${req.id}: exactly one res`);
+    return got[0];
+  };
+  const evs = () => port().posted.filter((m) => m.t === "ev");
+  const errorOf = (req) => bridge.handle(req).then(() => null, (e) => e.message);
+  return { f, link, bridge, timers, port, send, answer, resOf, evs, errorOf, att: attachments(f.chrome) };
+}
+// The chrome calls since mark, without the port's posts.
+const isEagerOn = (req) => req.op === "bridge.attachNew" && req.args[0] === true;
+const callsSince = (f, mark) => f.calls.slice(mark).filter(([p]) => p !== "port.postMessage");
+
+test("the bridge's constants and ops are C10's", () => {
+  const K = V.constants;
+  assert.equal(BRIDGE_VERSION, K.BRIDGE_VERSION);
+  assert.equal(WAIT_DEFAULT_MS, K.WAIT_DEFAULT_MS);
+  assert.equal(WAIT_MAX_MS, K.WAIT_MAX_MS);
+  assert.equal(MAX_RESULT, K.MAX_RESULT);
+  assert.equal(RESULT_PART_BYTES, K.RESULT_PART_BYTES);
+  assert.deepEqual(CONTENT_TYPES, V.contentTypes);
+  assert.deepEqual(Object.keys(OPS).sort(), V.ops.map((o) => o.op).sort(), "the 19 ops and no other (no cookie op)");
+  for (const o of V.ops) {
+    const spec = OPS[o.op];
+    assert.deepEqual(spec.kinds, o.kinds, o.op);
+    assert.equal(spec.required, o.required, o.op);
+    assert.equal(spec.wait, K[o.defaultWait], o.op);
+    assert.equal(spec.nullResult, o.result === "`null`", o.op);
+  }
+});
+
+test("each request vector makes its chrome call and gets the vector's res", async () => {
+  const s = await setup({ tabs: [{ id: 7, windowId: 1, url: "https://a.example/" }] });
+  for (const v of V.requests) {
+    if (isEagerOn(v.req)) continue; // the eager attach comes with the hold (below)
+    if (v.chrome) s.f.impl[v.chrome[0]] = async () => structuredClone(v.res.data);
+    const mark = s.f.calls.length;
+    assert.deepEqual(await s.answer(v.req), v.res, v.req.id);
+    if (v.chrome) {
+      assert.ok(callsSince(s.f, mark).some(([p, a]) => p === v.chrome[0] && isDeepStrictEqual(a, v.chrome[1])), `${v.req.id}: ${v.chrome[0]}`);
+      delete s.f.impl[v.chrome[0]];
+    }
+  }
+});
+
+test("each bad request vector gets its error, and its op never reaches Chrome", async () => {
+  const s = await setup({
+    tabs: [
+      { id: 5, windowId: 1, url: "https://a.example/__agentwatch_restore_0123456789abcdef__" },
+      { id: 6, windowId: 1, url: "chrome-extension://abcdefghijklmnopabcdefghijklmnop/page.html" },
+      { id: 7, windowId: 1, url: "https://a.example/" },
+      { id: 9, windowId: 1, url: "https://a.example/b" },
+    ],
+  });
+  s.att.markRestore(5); // the restore tab of a running import
+  for (const v of V.badRequests) {
+    const mark = s.f.calls.length;
+    assert.deepEqual(await s.answer(v.req), v.res, v.req.id);
+    // debugger.attach reads the tab (for its own-origin check) before it acts.
+    assert.deepEqual(callsSince(s.f, mark).filter(([p]) => p !== "tabs.get"), [], `${v.req.id}: no chrome call`);
+  }
+});
+
+test("the checks run in C10's order: the op, the args, the wait, the tab", async () => {
+  const s = await setup();
+  s.att.markRestore(5);
+  assert.equal(await s.errorOf({ op: "cookies.getAll", args: "x", wait: 0 }), "unknown op");
+  const mark = s.f.calls.length;
+  assert.equal(await s.errorOf({ op: ["tabs.get"], args: [7] }), "unknown op", "an op is a string");
+  assert.deepEqual(callsSince(s.f, mark), []);
+  assert.equal(await s.errorOf({ op: "tabs.remove", args: ["5"], wait: 0 }), "bad args");
+  assert.equal(await s.errorOf({ op: "tabs.remove", args: [5], wait: 0 }), "bad wait");
+  assert.equal(await s.errorOf({ op: "tabs.remove", args: [5], wait: 10 }), "not an agent tab");
+  assert.equal(await s.errorOf({ op: "debugger.sendCommand", args: [{ tabId: 9 }, "Page.enable"], wait: null }), "bad wait");
+  assert.equal(await s.errorOf({ op: "debugger.sendCommand", args: [{ tabId: 9 }, "Page.enable"] }), "not attached");
+});
+
+test("the kinds of args: each case fits or gets bad args", async () => {
+  const s = await setup({ tabs: [{ id: 1, url: "about:blank" }] });
+  const fits = [
+    ["debugger.getTargets", undefined],
+    ["tabs.create", [{ url: "HTTPS://A.example/x?y#z", active: true, windowId: 0, index: 2 }]],
+    ["tabs.create", [{ url: "about:blank" }]],
+    ["tabs.query", [{ active: true, anything: [1] }]],
+    ["windows.get", [1, { populate: true }]],
+    ["windows.create", [{ url: "http://a.example:8080/", left: -10, top: 0, width: 800, height: 600, state: "normal", focused: false }]],
+    ["windows.update", [1, { state: "maximized" }]],
+    ["contentSettings.set", ["camera", { primaryPattern: "*://*.a.example/*", setting: "block" }]],
+    ["contentSettings.set", ["clipboard", { primaryPattern: "https://sub.a.example:8443/*", setting: "allow" }]],
+    ["contentSettings.set", ["location", { primaryPattern: "http://a.example:65535/*", setting: "allow" }]],
+    ["contentSettings.clear", ["automaticDownloads"]],
+    ["bridge.attachNew", [false]],
+  ];
+  for (const [op, args] of fits) {
+    const req = args === undefined ? { op } : { op, args };
+    assert.notEqual(await s.errorOf(req), "bad args", `${op} ${JSON.stringify(args)}`);
+  }
+  const bad = [
+    ["debugger.getTargets", [1]],
+    ["debugger.attach", [1.5]],
+    ["debugger.attach", {}],
+    ["debugger.sendCommand", [{ tabId: 1, sessionId: "" }, "Page.enable"]],
+    ["debugger.sendCommand", [{ tabId: 1 }, ""]],
+    ["debugger.sendCommand", [{ tabId: 1 }, "Page.enable", []]],
+    ["debugger.sendCommand", [{ tabId: 1 }, "Page.enable", null]],
+    ["tabs.create", [{ url: "about:blank#x" }]],
+    ["tabs.create", [{ url: "about:newtab" }]],
+    ["tabs.create", [{ url: "data:text/html,x" }]],
+    ["tabs.create", [{ url: "file:///etc/passwd" }]],
+    ["tabs.create", [{ url: "https:a.example" }]],
+    ["tabs.create", [{ url: "https://a.example/", windowId: -2 }]],
+    ["tabs.create", [{ url: "https://a.example/", active: 1 }]],
+    ["tabs.query", [null]],
+    ["tabs.update", [1, { active: "yes" }]],
+    ["tabs.update", [1, { active: true, muted: true }]],
+    ["windows.create", [{ url: "https://a.example/", width: "800" }]],
+    ["windows.update", [1, { focused: 1 }]],
+    ["windows.update", [1, { type: "popup" }]],
+    ["contentSettings.set", ["location", { primaryPattern: "https://*.example/*", setting: "allow" }]],
+    ["contentSettings.set", ["location", { primaryPattern: "https://a.example/x", setting: "allow" }]],
+    ["contentSettings.set", ["location", { primaryPattern: "ftp://a.example/*", setting: "allow" }]],
+    ["contentSettings.set", ["location", { primaryPattern: "https://a.example/*", setting: "ask" }]],
+    // covers() alone takes these: the host must be a normalized C5 host, and the port 1 to 65535.
+    ["contentSettings.set", ["location", { primaryPattern: "https://.a.example/*", setting: "allow" }]],
+    ["contentSettings.set", ["location", { primaryPattern: "https://x..a.example/*", setting: "allow" }]],
+    ["contentSettings.set", ["location", { primaryPattern: "https://-.a.example/*", setting: "allow" }]],
+    ["contentSettings.set", ["location", { primaryPattern: "*://*.a.example:99999/*", setting: "allow" }]],
+    ["contentSettings.set", ["location", { primaryPattern: "https://a.example:0/*", setting: "allow" }]],
+    ["contentSettings.clear", ["cookies"]],
+    ["bridge.attachNew", ["true"]],
+    ["bridge.release", []],
+  ];
+  for (const [op, args] of bad) assert.equal(await s.errorOf({ op, args }), "bad args", `${op} ${JSON.stringify(args)}`);
+});
+
+test("contentDetails is checked against the applied allowlist: none before a set_allowlist, a shrink at once", async () => {
+  const s = await setup({ allowlist: null });
+  const req = (host) => ({ op: "contentSettings.set", args: ["location", { primaryPattern: `https://${host}/*`, setting: "allow" }] });
+  assert.equal(await s.errorOf(req("a.example")), "bad args", "no list applied since the worker started");
+  await applyAllowlist(s.f.chrome, ["a.example", "b.example"]);
+  assert.equal(await s.errorOf(req("b.example")), null);
+  s.f.impl["browsingData.remove"] = async () => {
+    throw new Error("busy");
+  };
+  await assert.rejects(applyAllowlist(s.f.chrome, ["a.example"]));
+  assert.equal(await s.errorOf(req("b.example")), "bad args", "the rule in force counts, also when the call then failed");
+  assert.equal(await s.errorOf(req("a.example")), null);
+});
+
+test("the wait: each op's default, a request's own wait, and timeout when it runs out; a late result is dropped", async () => {
+  const s = await setup({ tabs: [{ id: 7, url: "https://a.example/" }] });
+  await s.answer({ t: "req", id: "a", op: "debugger.attach", args: [7] });
+  let finish;
+  s.f.impl["debugger.sendCommand"] = () => new Promise((r) => (finish = r));
+  s.f.impl["tabs.get"] = () => new Promise(() => {});
+  const from = s.timers.length;
+  s.send({ t: "req", id: "c1", op: "debugger.sendCommand", args: [{ tabId: 7 }, "Runtime.evaluate", { awaitPromise: true }] });
+  s.send({ t: "req", id: "g1", op: "tabs.get", args: [7] });
+  s.send({ t: "req", id: "g2", op: "tabs.get", args: [7], wait: 1234 });
+  await flush();
+  assert.deepEqual(s.timers.slice(from).map((t) => t.ms), [WAIT_MAX_MS, WAIT_DEFAULT_MS, 1234]);
+  s.timers[from].fn();
+  await flush();
+  assert.deepEqual(s.resOf("c1"), [{ t: "res", ch: "bridge", id: "c1", ok: false, error: "timeout" }]);
+  // The receiver never detaches after a timeout: the relay decides (no detach for awaitPromise, C10).
+  assert.deepEqual(s.f.callsTo("debugger.detach"), []);
+  assert.equal(s.att.isBridgeTab(7), true);
+  finish({ result: { value: 2 } }); // Chrome ends the call later
+  await flush();
+  assert.equal(s.resOf("c1").length, 1, "never a second res");
+  assert.equal(s.resOf("g1").length, 0, "the others still run");
+});
+
+test("Chrome's error text is the res's error", async () => {
+  const s = await setup();
+  assert.deepEqual(await s.answer({ t: "req", id: "e", op: "tabs.get", args: [42] }), { t: "res", ch: "bridge", id: "e", ok: false, error: "No tab with id: 42" });
+});
+
+test("the bridge calls Chrome for a request before the next one starts, so CDP commands keep the relay's order", async () => {
+  const s = await setup({ tabs: [{ id: 7, url: "https://a.example/" }] });
+  await s.answer({ t: "req", id: "a", op: "debugger.attach", args: [7] });
+  s.f.impl["debugger.sendCommand"] = () => new Promise(() => {});
+  const methods = ["Runtime.enable", "Page.enable", "Runtime.evaluate"];
+  methods.forEach((m, i) => s.send({ t: "req", id: "o" + i, op: "debugger.sendCommand", args: [{ tabId: 7 }, m] }));
+  // No await yet: each chrome call happened while its last part was handled.
+  assert.deepEqual(s.f.callsTo("debugger.sendCommand").map((a) => a[1]), methods);
+});
+
+test("debugger.attach: already for a bridge tab; a second attach in flight joins the first; a failure reaches both", async () => {
+  const s = await setup({ tabs: [{ id: 7, url: "https://a.example/" }, { id: 8, url: "https://a.example/" }] });
+  let done;
+  s.f.impl["debugger.attach"] = () => new Promise((r) => (done = r));
+  s.send({ t: "req", id: "a1", op: "debugger.attach", args: [7] });
+  await flush();
+  s.send({ t: "req", id: "a2", op: "debugger.attach", args: [7] });
+  await flush();
+  assert.equal(s.f.callsTo("debugger.attach").length, 1);
+  assert.equal(s.att.isBridgeTab(7), false, "not a bridge tab before the attach ends");
+  done();
+  await flush();
+  assert.deepEqual([...s.resOf("a1"), ...s.resOf("a2")].map((m) => m.data), [{ already: false }, { already: true }]);
+  assert.deepEqual((await s.answer({ t: "req", id: "a3", op: "debugger.attach", args: [7] })).data, { already: true });
+  s.f.impl["debugger.attach"] = async () => {
+    throw new Error("Cannot access a chrome:// URL");
+  };
+  s.send({ t: "req", id: "b1", op: "debugger.attach", args: [8] });
+  s.send({ t: "req", id: "b2", op: "debugger.attach", args: [8] });
+  await flush();
+  assert.deepEqual([...s.resOf("b1"), ...s.resOf("b2")].map((m) => m.error), ["Cannot access a chrome:// URL", "Cannot access a chrome:// URL"]);
+  assert.equal(s.att.isBridgeTab(8), false);
+});
+
+test("debugger.attach refuses a tab of the agent package's own origin, also by its pendingUrl", async () => {
+  const own = "chrome-extension://abcdefghijklmnopabcdefghijklmnop/";
+  const s = await setup({ tabs: [{ id: 3, url: "", pendingUrl: own + "x.html" }, { id: 4, url: "chrome-extension://other/x.html" }] });
+  assert.equal((await s.answer({ t: "req", id: "o1", op: "debugger.attach", args: [3] })).error, "not an agent tab");
+  assert.equal((await s.answer({ t: "req", id: "o2", op: "debugger.attach", args: [4] })).ok, true, "another origin is Chrome's to refuse");
+  assert.deepEqual(s.f.callsTo("debugger.attach"), [[{ tabId: 4 }, "1.3"]]);
+});
+
+test("debugger.detach: null with no call for a tab that is not a bridge tab; after an attach in flight, it waits and detaches", async () => {
+  const s = await setup({ tabs: [{ id: 7, url: "https://a.example/" }] });
+  assert.deepEqual(await s.answer({ t: "req", id: "d0", op: "debugger.detach", args: [7] }), { t: "res", ch: "bridge", id: "d0", ok: true, data: null });
+  assert.equal(s.f.callsTo("debugger.detach").length, 0);
+  let done;
+  s.f.impl["debugger.attach"] = () => new Promise((r) => (done = r));
+  s.send({ t: "req", id: "a", op: "debugger.attach", args: [7] });
+  await flush();
+  s.send({ t: "req", id: "d1", op: "debugger.detach", args: [7] }); // the relay detaches after an attach timed out
+  await flush();
+  assert.equal(s.f.callsTo("debugger.detach").length, 0);
+  done();
+  await flush();
+  assert.deepEqual(s.f.callsTo("debugger.detach"), [[{ tabId: 7 }]]);
+  assert.equal(s.att.isBridgeTab(7), false);
+  assert.equal((await s.answer({ t: "req", id: "c", op: "debugger.sendCommand", args: [{ tabId: 7 }, "Page.enable"] })).error, "not attached");
+});
+
+test("attach and detach of a tab run in arrival order: a detach in the same tick as the attach detaches it", async () => {
+  const s = await setup({ tabs: [{ id: 7, url: "https://a.example/" }] });
+  s.send({ t: "req", id: "a", op: "debugger.attach", args: [7] });
+  s.send({ t: "req", id: "d", op: "debugger.detach", args: [7] }); // the relay pipelines the requests of one tab
+  await flush();
+  assert.deepEqual(s.resOf("a").map((m) => m.data), [{ already: false }]);
+  assert.deepEqual(s.resOf("d").map((m) => m.data), [null]);
+  assert.deepEqual(s.f.callsTo("debugger.detach"), [[{ tabId: 7 }]]);
+  assert.equal(s.att.isBridgeTab(7), false);
+});
+
+test("a link change while the attach reads its tab: no attach, no bridge tab, no answer", async () => {
+  const s = await setup({ tabs: [{ id: 7, url: "https://a.example/" }] });
+  let give;
+  s.f.impl["tabs.get"] = (id) => new Promise((r) => (give = () => r({ id, url: "https://a.example/" })));
+  s.send({ t: "req", id: "old", op: "debugger.attach", args: [7] });
+  await flush();
+  s.port().fireMessage({ t: "link", up: true }); // a new daemon connection
+  await flush();
+  give();
+  await flush();
+  assert.deepEqual(s.resOf("old"), []);
+  assert.deepEqual(s.f.callsTo("debugger.attach"), [], "the attach belongs to no connection, so it never starts");
+  assert.equal(s.att.isBridgeTab(7), false);
+});
+
+test("attach, detach, attach: each runs after the one before, and the tab ends attached", async () => {
+  const s = await setup({ tabs: [{ id: 7, url: "https://a.example/" }] });
+  const done = [];
+  s.f.impl["debugger.attach"] = () => new Promise((r) => done.push(r));
+  s.send({ t: "req", id: "a1", op: "debugger.attach", args: [7] });
+  await flush();
+  s.send({ t: "req", id: "d1", op: "debugger.detach", args: [7] }); // the relay's detach after an attach timed out
+  s.send({ t: "req", id: "a2", op: "debugger.attach", args: [7] });
+  await flush();
+  assert.equal(done.length, 1);
+  done[0]();
+  await flush();
+  assert.equal(done.length, 2, "the second attach starts after the detach");
+  done[1]();
+  await flush();
+  assert.deepEqual(["a1", "d1", "a2"].map((id) => s.resOf(id).map((m) => m.data)), [[{ already: false }], [null], [{ already: false }]]);
+  assert.deepEqual(s.f.callsTo("debugger.detach"), [[{ tabId: 7 }]]);
+  assert.equal(s.att.isBridgeTab(7), true);
+});
+
+test("until the eager attach is built, bridge.attachNew [true] fails, so no build claims it; [false] answers null", async () => {
+  const s = await setup();
+  const on = V.requests.find((v) => isEagerOn(v.req)).req;
+  assert.deepEqual(await s.answer(on), { t: "res", ch: "bridge", id: on.id, ok: false, error: "not in this build" });
+  assert.equal(s.att.attachNew, false);
+  assert.deepEqual(await s.answer({ t: "req", id: "off", op: "bridge.attachNew", args: [false] }), { t: "res", ch: "bridge", id: "off", ok: true, data: null });
+});
+
+// ---- events ----
+
+// Fire a vector's chrome event on the fake.
+function fire(f, [path, args]) {
+  const [api, event] = path.split(".");
+  f.chrome[api][event].fire(...structuredClone(args));
+}
+
+test("each event vector: the chrome event gives the vector's ev", async () => {
+  const s = await setup({ tabs: [{ id: 7, url: "https://a.example/" }] });
+  await s.answer({ t: "req", id: "a", op: "debugger.attach", args: [7] });
+  // The eager attach (attached and held, or its error) comes with the hold.
+  const now = V.eventVectors.filter((v) => v.chrome !== null && !(v.ev.ev === "tabs.onCreated" && (v.ev.attached || v.ev.error)));
+  for (const v of now) {
+    const before = s.evs().length;
+    fire(s.f, v.chrome);
+    assert.deepEqual(s.evs().slice(before), [v.ev], v.chrome[0]);
+  }
+  const created = V.eventVectors.find((v) => v.ev.ev === "tabs.onCreated").chrome;
+  fire(s.f, created);
+  assert.deepEqual(s.evs().at(-1), { t: "ev", ch: "bridge", ev: "tabs.onCreated", tab: created[1][0], attached: false, held: false });
+});
+
+test("debugger events only for a bridge tab: never for the restore tab or a tab the bridge did not attach", async () => {
+  const s = await setup({ tabs: [{ id: 7, url: "https://a.example/" }] });
+  await s.answer({ t: "req", id: "a", op: "debugger.attach", args: [7] });
+  s.att.markRestore(5);
+  const before = s.evs().length;
+  s.f.chrome.debugger.onEvent.fire({ tabId: 5 }, "Fetch.requestPaused", { requestId: "r" });
+  s.f.chrome.debugger.onEvent.fire({ tabId: 9 }, "Page.loadEventFired", {});
+  s.f.chrome.debugger.onDetach.fire({ tabId: 9 }, "target_closed");
+  s.f.chrome.debugger.onEvent.fire({ tabId: 7 }, "Page.frameNavigated");
+  assert.deepEqual(s.evs().slice(before), [{ t: "ev", ch: "bridge", ev: "debugger.onEvent", source: { tabId: 7 }, method: "Page.frameNavigated", params: {} }]);
+  s.f.chrome.debugger.onDetach.fire({ tabId: 7 }, "canceled_by_user");
+  assert.equal(s.att.isBridgeTab(7), false, "Chrome's detach ends the bridge tab");
+  s.f.chrome.debugger.onEvent.fire({ tabId: 7 }, "Page.loadEventFired", {});
+  assert.deepEqual(s.evs().slice(before + 1).map((e) => e.ev), ["debugger.onDetach"]);
+});
+
+test("tabs.onUpdated only with url, title or status; webNavigation.onErrorOccurred for the main frame only", async () => {
+  const s = await setup();
+  s.send({ t: "req", id: "i", op: "bridge.info", args: [] });
+  await flush();
+  s.f.chrome.tabs.onUpdated.fire(7, { audible: true }, { id: 7 });
+  s.f.chrome.tabs.onUpdated.fire(7, { favIconUrl: "https://a.example/f.ico" }, { id: 7 });
+  s.f.chrome.webNavigation.onErrorOccurred.fire({ tabId: 7, frameId: 3, url: "https://b.example/", error: "net::ERR_BLOCKED_BY_CLIENT" });
+  assert.deepEqual(s.evs(), []);
+  s.f.chrome.tabs.onUpdated.fire(7, { title: "T" }, { id: 7 });
+  assert.deepEqual(s.evs().map((e) => e.changeInfo), [{ title: "T" }]);
+});
+
+test("an event above MAX_TO_DAEMON goes as bridge.tooLarge with what the relay needs", async () => {
+  const s = await setup({ tabs: [{ id: 7, url: "https://a.example/" }] });
+  await s.answer({ t: "req", id: "a", op: "debugger.attach", args: [7] });
+  const big = "x".repeat(MAX_TO_DAEMON);
+  s.f.chrome.debugger.onEvent.fire({ tabId: 7, sessionId: "A1B2C3" }, "Fetch.requestPaused", { requestId: "interception-job-4.0", request: { postData: big } });
+  s.f.chrome.debugger.onEvent.fire({ tabId: 7 }, "Network.webSocketFrameReceived", { requestId: "9", response: { payloadData: big } });
+  s.f.chrome.tabs.onUpdated.fire(9, { title: big }, { id: 9, title: big });
+  s.f.chrome.tabs.onCreated.fire({ id: 10, pendingUrl: "data:text/html," + big });
+  s.f.chrome.webNavigation.onCreatedNavigationTarget.fire({ sourceTabId: 7, tabId: 11, url: "data:text/html," + big });
+  s.f.chrome.downloads.onCreated.fire({ id: 3, url: "data:text/plain," + big });
+  const want = V.eventVectors.filter((v) => v.ev.ev === "bridge.tooLarge").map((v) => v.ev);
+  const of = (name, method) => want.find((e) => e.of === name && e.method === method);
+  assert.deepEqual(s.evs(), [
+    of("debugger.onEvent", "Fetch.requestPaused"),
+    of("debugger.onEvent", "Network.webSocketFrameReceived"),
+    of("tabs.onUpdated"),
+    of("tabs.onCreated"),
+    of("webNavigation.onCreatedNavigationTarget"),
+    of("downloads.onCreated"),
+  ]);
+  assert.equal(of("downloads.onCreated").tabId, -1, "a download names no tab");
+});
+
+// ---- the cleanup ----
+
+test("the cleanup at a link change: the eager attach goes off, every bridge tab and attached target is detached, except the restore tab", async () => {
+  const s = await setup({ tabs: [{ id: 7, url: "https://a.example/" }, { id: 8, url: "https://a.example/" }] });
+  await s.answer({ t: "req", id: "a7", op: "debugger.attach", args: [7] });
+  s.att.attachNew = true; // bridge.attachNew [true] comes with the hold
+  s.att.markRestore(5);
+  s.f.targets_ = [
+    { id: "T5", tabId: 5, type: "page", attached: true },
+    { id: "T6", tabId: 6, type: "page", attached: true }, // attached by a worker before this one
+    { id: "T7", tabId: 7, type: "page", attached: true },
+    { id: "T8", tabId: 8, type: "page", attached: false },
+    { id: "W1", type: "worker", attached: true },
+  ];
+  s.f.impl["debugger.detach"] = async ({ tabId }) => {
+    if (tabId === 6) throw new Error("Debugger is not attached to the tab with id: 6.");
+  };
+  let finish;
+  s.f.impl["tabs.get"] = () => new Promise((r) => (finish = r));
+  s.send({ t: "req", id: "slow", op: "tabs.get", args: [8] });
+  await flush();
+  const mark = s.f.calls.length;
+  s.port().fireMessage({ t: "link", up: true }); // a new daemon connection
+  await flush();
+  assert.equal(s.att.attachNew, false);
+  assert.equal(s.att.isBridgeTab(7), false);
+  assert.deepEqual(s.f.callsTo("debugger.detach").slice(-2).map(([t]) => t.tabId).sort(), [6, 7]);
+  assert.ok(!callsSince(s.f, mark).some(([p, a]) => p === "debugger.detach" && a[0].tabId === 5), "the restore tab keeps the import's attachment");
+  finish({ id: 8 });
+  await flush();
+  assert.deepEqual(s.resOf("slow"), [], "the answer of a request from before the link change is dropped");
+});
+
+test("an attach that ends after a link change detaches its tab; a new attach of that tab waits for it", async () => {
+  const s = await setup({ tabs: [{ id: 7, url: "https://a.example/" }] });
+  const done = [];
+  s.f.impl["debugger.attach"] = () => new Promise((r) => done.push(r));
+  s.send({ t: "req", id: "old", op: "debugger.attach", args: [7] });
+  await flush();
+  s.port().fireMessage({ t: "link", up: true });
+  await flush();
+  s.send({ t: "req", id: "new", op: "debugger.attach", args: [7] });
+  await flush();
+  assert.equal(done.length, 1, "the new attach waits for the old one");
+  done[0]();
+  await flush();
+  assert.deepEqual(s.f.callsTo("debugger.detach"), [[{ tabId: 7 }]], "the old attach belongs to no connection");
+  assert.equal(done.length, 2);
+  done[1]();
+  await flush();
+  assert.deepEqual(s.resOf("old"), []);
+  assert.deepEqual(s.resOf("new").map((m) => m.data), [{ already: false }]);
+  assert.equal(s.att.isBridgeTab(7), true);
+});
+
+test("the cleanup at the worker's start detaches every attached tab; a disconnect runs it too", async () => {
+  const f = makeFakeChrome();
+  f.targets_ = [{ id: "T4", tabId: 4, type: "page", attached: true }];
+  const link = { eventsOpen: () => false, sendEvent: () => {} };
+  const bridge = new Bridge(f.chrome, link);
+  await bridge.reset();
+  assert.deepEqual(f.callsTo("debugger.detach"), [[{ tabId: 4 }]]);
+  const s = await setup();
+  const mark = s.f.calls.length;
+  s.port().fireDisconnect();
+  await flush();
+  assert.ok(callsSince(s.f, mark).some(([p]) => p === "debugger.getTargets"));
+});
+
+// ---- the restore tab and the one module that attaches ----
+
+test("the import marks its restore tab while it runs: the bridge refuses it, and every attach goes through attach.js", async () => {
+  const src = (p) => readFileSync(new URL("../agent/" + p, import.meta.url), "utf8");
+  for (const file of readdirSync(new URL("../agent/", import.meta.url)).filter((n) => n.endsWith(".js") && n !== "attach.js")) {
+    assert.ok(!/debugger\.attach\(/.test(src(file)), `${file} calls no chrome.debugger.attach`);
+  }
+  const { importState } = await import("../agent/importer.js");
+  const s = await setup();
+  s.f.impl["tabs.create"] = async (props) => ({ id: 31, ...props });
+  let reached;
+  const seen = new Promise((r) => (reached = r));
+  s.f.impl["debugger.attach"] = async () => {
+    reached(await s.errorOf({ op: "tabs.update", args: [31, { active: true }] }));
+  };
+  const timers = [];
+  const imported = importState(s.f.chrome, {
+    v: 1, domain: "a.example", origin: "https://a.example", url: "https://a.example/", cookies: [], storage: { local: {}, session: {}, idb: [], caches: [] },
+  }, { setTimer: (fn, ms) => timers.push({ fn, ms }), clearTimer: () => {}, nonce: () => "0123456789abcdef" });
+  assert.equal(await seen, "not an agent tab", "during the import, its tab is not an agent tab");
+  await imported;
+  assert.equal(s.att.isRestoreTab(31), false, "after the import, the tab is a tab like any other");
+});
+
+test("bridge.info: the brand Google Chrome first, else Chromium, else an empty fullVersion", async () => {
+  const ua = (list) => ({ userAgent: "UA", userAgentData: { getHighEntropyValues: async () => ({ fullVersionList: list }) } });
+  const cases = [
+    [ua([{ brand: "Chromium", version: "2.0" }, { brand: "Google Chrome", version: "2.1" }]), "2.1"],
+    [ua([{ brand: "Chromium", version: "2.0" }]), "2.0"],
+    [ua([{ brand: "Other", version: "3.0" }]), ""],
+    [{ userAgent: "UA" }, ""],
+    [{ userAgent: "UA", userAgentData: { getHighEntropyValues: async () => { throw new Error("no"); } } }, ""],
+  ];
+  for (const [navigator, want] of cases) {
+    const s = await setup({ navigator });
+    const res = await s.answer({ t: "req", id: "i", op: "bridge.info", args: [] });
+    assert.deepEqual(res.data, { bridge: 1, version: "0.2.0", id: "abcdefghijklmnopabcdefghijklmnop", userAgent: "UA", fullVersion: want });
+  }
+});
