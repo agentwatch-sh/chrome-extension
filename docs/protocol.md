@@ -541,7 +541,11 @@ hold it; the last bullet gives the numbers and what the relay does about it.
 
 - `bridge.attachNew` with `[true]` turns the eager attach on; `[false]` turns it off. It starts off,
   and it goes off at each link change. The relay turns it on while at least one client connection is
-  open (C11).
+  open (C11). The relay sends `bridge.attachNew` with `[false]` when it stops. When a relay restarts
+  with no link change, the flag may still be on and the receiver does nothing about it: it keeps
+  attaching and holding new tabs, and each hold ends by itself after `HOLD_MAX_MS`, so no tab waits
+  for ever. Only a `bridge.attachNew` op or a link change sets the flag. So stage 4 restarts the
+  relay only with a link change, or it turns the eager attach off first.
 - While it is on, the receiver attaches each new tab in `tabs.onCreated` at once (it becomes a bridge
   tab), and it starts the hold: its own `Fetch.enable` on the tab with the one pattern
   `{"urlPattern":"*","resourceType":"Document","requestStage":"Request"}`, sent right behind the
@@ -568,10 +572,14 @@ hold it; the last bullet gives the numbers and what the relay does about it.
 - The receiver also skips a tab of its own origin. Tabs that the operator opens in the live view
   have no mark today (agentwatch design §5.15 names an exemption for them, not built). When they get
   one, the receiver skips them too.
-- The relay sends `bridge.release` after the client's `Runtime.runIfWaitingForDebugger` on that tab
-  got its answer, or before it detaches a tab that no connection took. `debugger.detach` releases the
+- The relay sends `bridge.release` when the client sends `Runtime.runIfWaitingForDebugger` on that
+  tab (it does not wait for the answer: while the hold keeps a tab's first request, Chrome answers
+  no command of that tab, and waiting held every popup for 5 s; measured), or before it detaches a
+  tab that no connection took. `debugger.detach` releases the
   hold too. The receiver releases a hold itself after `HOLD_MAX_MS = 5000` (from when the hold is
-  on), so a tab never waits for a relay that does not answer.
+  on), so a tab never waits for a relay that does not answer. When a release waits for the answer of
+  a client's `Fetch` command (below) and that answer does not come within `HOLD_FORCE_MS = 2000`,
+  the receiver ends the hold anyway.
 - One `Fetch` handler serves the tab's session, for the hold and for the client. So a client's
   `Fetch.enable` or `Fetch.disable` on the tab (a `debugger.sendCommand` without a `sessionId`)
   changes the hold:
@@ -609,8 +617,9 @@ hold it; the last bullet gives the numbers and what the relay does about it.
 
   A missed request loads while the client sets up its session, as without the hold; a frame of its
   page loads at once. A held request reached the site 4 to 15 ms (median 5) after `bridge.release`.
-  A hold with no release ended 4992 to 5003 ms after `tabs.onCreated`. So the relay opens a tab that it must hold at `about:blank`, and
-  navigates it after the release, as Playwright's `newPage` and `goto` do. The receiver cannot hold
+  A hold with no release ended 4992 to 5003 ms after `tabs.onCreated`. So the relay opens a tab that
+  it must hold at `about:blank`, and navigates it after the release, as Playwright's `newPage` and
+  `goto` do. The receiver cannot hold
   the first request of a `noopener` popup.
 
 **The daemon and the relay.**
@@ -704,7 +713,7 @@ answers its calls as in this table, and every other call goes to Chrome
 | `Target.setAutoAttach` | the model | Chrome (the frames and workers of the tab) |
 | `Target.setDiscoverTargets` | the model | the model |
 | `Target.getTargets` | the model | the model |
-| `Target.getTargetInfo` | the model | Chrome without `targetId` (the tab's own info); the model with a `targetId` |
+| `Target.getTargetInfo` | the model | Chrome without `targetId` (the tab's own info); the model with a `targetId`; on the root with no `targetId`, the model (below) |
 | `Target.createTarget` | the model | the model, never Chrome: the tab joins the scope |
 | `Target.closeTarget` | the model | the model |
 | `Target.activateTarget` | the model | the model |
@@ -713,6 +722,10 @@ answers its calls as in this table, and every other call goes to Chrome
 | `Target.attachToBrowserTarget` | the model | the model |
 | `Target.getBrowserContexts` | the model | the model |
 
+- `Target.getTargetInfo` on the root with no `targetId` answers the browser's own target:
+  `{"targetInfo":{"targetId":"<id>","type":"browser","title":"","url":"","attached":true,"canAccessOpener":false}}`
+  (Playwright's `connectOverCDP` needs it, `crBrowser.ts:90-97`). This is the only place where the
+  model names a browser target. `Target.getTargets` and the attach events never report one.
 - Every other `Browser.*` or `Target.*` call on a page session is refused, as on the root.
 - A page call (for example `Page.navigate`) on the root or a browser session is refused: it names
   no tab.
@@ -738,6 +751,10 @@ answers its calls as in this table, and every other call goes to Chrome
   owner stays the same. When that connection has auto-attach on, the model attaches the tab again at
   once and announces it with a new `Target.attachedToTarget`. Playwright then gets a new page object
   for the same tab. Without auto-attach, the tab is free for the scope.
+- For a tab that it creates (`Target.createTarget`), the relay asks C10's `newTab` for `about:blank`,
+  holds the tab there (C10's hold), and navigates it to the client's `url` after the client's
+  `Runtime.runIfWaitingForDebugger` has released the hold. A tab that the relay creates with the
+  client's URL at once would load that URL before the hold.
 - There is one browser context. Every target has `"browserContextId":"agentwatch-default"`, also in
   the answers and events from Chrome that the model passes on. `Target.getBrowserContexts` answers
   `{"browserContextIds":[]}`.
@@ -785,13 +802,17 @@ to 39). Agent mode never opens that path: no prompt and no debugging port.
 | GPU and system data | `SystemInfo.*` | `Not available in the agent browser: system information (<method>). It needs Chrome's remote-debugging approval. Agent mode never asks for it.` |
 | Tracing with no page (`browser.startTracing()`) | `Tracing.*` on the root or a browser session | `Not available in the agent browser: browser-wide tracing (<method>). Trace a page: browser.startTracing(page).` |
 | Calls outside the model's set; extensions; the old interception | A call that the table above refuses; `Extensions.*`; `Target.exposeDevToolsProtocol`; `Network.setRequestInterception` | `Not available in the agent browser: <method>.` |
-| `chrome://` pages, other extensions' pages, local files | `Page.navigate` with a `url` that is not `about:blank` and whose scheme is not `http:`, `https:`, `data:` or `blob:`; `Target.createTarget` with a `url` that is not empty, `about:blank`, `http:` or `https:` | `Not available in the agent browser: <scheme> URLs (<method>). Agent mode opens web pages only.` |
+| `chrome://` pages, other extensions' pages, local files | `Page.navigate` with a `url` that is not `about:blank` and whose scheme is not `http:`, `https:` or `data:`, and is not `blob:` with an `http:` or `https:` inner origin; `Target.createTarget` with a `url` that is not empty, `about:blank`, `http:` or `https:` | `Not available in the agent browser: <scheme> URLs (<method>). Agent mode opens web pages only.` |
 
 - `about:` URLs other than `about:blank` are refused, because Chrome opens some of them as
   `chrome://` pages. `file:` URLs are refused in the model; DNR blocks them in Chrome too (measured).
 - An empty or missing `url` of `Target.createTarget` is `about:blank`. A new tab opens only
   `about:blank` or an `http:` or `https:` URL, as C10's `newTab` allows; a client navigates it to a
   `data:` or `blob:` URL after.
+- A `blob:` URL passes only as `blob:http://<origin>/<id>` or `blob:https://<origin>/<id>`, the form
+  that a page's `URL.createObjectURL` makes. `blob:chrome-extension://...`, `blob:null/...` and
+  `blob:file://...` are refused: the first would open a page of an extension, and the others have no
+  web origin. The refusal text names the scheme `blob:`.
 - Service-worker targets: the model reports no target of type `service_worker`, `shared_worker` or
   `browser`. So `context.serviceWorkers()` is empty, and no `serviceworker` event comes. This is not
   an error: no CDP call asks for those targets alone.
@@ -816,10 +837,11 @@ the page's main world (the world of the page's own scripts):
   (navigate, click, type, read, screenshot, the MCP's default tools) adds no page global (two-modes
   design, section 7). A program that uses one of these features fails. Tracing with screenshots and
   no snapshots works.
-- For stage 3: Playwright keeps a refused feature in its context. After a refused `exposeFunction`
-  or `exposeBinding`, it sends `Runtime.addBinding` again for each new page, so each later page of
-  that connection fails too. A program that calls `addInitScript` before it has a page gets no error
-  at that call, and each later page fails. Such a program must connect again without the feature.
+- For stage 3: Playwright 1.64.1 keeps a refused `exposeFunction` or `exposeBinding` in its context.
+  After one, it sends `Runtime.addBinding` again for each new page, so each later page of that
+  connection fails too. Such a program must connect again without the feature. After a refused
+  `addInitScript`, a later page works (measured). A
+  program that calls `addInitScript` before it has a page gets no error at that call.
 - A program's own `page.evaluate` can still write anything into the page. That is the program's
   choice, not a mark of Playwright.
 

@@ -12,6 +12,8 @@
 // the hold. The hold's other Fetch events never reach the relay.
 
 export const HOLD_MAX_MS = 5000;
+// A release that waits for a client's Fetch command forces the finish after this.
+export const HOLD_FORCE_MS = 2000;
 // The tab's document requests, paused before they leave.
 const PATTERNS = [{ urlPattern: "*", resourceType: "Document", requestStage: "Request" }];
 
@@ -117,6 +119,8 @@ export class Holds {
     this.clearTimer(hold.timer);
     if (hold.sent > 0) {
       hold.done = new Promise((resolve) => (hold.wake = resolve)).then(() => this.#finish(tabId, hold));
+      // A command that never answers must not keep the tab held for ever.
+      hold.timer = this.setTimer(() => hold.wake(), HOLD_FORCE_MS);
     } else {
       hold.done = this.#finish(tabId, hold);
     }
