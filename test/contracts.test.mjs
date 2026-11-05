@@ -1134,6 +1134,7 @@ test("before the upgrade: each check vector gets the answer of C11's order", () 
   for (const s of steps) assert.ok(C11.includes(s), `C11 has the step ${s}`);
   assert.ok(C11.includes("`upgradeChecks`") && C11.includes("`lineCloses`"), "C11 names the vectors");
   assert.equal(answerById.session.body.split("<pid>").length, 2, "the session's 403 holds the peer's pid once");
+  for (const list of [endpoint.upgradeAnswers, endpoint.closes.filter((c) => c.id)]) assert.equal(new Set(list.map((x) => x.id)).size, list.length, "each id once");
 });
 
 test("the session check: each world is a process table, and each rule of C11 has a vector", () => {
