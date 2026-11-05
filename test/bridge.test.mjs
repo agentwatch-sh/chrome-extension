@@ -91,11 +91,16 @@ const scoped = (v) => SCOPED_OPS.has(v.req.op);
 // its chromeToday (chrome.tabs.remove), so today's good path of the op keeps a plain test (review-17b N5).
 // The bad request vectors with "perScope": true (b41 to b44: an op of a tab of the orphan set gets not an agent
 // tab) run with the scoped ones too. Part 1a's setup for them puts tab 13 into the receiver's orphan set.
+// The request vectors with "perScope": true (board ab-v16.48, review-17f note 7: debugger.detach, tabs.get and
+// bridge.release of tab 13 stay allowed) run with the scoped ones under PENDING_1A, with the same setup of tab 13.
+// Today's receiver has no orphan set and meets them too, so until part 1a the plain test runs them as well.
+// Tab 13 of the debugger.detach vector ("bridgeTab": true) is still a bridge tab: requestVectors attaches it first, and
+// part 1a's setup attaches it before it puts the tab into the orphan set.
 const PENDING_TAB_SCOPES = Object.hasOwn(OPS, "bridge.tabScopes") ? false : "board ab-v16.31 (part 1a): the op bridge.tabScopes";
 const NEW_OPS = new Set(["bridge.tabScopes"]);
 const newOp = (v) => NEW_OPS.has(v.req.op);
 const PER_SCOPE_REQUESTS = new Set(["tabs.remove"]);
-const perScopeRequest = (v) => scoped(v) || PER_SCOPE_REQUESTS.has(v.req.op);
+const perScopeRequest = (v) => scoped(v) || PER_SCOPE_REQUESTS.has(v.req.op) || v.perScope === true;
 
 test("the bridge's constants and ops are C10's", () => {
   const K = V.constants;
@@ -125,7 +130,11 @@ test("tabs.create and windows.create are C10's: the scope arg", { todo: PENDING_
 });
 
 async function requestVectors(vectors) {
-  const s = await setup({ tabs: [{ id: 7, windowId: 1, url: "https://a.example/" }] });
+  const s = await setup({ tabs: [{ id: 7, windowId: 1, url: "https://a.example/" }, { id: 13, windowId: 1, url: "https://a.example/old" }] });
+  // A vector with "bridgeTab": true needs its tab attached first: tab 13's attach from before it joined the orphan set.
+  for (const tabId of new Set(vectors.filter((v) => v.bridgeTab).map((v) => v.req.args[0]))) {
+    assert.equal((await s.answer({ t: "req", id: `attach-${tabId}`, op: "debugger.attach", args: [tabId] })).ok, true, `the attach of tab ${tabId} before its vectors`);
+  }
   for (const v of vectors) {
     if (v.chrome) s.f.impl[v.chrome[0]] = async () => structuredClone(v.res.data);
     const mark = s.f.calls.length;
@@ -139,7 +148,7 @@ async function requestVectors(vectors) {
 
 const today = (v) => (PENDING_1A && v.chromeToday ? { ...v, chrome: v.chromeToday } : v);
 test("each request vector makes its chrome call and gets the vector's res", () =>
-  requestVectors(V.requests.filter((v) => !scoped(v) && !newOp(v) && (PENDING_1A ? true : !PER_SCOPE_REQUESTS.has(v.req.op))).map(today)));
+  requestVectors(V.requests.filter((v) => !scoped(v) && !newOp(v) && (PENDING_1A ? true : !perScopeRequest(v))).map(today)));
 
 test("bridge.tabScopes is C10's op, and its request vector gets the vector's res", { todo: PENDING_TAB_SCOPES }, async () => {
   const o = V.ops.find((x) => x.op === "bridge.tabScopes");
@@ -150,7 +159,7 @@ test("bridge.tabScopes is C10's op, and its request vector gets the vector's res
   await requestVectors(V.requests.filter(newOp));
 });
 
-test("each request vector of the per-scope build: tabs.create and windows.create (the scope arg), tabs.remove (the receiver's close)", { todo: PENDING_1A }, () => requestVectors(V.requests.filter(perScopeRequest)));
+test("each request vector of the per-scope build: tabs.create and windows.create (the scope arg), tabs.remove (the receiver's close), the allowed ops of the orphan set", { todo: PENDING_1A }, () => requestVectors(V.requests.filter(perScopeRequest)));
 
 async function badRequestVectors(vectors) {
   const s = await setup({
