@@ -350,7 +350,10 @@ test("each request vector is a valid bridge request, and its res has the C10 sha
     if (o.result === "`null`") assert.equal(res.data, null, `${req.id}: ${req.op} answers null`);
     // The chrome call the receiver makes for it (null: the receiver's own op).
     if (req.op.startsWith("bridge.")) assert.equal(v.chrome, null);
-    else assert.ok(Array.isArray(v.chrome) && v.chrome[0].startsWith(req.op.split(".")[0] + "."), `${req.id}: chrome call`);
+    else if (req.op === "tabs.remove") {
+      // The receiver's close of the per-scope build (C10, board ab-v16.41): Target.closeTarget through chrome.debugger.
+      assert.deepEqual([v.chrome[0], v.chrome[1][0], v.chrome[1][1], Object.keys(v.chrome[1][2])], ["debugger.sendCommand", { tabId: req.args[0] }, "Target.closeTarget", ["targetId"]], `${req.id}: the receiver's close`);
+    } else assert.ok(Array.isArray(v.chrome) && v.chrome[0].startsWith(req.op.split(".")[0] + "."), `${req.id}: chrome call`);
   }
   assert.deepEqual([...seen].sort(), [...opByName.keys()].sort(), "every op has a request vector");
   assert.ok(bridge.requests.some((v) => Object.keys(v.req).some((k) => !["t", "id", "op", "args", "wait"].includes(k))), "a vector with a field that the receiver ignores");
@@ -550,9 +553,17 @@ test("the window rule: each vector follows C10's rule, also for a pending close 
   assert.ok(has((v) => v.guard && v.pending.some((t) => v.open.includes(t))), "a pending close that is still open counts as closed");
   assert.ok(has((v) => !v.guard && v.pending.length > 0), "a pending close and a tab that stays");
   assert.ok(has((v) => v.closes.length > 1 && v.guard) && has((v) => v.closes.length > 1 && !v.guard), "an item with several closes");
-  for (const s of ["**removal queue**", "**window rule**", "**pending close**", "`REMOVAL_WAIT_MS = 2000`", "a client's `Page.close`", "`windowRule`"]) {
+  for (const s of ["**removal queue**", "**window rule**", "**pending close**", "`REMOVAL_WAIT_MS = 2000`", "a client's `Page.close`", "`windowRule`",
+    // review-17: the receiver's close (H1), the fallback, a pending close closed again (M1), the gate and the link change (M4),
+    // the limits of the item's calls (L1), the bound of the answer (L2), a child session's Page.close (L3), the memory-only limit (L5).
+    "The **receiver's close**", "`Target.closeTarget` with the tab's target id", "`Detached while handling command.`", "The fallback: when the attach",
+    "closes a tab with a pending close again, by the receiver's close", "The gate opens at each of these ends", "drops every bridge request that waits in the queue or at a gate",
+    "The query and that tab each have a limit of `REMOVAL_WAIT_MS`", "The bound of a `set_scopes` answer", "A `Page.close` on a child session of the tab",
+    "The pending closes live in the worker's memory only", "the close of a new tab whose rule update failed", "a restore tab that came after its step's deadline"]) {
     assert.ok(says(C10, s), `C10 says: ${s}`);
   }
+  assert.ok(says(C5, "The sweep closes a tab with a pending close again, by the receiver's close"), "C5: the sweep does not skip a held tab");
+  assert.ok(says(C11, "while Chrome's own `Target.closeTarget` does not"), "C11: today's relay's Target.closeTarget runs beforeunload");
 });
 
 // C5's sweep: at an applied set_scopes (scopes and lists are objects), every tab of the map whose scope has no list.
@@ -576,7 +587,8 @@ test("the sweep: each vector closes the tabs whose scope has no list, and none a
   assert.ok(has((v) => typeof v.in.default === "string" && Object.values(v.map).some((s) => !Object.hasOwn(scopes(v), s)) && v.closes.length === 0), "a scope that is not named, with a default list, stays");
   assert.ok(has((v) => !v.applied && Object.hasOwn(v.in, "scopes") && !isObj(v.in.scopes)), "scopes not an object: no sweep");
   assert.ok(has((v) => !v.applied && Object.hasOwn(v.in, "lists") && !isObj(v.in.lists)), "lists not an object: no sweep");
-  assert.ok(has((v) => v.applied && applySetScopes(v.in).refused > 0 && v.closes.length > 0), "a refused entry follows what applies");
+  // A refused scopes entry (neither null nor a valid name) applies as null, and its tab closes.
+  assert.ok(has((v) => v.applied && v.closes.some((t) => { const e = scopes(v)[v.map[t]]; return e !== undefined && e !== null && !validName(e); })), "a refused entry follows what applies");
   for (const s of ["The sweep (board ab-v16.41", "An **applied** `set_scopes`", "at its rule update, before the sweep's `tabs.query`", "`sweep` in `test/vectors/scopes.json`"]) {
     assert.ok(says(C5, s), `C5 says: ${s}`);
   }

@@ -79,11 +79,17 @@ const scoped = (v) => SCOPED_OPS.has(v.req.op);
 // Since board ab-v16.41 the vectors also hold the op bridge.tabScopes (C10, the orphan-tabs rules), which the
 // receiver gets in part 1a too. Until then its vectors run as todo tests in the same way: when OPS has the op,
 // PENDING_TAB_SCOPES is false. Part 1a then removes PENDING_TAB_SCOPES, and its test puts the vector's tabs
-// (9 and 12, scope ab-lead) into the map first. The no-list vectors (no list for this scope) are scoped ones:
-// part 1a's setup applies the vector's setScopes.
+// (9 and 12, scope ab-lead) into the map first.
+// The no-list vectors (b38 to b40, no list for this scope) are scoped ones. Today's setup applies no setScopes,
+// so they would also pass for a receiver that ignores it: part 1a's setup must apply the vector's setScopes,
+// and keep a positive tabs.create of a scope with a list (ab-lead) in the same setup (review-17 L8).
+// The request vector of tabs.remove holds the receiver's close of the per-scope build (Target.closeTarget
+// through chrome.debugger, board ab-v16.41): it runs with the scoped ones, under PENDING_1A.
 const PENDING_TAB_SCOPES = Object.hasOwn(OPS, "bridge.tabScopes") ? false : "board ab-v16.31 (part 1a): the op bridge.tabScopes";
 const NEW_OPS = new Set(["bridge.tabScopes"]);
 const newOp = (v) => NEW_OPS.has(v.req.op);
+const PER_SCOPE_REQUESTS = new Set(["tabs.remove"]);
+const perScopeRequest = (v) => scoped(v) || PER_SCOPE_REQUESTS.has(v.req.op);
 
 test("the bridge's constants and ops are C10's", () => {
   const K = V.constants;
@@ -125,7 +131,7 @@ async function requestVectors(vectors) {
   }
 }
 
-test("each request vector makes its chrome call and gets the vector's res", () => requestVectors(V.requests.filter((v) => !scoped(v) && !newOp(v))));
+test("each request vector makes its chrome call and gets the vector's res", () => requestVectors(V.requests.filter((v) => !perScopeRequest(v) && !newOp(v))));
 
 test("bridge.tabScopes is C10's op, and its request vector gets the vector's res", { todo: PENDING_TAB_SCOPES }, async () => {
   const o = V.ops.find((x) => x.op === "bridge.tabScopes");
@@ -136,7 +142,7 @@ test("bridge.tabScopes is C10's op, and its request vector gets the vector's res
   await requestVectors(V.requests.filter(newOp));
 });
 
-test("each request vector of tabs.create and windows.create: the scope arg", { todo: PENDING_1A }, () => requestVectors(V.requests.filter(scoped)));
+test("each request vector of the per-scope build: tabs.create and windows.create (the scope arg), tabs.remove (the receiver's close)", { todo: PENDING_1A }, () => requestVectors(V.requests.filter(perScopeRequest)));
 
 async function badRequestVectors(vectors) {
   const s = await setup({
