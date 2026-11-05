@@ -173,6 +173,59 @@ test("a tab of a bridge op is never marked, also when Chrome's tabs.onCreated fo
   assert.equal(s.r.map.scopeOf(41), "md-lead");
 });
 
+test("no mark for a tab that is in the map, in the orphan set, closed, or the restore tab of a running import, also when its tabs.onCreated names chrome://newtab/", async () => {
+  const s = await setup({ tabs: [blank(7), blank(30)], copy: { "tab:7": "md-lead", "tab:30": "md-lead" } });
+  s.r.map.addOrphan(31);
+  s.f.chrome.tabs.onRemoved.fire(32, { windowId: 1, isWindowClosing: false });
+  s.r.att.markRestore(33);
+  await flush();
+  for (const id of [30, 31, 32, 33]) s.f.chrome.tabs.onCreated.fire({ id, windowId: 1, url: "", pendingUrl: NEW_TAB_URL });
+  await flush();
+  for (const id of [30, 31, 32, 33]) assert.equal(s.r.map.isMarked(id), false, `tab ${id}`);
+  assert.equal(ruleOf(s.f, MARKED_RULE_ID), undefined);
+});
+
+test("the mark that a page's navigation target removes leaves no kept mark: a later popup of that tab is not marked", async () => {
+  const s = await setup();
+  operatorTab(s, 23);
+  await flush();
+  navTargetOf(s, 23, 3, NEW_TAB_URL);
+  await flush();
+  assert.equal(s.r.map.isMarked(23), false);
+  openPopup(s, { id: 9, source: 23 });
+  await flush();
+  assert.equal(s.r.map.isMarked(9), false, "no kept mark of tab 23");
+  assert.equal(s.r.map.scopeOf(9), undefined);
+});
+
+// review-22 B1: a bridge op never opens Chrome's New Tab page. Through chrome.debugger, Target.createTarget opens a tab
+// at chrome://newtab/ with no navigation target (measured on Chromium 156 and Google Chrome 157), which would get the
+// mark; so debugger.sendCommand refuses each Target method that the relay does not send (bad args).
+test("debugger.sendCommand refuses Target.createTarget of chrome://newtab/ (also newWindow) and every Target method that the relay does not send: bad args, no chrome call, no tab, no mark", async () => {
+  const s = await setup();
+  assert.equal((await s.answer({ id: "a", op: "debugger.attach", args: [7] })).ok, true);
+  const refused = [
+    ["Target.createTarget", { url: NEW_TAB_URL }], ["Target.createTarget", { url: NEW_TAB_URL, newWindow: true }], ["Target.createTarget", { url: "about:blank" }],
+    ["Target.closeTarget", { targetId: "T7" }], ["Target.activateTarget", { targetId: "T7" }], ["Target.attachToTarget", { targetId: "T7", flatten: true }],
+    ["Target.openDevTools", { targetId: "T7" }], ["Target.createBrowserContext", {}], ["Target.exposeDevToolsProtocol", { targetId: "T7" }],
+    ["Target.setDiscoverTargets", { discover: true }], ["Target.getTargets", {}], ["Target.sendMessageToTarget", { message: "{}" }], ["Target.attachToBrowserTarget", {}],
+  ];
+  const mark = s.f.calls.length;
+  for (const [i, [method, params]] of refused.entries()) {
+    const res = await s.answer({ id: "t" + i, op: "debugger.sendCommand", args: [{ tabId: 7 }, method, params] });
+    assert.deepEqual([res.ok, res.error], [false, "bad args"], method);
+  }
+  assert.deepEqual(s.f.callsTo("debugger.sendCommand").length, s.f.calls.slice(0, mark).filter(([p]) => p === "debugger.sendCommand").length, "no command reached Chrome");
+  assert.equal(s.f.callsTo("tabs.create").length, 0);
+  // The Target methods that the relay sends (C11): they reach Chrome.
+  for (const [i, [method, params, target]] of [["Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, { tabId: 7 }],
+    ["Target.getTargetInfo", {}, { tabId: 7 }], ["Target.detachFromTarget", { sessionId: "S1" }, { tabId: 7 }], ["Target.setAutoAttach", { autoAttach: true, flatten: true }, { tabId: 7, sessionId: "S1" }]].entries()) {
+    const res = await s.answer({ id: "k" + i, op: "debugger.sendCommand", args: [target, method, params] });
+    assert.equal(res.ok, true, method);
+    assert.deepEqual(s.f.callsTo("debugger.sendCommand").at(-1), [target, method, params]);
+  }
+});
+
 // ---- rule 8, or the named list's tabIds ----
 
 test("with operator \"*\": rule 8 allows every main frame, frame and <object>/<embed> document in the marked tabs, with no host condition; set_scopes counts it in rules", async () => {
@@ -236,7 +289,7 @@ test("with null, with no operator field, with a valid name that is not in lists,
   assert.equal(parseScopes(scopesWith("all sites")).operator, null);
 });
 
-test("before the first set_scopes after the worker's start a marked tab has no rule (no operator value yet); the first one writes rule 8", async () => {
+test("before the first set_scopes after the worker's start a marked tab has no rule (no operator value yet); the first one writes rule 8, and a later change of the marks replaces it", async () => {
   const s = await setup({ scopes: null });
   operatorTab(s, 20);
   await flush();
@@ -245,6 +298,14 @@ test("before the first set_scopes after the worker's start a marked tab has no r
   const r = await s.set(scopesWith("*"));
   assert.equal(r.rules, 3);
   assert.deepEqual(tabIdsOf(s.f, MARKED_RULE_ID), [20]);
+  // The full replace recorded rule 8: a new mark replaces it, and the last marked tab's close removes it.
+  operatorTab(s, 21);
+  await flush();
+  assert.deepEqual(updates(s.f).at(-1), { removeRuleIds: [8], addRules: [markedRule([20, 21])] });
+  s.f.closeTab(20);
+  s.f.closeTab(21);
+  await flush();
+  assert.equal(ruleOf(s.f, MARKED_RULE_ID), undefined);
 });
 
 test("each set_scopes replaces rule 8 in full by its operator value: \"*\" to a list, to null, and back", async () => {
@@ -308,6 +369,57 @@ test("a popup of a marked tab is marked (sourceTabId): no scope, no key, no brid
   assert.equal(s.r.map.scopeOf(11), "md-lead");
 });
 
+test("with a list name, a popup of a marked tab joins that list's two rules in its own rule update", async () => {
+  const s = await setup({ operator: "ops" });
+  operatorTab(s, 20);
+  await flush();
+  const calls = updates(s.f).length;
+  openPopup(s, { id: 9, source: 20, url: "https://o.example/p" });
+  await flush();
+  assert.equal(s.r.map.isMarked(9), true);
+  assert.deepEqual(updates(s.f).slice(calls), [{ removeRuleIds: [102, 103], addRules: scopeRules(102, ["o.example"], [20, 9]) }]);
+  assert.equal(ruleOf(s.f, MARKED_RULE_ID), undefined);
+});
+
+test("a bridge tab that gets the mark (the relay attached a new tab before its navigation target named a marked opener) is detached: no bridge tab, and the bridge refuses its commands (not an agent tab)", async () => {
+  const s = await setup();
+  operatorTab(s, 20);
+  await flush();
+  openPopup(s, { id: 9, source: 20, navTarget: false });
+  await flush();
+  assert.equal((await s.answer({ id: "a9", op: "debugger.attach", args: [9] })).ok, true);
+  assert.equal(s.r.att.isBridgeTab(9), true);
+  navTargetOf(s, 9, 20);
+  await flush();
+  assert.equal(s.r.map.isMarked(9), true);
+  assert.equal(s.r.att.isBridgeTab(9), false, "detached");
+  assert.deepEqual(s.f.callsTo("debugger.detach").at(-1), [{ tabId: 9 }]);
+  const res = await s.answer({ id: "c9", op: "debugger.sendCommand", args: [{ tabId: 9 }, "Runtime.evaluate", { expression: "1" }] });
+  assert.deepEqual([res.ok, res.error], [false, "not an agent tab"]);
+});
+
+test("the mark's check right before Chrome's attach: a debugger.attach that waits in its op while its tab gets the mark gets not an agent tab, and no attach reaches Chrome", async () => {
+  const s = await setup();
+  operatorTab(s, 20);
+  await flush();
+  openPopup(s, { id: 9, source: 20, navTarget: false });
+  await flush();
+  // The attach's own-origin check reads the tab (tabs.get) before Chrome's attach: it answers late.
+  let read;
+  s.f.impl["tabs.get"] = (id) => new Promise((r) => (read = () => r({ id, windowId: 1, url: "", pendingUrl: "https://z.example/p" })));
+  s.send({ t: "req", id: "a9", op: "debugger.attach", args: [9] });
+  await flush();
+  navTargetOf(s, 9, 20);
+  await flush();
+  assert.equal(s.r.map.isMarked(9), true);
+  const attaches = s.f.callsTo("debugger.attach").length;
+  delete s.f.impl["tabs.get"];
+  read();
+  await flush();
+  assert.deepEqual(s.resOf("a9").map((m) => m.error), ["not an agent tab"]);
+  assert.equal(s.f.callsTo("debugger.attach").length, attaches);
+});
+
 test("a popup of a marked tab that closed a moment before takes its kept mark for TOMBSTONE_MS, then no mark and no scope", async () => {
   const s = await setup();
   operatorTab(s, 20);
@@ -341,6 +453,20 @@ test("the mark stays at tabs.onReplaced: the added tab takes it, the removed tab
   assert.equal(s.r.map.isMarked(20), false);
   assert.deepEqual(updates(s.f).slice(calls), [{ removeRuleIds: [8], addRules: [markedRule([25])] }]);
   assert.equal(s.r.map.scopeOf(25), undefined);
+});
+
+test("tabs.onReplaced of an agent tab whose added tab got a mark at its own tabs.onCreated: the added tab takes the scope, the mark goes, and so does rule 8", async () => {
+  const s = await setup();
+  s.f.tabs_.push({ id: 25, windowId: 1, url: "", pendingUrl: NEW_TAB_URL });
+  s.f.chrome.tabs.onCreated.fire({ id: 25, windowId: 1, url: "", pendingUrl: NEW_TAB_URL });
+  await flush();
+  assert.equal(s.r.map.isMarked(25), true);
+  s.f.chrome.tabs.onReplaced.fire(25, 7);
+  await flush();
+  assert.equal(s.r.map.isMarked(25), false, "a tab in a scope is never marked");
+  assert.equal(s.r.map.scopeOf(25), "md-lead");
+  assert.equal(ruleOf(s.f, MARKED_RULE_ID), undefined);
+  assert.deepEqual(tabIdsOf(s.f, 100), [25]);
 });
 
 test("a replaced marked tab whose added tab is already gone: the removed tab's mark goes, and so does rule 8", async () => {
@@ -471,7 +597,7 @@ test("the tab's list that the closing rule, the retry and the guard read: \"*\" 
 
 // ---- the tab checks and the eager attach ----
 
-test("the bridge never attaches, selects or closes a marked tab: not an agent tab; debugger.sendCommand gets not attached; tabs.get, debugger.detach and bridge.release stay allowed", async () => {
+test("the bridge never attaches, commands, selects or closes a marked tab: not an agent tab; tabs.get, debugger.detach and bridge.release stay allowed", async () => {
   const s = await setup();
   operatorTab(s, 20);
   await flush();
@@ -481,7 +607,7 @@ test("the bridge never attaches, selects or closes a marked tab: not an agent ta
     assert.deepEqual([res.ok, res.error], [false, "not an agent tab"], op);
   }
   const cmd = await s.answer({ id: "c", op: "debugger.sendCommand", args: [{ tabId: 20 }, "Page.enable"] });
-  assert.deepEqual([cmd.ok, cmd.error], [false, "not attached"]);
+  assert.deepEqual([cmd.ok, cmd.error], [false, "not an agent tab"], "also a command (review-22 note 2)");
   for (const [id, op] of [["g", "tabs.get"], ["d", "debugger.detach"], ["b", "bridge.release"]]) {
     assert.equal((await s.answer({ id, op, args: [20] })).ok, true, op);
   }
@@ -535,6 +661,22 @@ test("the retry of a marked popup: with \"*\" every host is covered (one reload,
     assert.deepEqual(s.f.callsTo("tabs.reload"), reloaded ? [[9]] : [], note);
     assert.deepEqual(s.notices().map((n) => n.host), reloaded ? [] : [new URL(url).hostname], note);
   }
+});
+
+test("a marked popup that loses its mark before the decision of its retry gets the notice, not the reload", async () => {
+  const s = await setup();
+  operatorTab(s, 20);
+  await s.fire(50);
+  const late = lateRules(s);
+  openPopup(s, { id: 9, source: 20 });
+  await flush();
+  block(s, 9, "https://z.example/p");
+  await flush();
+  s.r.map.unmark(9);
+  await late();
+  await s.fire(RETRY_AFTER_MS);
+  assert.deepEqual(s.f.callsTo("tabs.reload"), []);
+  assert.deepEqual(s.notices().map((n) => n.host), ["z.example"]);
 });
 
 test("a marked popup that closes while its reload waits gets no reload", async () => {

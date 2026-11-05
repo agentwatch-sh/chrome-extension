@@ -239,7 +239,9 @@ export class Receiver {
     // the added tab joins the orphan set and closes.
     c.tabs.onReplaced.addListener((addedTabId, removedTabId) => this.map.whenRestored(() => {
       const before = this.map.scopeOf(removedTabId);
-      const marked = this.map.isMarked(removedTabId);
+      // The added tab takes only the removed tab's state: a mark that its own
+      // tabs.onCreated gave it goes first.
+      const marked = this.map.unmark(addedTabId) || this.map.isMarked(removedTabId);
       const from = this.map.opener(removedTabId);
       this.map.release(removedTabId);
       this.popups.removed(removedTabId);

@@ -314,6 +314,7 @@ function kindFits(kind, a) {
     case "id": return int(a) && a >= 0;
     case "object": return isObj(a);
     case "string": return typeof a === "string" && a.length > 0;
+    case "method": return typeof a === "string" && a.length > 0 && (!a.startsWith("Target.") || bridge.targetMethods.includes(a));
     case "boolean": return typeof a === "boolean";
     case "target":
       return isObj(a) && int(a.tabId) && a.tabId >= 0 && onlyKeys(a, ["tabId", "sessionId"]) &&
@@ -979,7 +980,7 @@ test("review-18's notes (board ab-v16.50): the file of ended scopes, the freed n
     "A scope that ended while the daemon was down is in no file: with 5 b it falls back to the `default` list after the restart, and the sweep does not close its tabs (a limit; with 5 a it does not exist)"]) {
     assert.ok(says(daemon, s), `C4 says: ${s}`);
   }
-  for (const s of ["The check of a marked tab needs no `debugger.sendCommand`, because a marked tab is never a bridge tab",
+  for (const s of ["A marked tab is never a bridge tab (a bridge tab that gets the mark is detached: each tab's scope, below), so its check of `debugger.sendCommand` is one more layer",
     "A call that went to Chrome before its tab joined the set runs to its end (what stops a handler, below)",
     "An op of the removal queue gets the check when its item starts: a tab joins the set only at the end of a sweep item (or as a new tab), and one item runs at a time"]) {
     assert.ok(says(C10, s), `C10 says: ${s}`);
@@ -1505,7 +1506,14 @@ test("C10 states part 1d's operator mark as built: where the mark comes from, wh
     "CDP key events of Ctrl+T and Ctrl+N (`Input.dispatchKeyEvent` with `nativeVirtualKeyCode` through the bridge, and Playwright's `keyboard.press` through the relay) opened no tab",
     "The first tab of a browser that starts at its New Tab page gets no mark",
     "A program of the operator's OS user that sends X input to the live view's display (Ctrl+T, then a URL) gets a marked tab",
+    // review-22: B1, note 3 and note 4.
+    "and `debugger.sendCommand` sends no `Target.createTarget` (the kind `method`). So a bridge op never opens a site, a `chrome:`, `file:` or `javascript:` URL, or Chrome's New Tab page",
+    "Of the `Target` domain only the methods that the relay sends to Chrome (C11, where each call goes; the vector's `targetMethods`)",
+    "a mark that its own `tabs.onCreated` gave it goes first",
+    "Measured on Google Chrome 157 too (review-22): Ctrl+T and Ctrl+N give `url` `\"\"` and `pendingUrl` `chrome://newtab/`, with no navigation target",
   ]) assert.ok(says(C10, s), `C10 says: ${s}`);
+  for (const m of bridge.targetMethods) assert.ok(says(C10, "`" + m + "`"), `C10 names ${m}`);
+  assert.ok(!says(C10, "Google Chrome stable's URL in `tabs.onCreated` of a new tab is not measured"), "measured now");
   assert.ok(!says(C10, "that a page cannot open a `chrome://` page is Chrome's rule, not measured"), "measured now");
   assert.equal(JSON.parse(read("agent/manifest.json")).version, "0.3.2");
 });

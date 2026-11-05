@@ -791,6 +791,16 @@ first document request of a new tab (below).
 - The kinds of args:
   - `id`: an integer of 0 or more (a tab, window or download id).
   - `object`: a JSON object. `string`: a string that is not empty. `boolean`: true or false.
+  - `method` (`debugger.sendCommand`): a CDP method, a string that is not empty. Of the `Target`
+    domain only the methods that the relay sends to Chrome (C11, where each call goes; the
+    vector's `targetMethods`): `Target.setAutoAttach`, `Target.getTargetInfo` and
+    `Target.detachFromTarget`. Any other `Target.` method gets `bad args`, also on a child session
+    (review-22 B1): through `chrome.debugger`, `Target.createTarget` opens a tab at a URL that the
+    bridge never checks, also Chrome's New Tab page (`chrome://newtab/`, with `newWindow` too), in
+    a tab with no navigation target, which would get the operator mark (each tab's scope, below;
+    measured on Chromium 156 and Google Chrome 157); `Target.closeTarget` and
+    `Target.activateTarget` would close or select another tab with no tab check. The relay's model
+    answers every other `Target.` method itself (C11).
   - `target`: `{"tabId":<id>}` or `{"tabId":<id>,"sessionId":"<child session>"}`, with no other key.
   - `contentType`: one of `location`, `notifications`, `camera`, `microphone`, `clipboard`,
     `automaticDownloads`.
@@ -809,21 +819,24 @@ first document request of a new tab (below).
     applied `set_scopes` covers (C4, C5: any list, because the receiver does not know which scope
     calls), with or without `*.` before it.
   - A new tab or window opens at `about:blank` only: it makes no request before its scope rule is in
-    force (each tab's scope, below). So a bridge op never opens a site, a `chrome:`, `file:` or
-    `javascript:` URL, or Chrome's New Tab page. A navigation is `Page.navigate` (C11 checks its URL).
+    force (each tab's scope, below), and `debugger.sendCommand` sends no `Target.createTarget` (the
+    kind `method`). So a bridge op never opens a site, a `chrome:`, `file:` or `javascript:` URL, or
+    Chrome's New Tab page. A navigation is `Page.navigate` (C11 checks its URL).
 - The tab checks:
   - `not an agent tab`: `debugger.attach`, `debugger.detach`, `tabs.update` and `tabs.remove` of the
     restore tab of a running import (C6); `debugger.attach` of a tab whose `url` or `pendingUrl` is
     in the receiver's own origin (`chrome-extension://<receiver id>/`); and, with the design's
-    choice 3 (part 1d), `debugger.attach`, `tabs.update` and `tabs.remove` of a marked tab (each
-    tab's scope, below). No connection sees a marked tab, so this check is a second layer.
+    choice 3 (part 1d), `debugger.attach`, `debugger.sendCommand`, `tabs.update` and `tabs.remove`
+    of a marked tab (each tab's scope, below). No connection sees a marked tab, so this check is a
+    second layer.
   - `not an agent tab`, in the per-scope build (board ab-v16.41, review-17e): `debugger.attach`,
     `debugger.sendCommand`, `tabs.update` and `tabs.remove` of a tab of the orphan set (C5, the
     sweep). These are the ops by which a client acts on a tab: it attaches to the tab, sends it a
     command, selects it or closes it. A tab of the orphan set belongs to no live session, so no
-    client acts on it, and only the receiver closes it (each later sweep item, C5). The check of a
-    marked tab needs no `debugger.sendCommand`, because a marked tab is never a bridge tab; a tab of
-    the orphan set can still be one (an attach from before it joined the set). The other ops that
+    client acts on it, and only the receiver closes it (each later sweep item, C5). A marked tab is
+    never a bridge tab (a bridge tab that gets the mark is detached: each tab's scope, below), so
+    its check of `debugger.sendCommand` is one more layer (review-22 note 2); a tab of the orphan
+    set can still be a bridge tab (an attach from before it joined the set). The other ops that
     take a tab id stay allowed for such a tab: `debugger.detach`, `tabs.get` and `bridge.release`
     (they read the tab or end a state). No connection sees a tab of the orphan set, so this check
     is a second layer too: an old model entry of the relay, or a client of the same name after a
@@ -1273,12 +1286,16 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
       the tab came before, and the tab is not in the map. Measured (Chromium 156, part 1d's live
       test): Ctrl+T and Ctrl+N (a new window) give `url` `""` and `pendingUrl` `chrome://newtab/`;
       the page then commits at `chrome://new-tab-page-third-party/` (with a search engine other
-      than Google); for Ctrl+T, `openerTabId` names the active tab.
+      than Google); for Ctrl+T, `openerTabId` names the active tab. Measured on Google Chrome 157
+      too (review-22): Ctrl+T and Ctrl+N give `url` `""` and `pendingUrl` `chrome://newtab/`, with
+      no navigation target.
     - A tab that a page opened is no operator tab: a navigation target of the tab that comes after
       the mark removes it, and the tab takes its opener's scope or mark (a popup, above). A tab of
       `tabs.create` or `windows.create` loses a mark at its entry write: its URL is `about:blank`,
       so Chrome's `tabs.onCreated` does not name the New Tab page, and the rule "no bridge op
-      created" holds also if it did.
+      created" holds also if it did. The added tab of a `tabs.onReplaced` takes only the removed
+      tab's scope or mark: a mark that its own `tabs.onCreated` gave it goes first (review-22
+      note 3).
     - A popup whose eager attach began before its navigation target marked it: when the attach and
       the hold are on, the receiver ends the hold (the held requests continue), detaches the tab,
       and its `tabs.onCreated` says `"attached":false,"held":false`. So a marked tab is never a
@@ -1298,7 +1315,10 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
       a marked tab still loaded any host. An agent tab and its popup never got the mark. CDP key
       events of Ctrl+T and Ctrl+N (`Input.dispatchKeyEvent` with `nativeVirtualKeyCode` through
       the bridge, and Playwright's `keyboard.press` through the relay) opened no tab, and
-      agent-browser's `press` refuses them (`unsupported key`).
+      agent-browser's `press` refuses them (`unsupported key`). Before the kind `method` (review-22
+      B1), `Target.createTarget` of `chrome://newtab/` through `debugger.sendCommand` of an agent
+      tab opened a marked tab that loaded a host of no list; now it gets `bad args` and opens no
+      tab.
     - The limits. The first tab of a browser that starts at its New Tab page gets no mark: its
       `tabs.onCreated` comes before the receiver's worker runs (measured), so it fails closed, and
       the operator opens a new tab. A tab that the browser opens at a URL (a link dragged onto the
@@ -1306,8 +1326,6 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
       it gets no mark and fails closed (not measured). A program of the operator's OS user that
       sends X input to the live view's display (Ctrl+T, then a URL) gets a marked tab, which can
       open any site with the profile's sign-ins and needs no scope (review-42g build note 9).
-      Google Chrome stable's URL in `tabs.onCreated` of a new tab is not measured (taylor has
-      only Chromium).
   - A tab leaves the map when it closes: in `tabs.onRemoved` the receiver drops the tab's entry and
     sends the event before any other `await` of the handler (the next query of the removal queue
     and the relay then see the tab gone; review-48 X4 measured that the event comes before

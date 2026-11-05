@@ -20,6 +20,12 @@ names and counts, and the server compares the two sides in memory.
 
 - Linux with `Xvfb`, `xdotool`, `ffmpeg`, `python3` (standard library only)
   and Chromium at `/usr/bin/chromium` (set `CHROMIUM` for another path).
+  Google Chrome is not a drop-in `CHROMIUM`: it ignores `--load-extension`
+  (measured with Google Chrome 157, review-22 of board ab-v16.34; it installed
+  the packed agent 0.2.0 of its tools folder's external file instead). To load
+  the unpacked `agent/` there, start it with `--remote-debugging-pipe
+  --enable-unsafe-extension-debugging` and send `Extensions.loadUnpacked`
+  with the folder's path on the pipe. This harness does not do that.
 - A free loopback port (default 8771; set `LIVE_PORT`) and two free X
   displays in 90 to 189.
 - `HOLD_TRIALS` (default 10): the trials of each kind of new tab in the case

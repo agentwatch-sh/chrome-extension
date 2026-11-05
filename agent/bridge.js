@@ -40,6 +40,17 @@ const isBool = (x) => typeof x === "boolean";
 // opens a site, a chrome:, file: or javascript: URL, or Chrome's New Tab page.
 const isNewUrl = (u) => u === "about:blank";
 
+// The Target methods that the relay sends to Chrome through
+// debugger.sendCommand (C11, where each call goes); its model answers every
+// other Target method itself. Any other Target method is refused (bad args):
+// through chrome.debugger, Target.createTarget opens a tab at a URL that the
+// bridge never checks, also Chrome's New Tab page in a tab that would get the
+// operator mark (review-22: measured on Chromium 156 and Google Chrome 157),
+// and Target.closeTarget or Target.activateTarget would act on another tab
+// with no tab check.
+export const TARGET_METHODS = Object.freeze(["Target.setAutoAttach", "Target.getTargetInfo", "Target.detachFromTarget"]);
+const isMethod = (m) => typeof m === "string" && m.length > 0 && (!m.startsWith("Target.") || TARGET_METHODS.includes(m));
+
 // <scheme>://<host>/* or <scheme>://<host>:<port>/*, the scheme http, https or
 // *, the host (with or without "*.") a normalized C5 host that a list of the
 // last applied set_scopes covers (any list: the receiver does not know which
@@ -57,6 +68,7 @@ const KINDS = {
   object: isObj,
   string: (a) => typeof a === "string" && a.length > 0,
   boolean: isBool,
+  method: isMethod,
   target: (a) =>
     isObj(a) && isId(a.tabId) && onlyKeys(a, ["tabId", "sessionId"]) &&
     optional(a, "sessionId", (s) => typeof s === "string" && s.length > 0),
@@ -88,11 +100,12 @@ const noSession = (c, tabId) => c.r.map.isOrphan(tabId) || c.r.map.isMarked(tabI
 // restore tab, a tab of the orphan set and a marked tab. debugger.detach,
 // tabs.get and bridge.release stay allowed.
 const agentTab = (c, [tabId]) => (c.att.isRestoreTab(tabId) || noSession(c, tabId) ? NOT_AGENT_TAB : null);
-// A command never goes to a tab of the orphan set, through the import's
-// attachment, or to a tab that the bridge did not attach: not an agent tab
-// first, then not attached (a marked tab is never a bridge tab).
+// A command never goes to a tab of the orphan set or a marked tab, through
+// the import's attachment, or to a tab that the bridge did not attach: not an
+// agent tab first, then not attached (a marked tab is never a bridge tab, so
+// its check is one more layer).
 const commandTab = (c, [target]) =>
-  c.r.map.isOrphan(target.tabId) ? NOT_AGENT_TAB : c.att.isBridgeTab(target.tabId) ? null : "not attached";
+  noSession(c, target.tabId) ? NOT_AGENT_TAB : c.att.isBridgeTab(target.tabId) ? null : "not attached";
 
 // A client's Fetch.enable or Fetch.disable on a tab's own session changes
 // the hold of the tab (C10): the hold counts it as it goes to Chrome.
@@ -157,7 +170,7 @@ export const OPS = Object.freeze({
       if (ownOrigin(c, tab) || c.att.isRestoreTab(tabId)) throw new Error(NOT_AGENT_TAB);
     }), () => (noSession(c, tabId) ? NOT_AGENT_TAB : null)), { tab: agentTab }),
   "debugger.detach": op(["id"], 1, (c, [tabId]) => c.att.detach(tabId), { tab: restoreTab, nullResult: true }),
-  "debugger.sendCommand": op(["target", "string", "object"], 2,
+  "debugger.sendCommand": op(["target", "method", "object"], 2,
     (c, [target, method, params], o) => sendCommand(c, o, target, method, params), { tab: commandTab, wait: WAIT_MAX_MS }),
   "debugger.getTargets": op([], 0, (c) => c.chrome.debugger.getTargets()),
   "tabs.create": op(["newTab", "scope"], 2, (c, [props, scope]) =>
