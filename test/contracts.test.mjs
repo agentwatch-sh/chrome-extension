@@ -57,6 +57,9 @@ const K = bridge.constants;
 // C4's rules for set_scopes. The relay applies the same rules to its allowlist line (C10, C11).
 const NAME = new RegExp(scopesV.pattern);
 const HEX64 = /^[0-9a-f]{64}$/;
+// A valid name (C4): a string that matches the scope pattern. A field that must name a list and
+// holds anything else counts 1 in refused and applies as null.
+const validName = (v) => typeof v === "string" && NAME.test(v);
 const normalized = (e) => {
   const r = normalizeEntry(e);
   return r.ok && r.entry === e;
@@ -78,18 +81,22 @@ function applySetScopes(msg) {
   const scopes = {};
   if (isObj(msg.scopes)) {
     for (const [scope, v] of Object.entries(msg.scopes)) {
-      if (!NAME.test(scope) || !(typeof v === "string" || v === null)) refused += 1;
-      else scopes[scope] = v;
+      if (!NAME.test(scope)) refused += 1; // applies as absent
+      else if (!(v === null || validName(v))) {
+        refused += 1;
+        scopes[scope] = null; // no list, no fall-back to default
+      } else scopes[scope] = v;
     }
   } else refused += 1;
   let def = null;
-  if (typeof msg.default === "string") def = msg.default;
+  if (validName(msg.default)) def = msg.default;
   else if (msg.default !== null) refused += 1; // also a missing default
+  if (!isObj(msg.scopes)) def = null; // no scope gets default while the scopes are not known
   let operator = null;
   if (Object.hasOwn(msg, "operator") && msg.operator !== null) {
     const o = msg.operator;
     if (o === "*") operator = "*";
-    else if (typeof o === "string" && NAME.test(o)) operator = Object.hasOwn(lists, o) ? o : null;
+    else if (validName(o)) operator = Object.hasOwn(lists, o) ? o : null;
     else refused += 1;
   }
   // A scope's list: its scopes entry when it has one (no fall-back), else default.
@@ -163,6 +170,10 @@ test("each set_scopes vector applies by C4's rules, with its count in refused", 
   assert.ok(has((v) => Object.hasOwn(v.in, "scopes") && !isObj(v.in.scopes)), "scopes that is not an object");
   assert.ok(has((v) => !Object.hasOwn(v.in, "default")), "a missing default");
   assert.ok(has((v) => Object.hasOwn(v.in, "default") && v.in.default !== null && typeof v.in.default !== "string"), "a bad default");
+  assert.ok(has((v) => typeof v.in.default === "string" && !NAME.test(v.in.default)), "a default that is a string but not a valid name");
+  assert.ok(has((v) => Object.entries(scopes(v)).some(([s, l]) => NAME.test(s) && l !== null && !validName(l))), "a scope value that is not a valid name");
+  assert.ok(has((v) => Object.hasOwn(v.in, "scopes") && !isObj(v.in.scopes) && typeof v.in.default === "string" && v.applies.default === null), "scopes not an object: default applies as null");
+  assert.ok(has((v) => [...Object.keys(lists(v)), ...Object.keys(scopes(v))].some((n) => n in Object.prototype)), "names that are properties of a JavaScript object");
   assert.ok(has((v) => typeof v.in.default === "string" && v.listOf && Object.values(v.listOf).includes(v.in.default)), "a scope that gets the default list");
   for (const o of ["*", null]) assert.ok(has((v) => Object.hasOwn(v.in, "operator") && v.in.operator === o), `the operator ${o}`);
   assert.ok(has((v) => typeof v.in.operator === "string" && NAME.test(v.in.operator) && v.applies.operator === null && v.refused === 0), "an operator name that is not in lists");

@@ -70,8 +70,10 @@ const cmds = (f, mark) => callsSince(f, mark).filter(([p]) => p === "debugger.se
 // Since board ab-v16.30 the vectors hold the per-scope contract (docs/protocol.md, the intro and
 // C10's "Each tab's scope"): tabs.create and windows.create take the scope arg. The receiver meets
 // that from part 1a (board ab-v16.31) on. Until then the vectors of these two ops run as todo tests:
-// they report, and they do not fail the run. Part 1a removes PENDING_1A and makes them plain tests.
-const PENDING_1A = "board ab-v16.31 (part 1a): tabs.create and windows.create take the scope arg";
+// they report, and they do not fail the run. When OPS gives tabs.create the kind scope, PENDING_1A
+// is false and they are plain tests. Part 1a then removes PENDING_1A, and it also changes the
+// one-arg tabs.create and windows.create cases of the kinds test below.
+const PENDING_1A = OPS["tabs.create"].kinds.includes("scope") ? false : "board ab-v16.31 (part 1a): tabs.create and windows.create take the scope arg";
 const SCOPED_OPS = new Set(["tabs.create", "windows.create"]);
 const scoped = (v) => SCOPED_OPS.has(v.req.op);
 

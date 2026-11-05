@@ -16,11 +16,13 @@ move only in an agentwatch tip, so a chrome-extension merge alone never reaches 
 
 The per-scope allowlists (board task ab-v16.23; the design: agent-browser
 `docs/superpowers/specs/2026-11-04-per-scope-allowlist-design.md`) are the contract in C4, C5, C6,
-C10 and C11 since board task ab-v16.30. Each side builds them in a part of the design's section 12:
-the receiver in parts 1a to 1d (boards ab-v16.31 to ab-v16.34), the relay in part 2 (ab-v16.35 and
-ab-v16.36), agentwatch in part 3 (aw-lead). Until its part merges, a side still does what this file
-said before ab-v16.30 (`set_allowlist`: one list for the whole agent browser), and this
-repository's tests run the shared vectors that the receiver does not meet yet as `todo` tests. There
+C10 and C11 since board task ab-v16.30. This file is the master over that design too: where the two
+differ (for example the key's 403 text, or a count in `refused`), this file holds. Each side builds
+the rules in a part of the design's section 12: the receiver in parts 1a to 1d (boards ab-v16.31 to
+ab-v16.34), the relay in part 2 (ab-v16.35 and ab-v16.36), agentwatch in part 3 (aw-lead). Until its
+part merges, a side still does what this file said before ab-v16.30 (main `27543ce`:
+`set_allowlist`, one list for the whole agent browser), and this repository's tests run the shared
+vectors that the receiver does not meet yet as `todo` tests. There
 is no backward compatibility: agentwatch pins both repositories and moves them at once, and it
 moves `CHROME_EXTENSION_COMMIT` to a commit with part 1a only together with its part 3 (aw-lead,
 mail md2ae63e). The operator's choices of the design's section 13 that are still open (ab-dm6:
@@ -217,15 +219,26 @@ held one list for the whole agent browser. The request is above. Its fields and 
   Each entry of a list that applies follows C5: an entry that is not a normalized entry (a string
   that equals its normalized form) is refused and counts 1, and the other entries of its list
   apply. So an invalid entry never keeps an older, wider rule.
+- A valid name (of a list, in `scopes`, `default` and `operator`) is a string that matches the scope
+  pattern. A field that must hold a list name and holds a valid name that is not in `lists` gives
+  no list, with no count; one that holds any other value counts 1 in `refused` and applies as
+  `null`.
 - `scopes` maps a scope to a list name or `null`. A scope with `null`, or whose list is not in
   `lists` (also a list that applies as absent), has no list: it does not fall back to `default`, and
-  it counts nothing. A scope that does not match the scope pattern, or whose value is neither a
-  string nor `null`, applies as absent and counts 1 in `refused`.
+  it counts nothing. A scope that does not match the scope pattern applies as absent and counts 1
+  in `refused` (no connection can name it: C11's 404). A scope that matches the pattern but whose
+  value is neither a valid name nor `null` applies as `null` and counts 1 in `refused`: it has no
+  list and does not fall back to `default`, so a broken entry never gives a session another list.
+- Each scope in `scopes` is the scope that agentwatch fixed at the session's launch (C11, the
+  socket and the URL): `set_scopes` names that scope only, never the session's current name or one
+  of its aliases (`AGENTWATCH_SESSION_ALIASES`). A rename changes no scope, and the receiver never
+  moves a tab to another scope at a rename.
 - `default` is a list name or `null`: the list of a scope that `scopes` does not name. With `null`,
-  or a name that is not in `lists`, such a scope has no list. A `default` that is neither a string
-  nor `null` (also a missing one) counts 1 in `refused` and applies as `null`.
+  or a valid name that is not in `lists`, such a scope has no list. A `default` that is neither a
+  valid name nor `null` (also a missing one) counts 1 in `refused` and applies as `null`.
 - A `lists` or `scopes` that is not an object (also a missing one) applies as an empty object and
-  counts 1 in `refused`.
+  counts 1 in `refused`. A `scopes` that is not an object also makes `default` apply as `null`
+  (with no more count): no scope gets the `default` list while the daemon's scopes are not known.
 - A name that comes twice in one object: the last one applies, as `JSON.parse` and Python's `json`
   read it. The daemon never sends one.
 - With the design's choice 3 (the operator's own tabs), `set_scopes` has one more field,
@@ -235,8 +248,15 @@ held one list for the whole agent browser. The request is above. Its fields and 
   `"*"`, not `null`, not a string that matches the scope pattern) counts 1 in `refused` and applies
   as `null`; a valid name that is not in `lists` applies as `null` with no count. The daemon's
   `allowlist` line carries the field; the relay ignores it (no connection sees a marked tab).
+  These are the same counts as for a value of `scopes` and for `default` (a valid name above).
 - The new object replaces the last one in full. The daemon sends it after each `link` up, at each
   change of a list, and when a session (a scope) starts or ends. It waits 10 s for the answer.
+- When the answer is `ok: false`, or no answer comes in 10 s, the daemon writes no `allowlist` line,
+  sends the object again (agentwatch picks the delay), and shows the error on the Browser page. The
+  relay keeps its last line until a new one comes. The receiver has failed closed meanwhile (C5: a
+  failed update removes the scope rules).
+- A send (C2) no longer adds its site to a list: agentwatch decides which list a sent site joins
+  (the design's choice 6, asked in ab-dm6; its recommendation: no list).
 - The answer comes after the scope rules are in force, the workers are removed (when C5 needs it)
   and the tabs are closed (C5). `rules` counts the session rules of C5 that `set_scopes` writes:
   the scope rules, and with choice 3 the marked-tab rule.
@@ -257,7 +277,8 @@ held one list for the whole agent browser. The request is above. Its fields and 
   does the daemon first send the ended scope as `null`, so that it never falls back to the
   `default` list. `end_scope` has no answer, so the daemon cannot see when the tabs are gone: it
   drops the `null` entry 60 s after `end_scope` (the relay removes the tabs at once), or at the
-  next `link` up.
+  next `link` up. The daemon can also write an `end_scope` for each alias of the ended session; the
+  relay does nothing for a name that is no scope (C10, C11).
 - The rollout. The hello's `"features":["scopes"]` says that the receiver speaks `set_scopes`. When
   one side meets the other side's old form, it fails closed, in the named way:
   - A new daemon and an old receiver (its latest hello has no `"scopes"` in `features`): the daemon
@@ -520,7 +541,12 @@ first document request of a new tab (below).
   each res and each event as one line on the relay's standard input. It changes no field, and it
   writes them in the order in which it read them (a res in parts takes the place of its last part).
 - So Chrome's order stays the same from the receiver to the relay. An event that Chrome fires
-  before the answer to a command reaches the relay before that answer.
+  before the answer to a command reaches the relay before that answer. There are two exceptions,
+  both for a new tab's `tabs.onCreated` (each tab's scope, below): while the eager attach is on,
+  the receiver holds the `tabs.onCreated` of a popup whose hold is on; while it is off, the
+  receiver sends a new tab's `tabs.onCreated` after the tab's
+  `webNavigation.onCreatedNavigationTarget`, or 50 ms late when none comes. Other events of that
+  tab then go before its `tabs.onCreated`.
 
 **Requests.** `{"t":"req","id":"<id>","op":"<op>","args":[...],"wait":<ms>}`.
 
@@ -563,8 +589,10 @@ first document request of a new tab (below).
     `javascript:` URL, or Chrome's New Tab page. A navigation is `Page.navigate` (C11 checks its URL).
 - The tab checks:
   - `not an agent tab`: `debugger.attach`, `debugger.detach`, `tabs.update` and `tabs.remove` of the
-    restore tab of a running import (C6); and `debugger.attach` of a tab whose `url` or `pendingUrl`
-    is in the receiver's own origin (`chrome-extension://<receiver id>/`).
+    restore tab of a running import (C6); `debugger.attach` of a tab whose `url` or `pendingUrl` is
+    in the receiver's own origin (`chrome-extension://<receiver id>/`); and, with the design's
+    choice 3 (part 1d), `debugger.attach`, `tabs.update` and `tabs.remove` of a marked tab (each
+    tab's scope, below). No connection sees a marked tab, so this check is a second layer.
   - `not attached`: `debugger.sendCommand` for a tab that is not a bridge tab. So a command never
     goes through the import's attachment.
 
@@ -859,8 +887,9 @@ hold it; the last bullet gives the numbers and what the relay does about it.
     carries the `"operator":` field when `set_scopes` has one (the relay ignores it), and with the
     design's choice 1 b `"keys":{"<scope>":"<sha-256 hex of the key>"}` (C11, the scope's key); the
     receiver never sees the keys. The relay applies C4's rules to the line (C11, the scope's list).
-  - `{"t":"end_scope","scope":"<scope>"}`: the agentwatch session of that name ended. The relay
-    closes the scope's connections and removes its tabs (C11).
+  - `{"t":"end_scope","scope":"<scope>"}`: the agentwatch session of that scope ended. The relay
+    closes the scope's connections and removes its tabs (C11). The daemon can also write one for
+    each alias of the session; the relay does nothing for a name that is no scope.
 - No side logs the args, the results or the event params of the bridge: they can contain page
   content and sign-in values. A log line contains an op, a CDP method, a tab id, a size or a time.
 
@@ -893,8 +922,9 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
     `operator` field gives what it may open (C5: rule 8 with `"*"`, and C5's guard and closing rule
     skip the tab; a list name: that list). For the retry, a marked tab's list is its `operator` value
     (with `"*"` every host is covered). The mark stays at a link change (it is not a connection's)
-    and at `tabs.onReplaced`; it goes at the worker's start (those tabs then fail closed). Without
-    that build, the operator's tabs fail closed.
+    and at `tabs.onReplaced`; it goes at the worker's start (those tabs then fail closed). The
+    bridge never attaches, selects or closes a marked tab (`not an agent tab`, the tab checks
+    above). Without that build, the operator's tabs fail closed.
   - A tab leaves the map when it closes. At each disconnect and each new daemon connection (the
     cleanup of "What stops a handler"), the receiver empties the map and removes every scope rule;
     it keeps the marks, the last `operator` value and rule 8 (C5). At its worker's start it empties
@@ -1026,14 +1056,18 @@ vectors: `test/vectors/endpoint.json`.
   2. A path or scope that does not match: the 404.
   3. With keys on, a request with no valid key (the scope's key, below): the key's 403, also while
      the relay is not ready.
-  4. The relay is not ready: one of the four 503s above. The fourth comes only from a relay without
-     `--keys` whose last `allowlist` line has a `keys` field.
+  4. The relay is not ready, in this order: the link is down (`its extension is not connected`);
+     `bridge.info` answered `unknown op` or `bridge` below 1 (`its extension is too old for agent
+     mode`); no `allowlist` line came since the link came up (`its extension has not confirmed the
+     allowlist`); `bridge.info` has not answered yet (`its extension is not connected`); a relay
+     without `--keys` whose last `allowlist` line has a `keys` field (`the allowlist has keys, but
+     the relay was started without --keys`).
   5. With keys on, a scope that the last `allowlist` line does not name: the no-list 503.
   6. With keys on, the hash check: a named scope whose `keys` entry does not match the key, or that
      has no entry in `keys` (also a line with no `keys` field), gets the key's 403.
   7. A scope with no list: the no-list 503. With keys on, that is a named scope whose entry is
-     `null` or names a list that is not in `lists`; without keys, also a scope that the line does
-     not name while `default` gives no list.
+     `null` (also an entry that applies as `null`, C4) or names a list that is not in `lists`;
+     without keys, also a scope that the line does not name while `default` gives no list.
 
   The relay never holds an upgrade, and no side retries for the client: the client gets the
   answer's text (agent-browser's `src/cdp.ts` passes the body on in its error), and the agent
@@ -1051,16 +1085,18 @@ vectors: `test/vectors/endpoint.json`.
 - `Browser.close` ends that connection only. The agent browser keeps running. Close code
   1000, `Browser.close ends this connection; the agent browser keeps running`.
 - `end_scope` (C10): the relay closes the scope's connections with
-  1000, `The agentwatch session ended`, and removes the scope's tabs.
+  1000, `The agentwatch session ended`, and removes the scope's tabs. An `end_scope` whose name is
+  no scope of the relay (for example an alias of the session, C4) does nothing.
 - A link drop (C10 `link` down): every connection closes with
   1011, `The agent browser's link went down`. The model starts again at the next `link` up.
 - The relay stops: every connection closes with 1001, `The agent browser stopped`.
 - At each `allowlist` line, the relay closes every connection of a scope that has no list any more,
   with 1008, `The allowlist has no list for this scope any more`.
-- With keys on, at each `allowlist` line, the relay closes every connection of a scope that keeps
-  its list but whose `keys` entry is gone, or holds another hash than at the connection's upgrade
-  (also a line with no `keys` field), with 1008, `The key of this session is no longer valid`. The
-  shared vector: `lineCloses` in `test/vectors/endpoint.json`.
+- With keys on, at each `allowlist` line, the relay closes every connection of a scope that still
+  has a list (the same list or another one) but whose `keys` entry is gone, or holds another hash
+  than at the connection's upgrade (also a line with no `keys` field),
+  with 1008, `The key of this session is no longer valid`. The shared vector: `lineCloses` in
+  `test/vectors/endpoint.json`.
 
 **Where each call goes.** The model answers the calls of its set (two-modes design, section 4.3) on
 the root session and on a browser session (`Target.attachToBrowserTarget`). Every other call there
@@ -1382,10 +1418,11 @@ sections 6 and 8.4):
 **The scope's list (board ab-v16.23).** The relay applies C4's `set_scopes` rules to the `allowlist`
 line (C10), as the receiver applies them to `set_scopes` (the shared vector
 `test/vectors/scopes.json` checks both). A scope's list: the list that its `scopes` entry names,
-when it has an entry (no fall-back when that list is absent), else the `default` list. The relay
-ignores the line's `operator` field. The readiness per scope and the order of the checks are under
-"Before the upgrade", the 1008 closes under "When a connection ends", and the refusals off the
-scope's list under "Refusals".
+when it has an entry (no fall-back when that list is absent), else the `default` list. With keys
+on, a scope that the line does not name has no list, whatever `default` says (it has no key). The
+relay ignores the line's `operator` field. The readiness per scope and the order of the checks are
+under "Before the upgrade", the 1008 closes under "When a connection ends", and the refusals off
+the scope's list under "Refusals".
 
 **The scope's key (the design's choice 1, aw-lead's "key").** Without keys the scope is advisory:
 any process of the daemon's OS user can connect with any scope and get that scope's list. With the
@@ -1456,12 +1493,13 @@ the key: an `env` writes it into the transcript.
   --keys`, not from an `allowlist` line (the relay drops the line at each link change). The daemon's
   `allowlist` line then carries `"keys":{"<scope>":"<hash>"}`. With keys on, for a named scope, a
   line with no `keys` field and a scope with no entry in `keys` both get the key's 403 (step 6). A
-  `keys` that is not an object applies as an empty object, and an entry whose value is not 64
-  lowercase hex digits applies as absent. A relay started without `--keys` that gets a line with a
-  `keys` field (any value) applies no list of that line, as if no line had come: it closes the open
-  connections (1008, no list any more) and answers each upgrade with the 503 `the allowlist has
-  keys, but the relay was started without --keys`, until a line without `keys` comes. So a daemon
-  and a relay that disagree fail closed, with a clear text. The shared vector: `lines` in
+  `keys` that is not an object applies as an empty object, and an entry whose scope does not match
+  the scope pattern, or whose value is not 64 lowercase hex digits, applies as absent. A relay
+  started without `--keys` that gets a line with a `keys` field (any value) applies no list of that
+  line, as if no line had come: it closes the open connections (1008, no list any more) and answers
+  each upgrade with the 503 `the allowlist has keys, but the relay was started without --keys`,
+  until a line without `keys` comes. So a daemon and a relay that disagree fail closed, with a
+  clear text. The shared vector: `lines` in
   `test/vectors/scopes.json`.
 - The key's life: the daemon makes a new key at each launch of a new session, before it adds the
   scope to its map, so the first `allowlist` line that names a scope carries its `keys` entry (else
