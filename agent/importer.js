@@ -226,7 +226,9 @@ async function runImport(chrome, state, opts) {
           return u !== null && u.origin === state.origin;
         }).map((t) => t.id),
       });
-      if (done.error) throw done.error;
+      // A close that has not ended in the item's wait (a page that a dialog
+      // holds) fails the step: a page of the origin may still be open.
+      if (done.error || done.pending.length > 0) throw new Error("close tabs");
       return done.closed.length;
     });
 

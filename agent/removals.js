@@ -188,6 +188,7 @@ export class Removals {
     if (c.done) return;
     let own = false;
     let fallback = false;
+    let running = null; // the answer of a command that has not answered in time
     if (!this.#att.isAttached(tabId)) {
       try {
         await this.#att.attachForClose(tabId);
@@ -220,9 +221,14 @@ export class Removals {
       const r = await this.#limit(() => answered);
       if (r.ok && r.value) return;
       fallback = true;
+      running = !r.ok ? answered : null;
     }
     if (c.done) return;
-    if (own) await call(() => this.#att.detachForClose(tabId)).catch(() => {});
+    // The fallback ends the close's own attach first, but never while its
+    // command still runs (a detach makes that command fail): then only after
+    // the command answered.
+    if (own && running) void running.then(() => call(() => this.#att.detachForClose(tabId)).catch(() => {}));
+    else if (own) await call(() => this.#att.detachForClose(tabId)).catch(() => {});
     const removing = call(() => this.#chrome.tabs.remove(tabId));
     void removing.then(() => c.end(true), (e) => {
       c.fallbackError = e;
@@ -235,14 +241,16 @@ export class Removals {
   // The receiver's own closes (the closing rule and the sweep, the import,
   // a new tab of the orphan set): ids, or select(tabs) from the item's
   // query. after(result) runs at the end of the item, before the next one.
-  // Gives {closed, left, error}: the tabs that closed in the item's wait,
-  // the others (failed or still pending), and the error of the window rule.
+  // Gives {closed, left, pending, error}: the tabs that closed in the item's
+  // wait, the others (failed or still pending), of those the ones still
+  // pending, and the error of the window rule (its query or its tab).
   closeOwn({ ids = null, select = null, after = null }) {
     return this.#enqueue(async () => {
       const r = await this.#item({ ids, select, start: (id) => this.#receiverClose(id) });
       const closed = r.closes.filter((c) => c.done && c.closed).map((c) => c.tabId);
       const left = r.closes.filter((c) => !(c.done && c.closed)).map((c) => c.tabId);
-      const result = { closed, left, error: r.error };
+      const pending = r.closes.filter((c) => !c.done).map((c) => c.tabId);
+      const result = { closed, left, pending, error: r.error };
       if (after) after(result);
       return result;
     });

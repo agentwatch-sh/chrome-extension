@@ -628,6 +628,24 @@ test("a window rule that fails closes no tab of the origin and fails close tabs"
   assert.equal(f.callsTo("cookies.getAll").length, 0, "no cookie swap while a page of the origin is open");
 });
 
+// review-20 note 5 (C6 step 1): a close that has not ended at the end of the item's wait (a page that a
+// dialog holds) fails the step: no cookie swap while a page of the origin can still write a cookie.
+test("a close of the origin's tab that has not ended in the item's wait fails close tabs", async () => {
+  const { receiver } = await import("../agent/receiver.js");
+  const { REMOVAL_WAIT_MS } = await import("../agent/removals.js");
+  const f = makeFakeChrome();
+  f.setTabs([{ id: 1, windowId: 1, url: ORIGIN + "/a" }, { id: 3, windowId: 1, url: "https://other.localhost/" }]);
+  f.targets_ = [{ id: "T1", tabId: 1, type: "page", attached: false }];
+  f.impl["debugger.sendCommand"] = async () => ({}); // the command answers; no tabs.onRemoved comes
+  const qt = fakeTimers();
+  Object.assign(receiver(f.chrome).clock, { setTimer: qt.setTimer, clearTimer: qt.clearTimer });
+  const p = importState(f.chrome, makeState(), opts());
+  for (let i = 0; i < 50 && qt.pending(REMOVAL_WAIT_MS).length === 0; i++) await settle(1);
+  qt.pending(REMOVAL_WAIT_MS).forEach((h) => h.fn());
+  await rejectsWith(p, "close tabs");
+  assert.equal(f.callsTo("cookies.getAll").length, 0);
+});
+
 // The import's finding (board ab-v16.31, from PR #53): a send to a domain on no list is normal (ab-dm6:
 // a sent site joins no list). The import's rules let the restore page and the site's page load in the
 // restore tab with no list, so the import answers ok after it set the cookies.

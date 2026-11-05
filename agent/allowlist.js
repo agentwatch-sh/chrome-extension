@@ -58,7 +58,11 @@ export function setScopes(chrome, msg) {
 }
 
 // The closing rule and the sweep: does the item close tab t? swept collects
-// the tabs of the sweep.
+// the tabs of the sweep. The closing rule judges each tab by the last applied
+// set_scopes: at one that is not applied (its scopes or lists is not an
+// object) the receiver sweeps nothing, and one bad message closes no live
+// session's page; with no applied one since the worker's start it closes
+// nothing.
 function picks(r, next, t, swept) {
   const id = t.id;
   if (r.att.isRestoreTab(id)) return false; // never the restore tab of a running import
@@ -68,14 +72,17 @@ function picks(r, next, t, swept) {
     swept.add(id); // whatever its URL, about:blank too
     return true;
   }
+  const by = next.applied ? next : r.map.reference;
+  if (by === null) return false;
   const u = tabUrl(t);
   if (u === null) return false;
   // The tab's list: none for a tab of the orphan set, its scope's list, or
   // the union of the lists for a tab of no scope.
-  const list = orphan ? null : scope !== undefined ? next.entriesOf(scope) : next.union();
+  const list = orphan ? null : scope !== undefined ? by.entriesOf(scope) : by.union();
   return list === null || !list.some((d) => covers(d, u.hostname));
 }
 
+// True when promise gives true within REMOVAL_WAIT_MS.
 function within(r, promise) {
   let handle;
   const late = new Promise((resolve) => {
@@ -100,12 +107,15 @@ async function apply(r, s, msg) {
   } catch (e) {
     fail(e);
   }
+  // The worker removal, within REMOVAL_WAIT_MS: a failed or late one fails
+  // the call after the tabs closed, and the next set_scopes removes again.
   if (s.workersOwed || shrinks(s.lastFull, next)) {
-    try {
-      await chrome.browsingData.remove({}, { serviceWorkers: true });
+    const removed = new Promise((resolve) => resolve(chrome.browsingData.remove({}, { serviceWorkers: true }))).then(() => true);
+    if (await within(r, removed)) {
       s.workersOwed = false;
-    } catch {
+    } else {
       s.workersOwed = true;
+      console.warn("agentwatch receiver: the service worker removal failed or did not end in time");
       fail(new Error("service worker removal failed"));
     }
   }
@@ -113,7 +123,12 @@ async function apply(r, s, msg) {
   const keys = [];
   const item = await r.removals.closeOwn({
     select: (tabs) => tabs.filter((t) => picks(r, next, t, swept)).map((t) => t.id),
-    after: ({ closed }) => {
+    after: ({ closed, error }) => {
+      // A query that failed or came late picked no tab: the tabs of the sweep
+      // are then the tabs of the map whose scope the new object gives no list.
+      if (error && next.applied) {
+        for (const [id, scope] of r.map.entries()) if (next.listOf(scope) === null) swept.add(id);
+      }
       // A tab of the sweep that did not close leaves its scope, into the orphan set.
       for (const id of swept) {
         if (closed.includes(id)) continue;
@@ -131,7 +146,12 @@ async function apply(r, s, msg) {
     return ok;
   }));
   if (!(await Promise.all(removals)).every(Boolean)) fail(new Error("copy key removal failed"));
-  if (failure) throw failure;
+  // An ok:false moves no "last" of the worker removal, but the new rules can
+  // be in force (a failed key removal or rule 5): the removal is owed.
+  if (failure) {
+    s.workersOwed = true;
+    throw failure;
+  }
   if (next.applied) s.lastFull = next;
   return { rules, closed: item.closed.length, refused: next.refused };
 }

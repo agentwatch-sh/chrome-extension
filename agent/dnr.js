@@ -21,6 +21,8 @@ export const IMPORT_RULE_ID = 6;
 export const IMPORT_FRAME_RULE_ID = 7;
 export const FIRST_SCOPE_RULE_ID = 100;
 const IMPORT_IDS = [IMPORT_RULE_ID, IMPORT_FRAME_RULE_ID];
+// Rule 8, the marked-tab rule of part 1d: this part never writes it.
+const MARKED_RULE_ID = 8;
 // Chrome's MAX_NUMBER_OF_SESSION_RULES (measured: the 5001st is refused).
 const MAX_SESSION_RULES = 5000;
 // The potentially trustworthy URLs, to which Chrome sends Sec-Fetch-*
@@ -68,17 +70,24 @@ export function headerRule(extensionId) {
   };
 }
 
+// The time limit of the removal of every session rule at the worker's start
+// (C10, the restore: RESTORE_MAX_MS).
+export const START_MAX_MS = 2000;
+
 export class SessionRules {
   #chrome;
   #model; // () => Map(list name -> {entries, tabIds}): the lists of the open tabs of the map
+  #clock;
   #chain = Promise.resolve();
   #ids = new Map(); // list name -> the id of its first scope rule, for the rules in force
   #dirty = false; // after a failed update: the next change is a full replace
-  #unknown = false; // the start's removal failed: a full replace reads the session rules first
+  #unknown = false; // the start's removal failed: a full replace removes every rule of the scheme first
+  #importing = false; // rules 6 and 7 of a running import are (or may be) in force
 
-  constructor(chrome, model) {
+  constructor(chrome, model, clock = { setTimer: (fn, ms) => setTimeout(fn, ms), clearTimer: (h) => clearTimeout(h) }) {
     this.#chrome = chrome;
     this.#model = model;
+    this.#clock = clock;
   }
 
   get #dnr() {
@@ -93,19 +102,29 @@ export class SessionRules {
 
   // The worker's start: dynamic rules 2 and 4 go (a package before part 1a
   // leaves them in the profile), and every session rule (also 6, 7 and 8).
+  // It has START_MAX_MS: a removal that fails or has not ended by then fails
+  // closed (the next full replace removes every rule of the scheme, and
+  // rules 6 and 7 when no import runs), with a log line.
   start() {
     return this.#run(async () => {
-      try {
-        await this.#dnr.updateDynamicRules({ removeRuleIds: [OLD_RULE_ID, OLD_FRAME_RULE_ID] });
-      } catch {
-        // set_scopes removes them again.
-      }
-      try {
+      const work = (async () => {
+        try {
+          await this.#dnr.updateDynamicRules({ removeRuleIds: [OLD_RULE_ID, OLD_FRAME_RULE_ID] });
+        } catch {
+          // set_scopes removes them again.
+        }
         const rules = await this.#dnr.getSessionRules();
         const ids = (Array.isArray(rules) ? rules : []).map((r) => r.id);
         if (ids.length > 0) await this.#dnr.updateSessionRules({ removeRuleIds: ids });
-      } catch {
+      })();
+      let handle;
+      const late = new Promise((resolve) => {
+        handle = this.#clock.setTimer(() => resolve(false), START_MAX_MS);
+      });
+      const ok = await Promise.race([work.then(() => true, () => false), late]).finally(() => this.#clock.clearTimer(handle));
+      if (!ok) {
         this.#unknown = true;
+        console.warn("agentwatch receiver: the session rules of the worker's start were not removed in time");
       }
     });
   }
@@ -152,9 +171,12 @@ export class SessionRules {
       } catch {
         rules = null;
       }
+      // Rules 6 and 7 go too when no import of this worker runs.
+      const keep = this.#importing ? IMPORT_IDS : [];
       if (Array.isArray(rules)) {
-        for (const r of rules) if (!IMPORT_IDS.includes(r.id)) remove.add(r.id);
+        for (const r of rules) if (!keep.includes(r.id)) remove.add(r.id);
       } else {
+        for (const i of [...IMPORT_IDS, MARKED_RULE_ID]) if (!keep.includes(i)) remove.add(i);
         for (let i = FIRST_SCOPE_RULE_ID; i < FIRST_SCOPE_RULE_ID + 2 * MAX_SESSION_RULES; i++) remove.add(i);
       }
     }
@@ -219,10 +241,15 @@ export class SessionRules {
 
   // C6: the import's rules for its restore tab, and their end.
   addImport(domain, tabId) {
-    return this.#run(() => this.#dnr.updateSessionRules({ removeRuleIds: IMPORT_IDS, addRules: importRules(domain, tabId) }));
+    return this.#run(() => {
+      this.#importing = true;
+      return this.#dnr.updateSessionRules({ removeRuleIds: IMPORT_IDS, addRules: importRules(domain, tabId) });
+    });
   }
 
   removeImport() {
-    return this.#run(() => this.#dnr.updateSessionRules({ removeRuleIds: IMPORT_IDS }));
+    return this.#run(() => this.#dnr.updateSessionRules({ removeRuleIds: IMPORT_IDS }).then(() => {
+      this.#importing = false;
+    }));
   }
 }

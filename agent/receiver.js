@@ -31,7 +31,7 @@ export class Receiver {
       now: () => this.clock.now(),
     };
     this.map = new TabMap(chrome, clock);
-    this.rules = new SessionRules(chrome, () => this.#model());
+    this.rules = new SessionRules(chrome, () => this.#model(), clock);
     this.removals = new Removals(chrome, { att: this.att, map: this.map, clock });
     this.#listen();
   }
@@ -126,16 +126,18 @@ export class Receiver {
     }
     this.map.set(tabId, scope);
     const ruled = this.rules.replaceLists([this.listName(scope)]);
-    const copied = this.map.writeKey(tabId, scope).catch(() => {});
-    const [r] = await Promise.allSettled([ruled, copied]);
-    if (r.status === "fulfilled") return;
-    // A failed rule update fails closed: the new tab closes too.
+    const copied = this.map.writeKey(tabId, scope);
+    const [r, k] = await Promise.allSettled([ruled, copied]);
+    if (r.status === "fulfilled" && k.status === "fulfilled") return;
+    // A failed rule update fails closed, and a failed write of the key is
+    // handled the same way: the new tab leaves the map and closes.
     if (this.map.has(tabId)) {
       this.map.leave(tabId);
       void this.dropKey(tabId);
+      if (r.status === "fulfilled") void this.rules.replaceLists([this.listName(scope)]).catch(() => {});
     }
     if (!this.map.isGone(tabId)) this.orphanClose(tabId);
-    throw r.reason;
+    throw r.status === "rejected" ? r.reason : k.reason;
   }
 
   #listen() {

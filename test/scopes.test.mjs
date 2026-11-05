@@ -224,16 +224,108 @@ test("a sweep item whose window rule fails closes no tab, and the sweep's tabs j
   assert.equal(s.f.tabs_.length, 2);
 });
 
-test("a set_scopes that is not applied sweeps nothing and is no reference; its rules fail closed, and its closing rule runs", async () => {
-  const s = await startReceiver({ tabs: [blank(7), { id: 8, windowId: 1, url: "https://a.example/" }, blank(3)], copy: { "tab:7": "md-lead", "tab:8": "md-lead" } });
+// review-20 Q2 (C4, C5): at a set_scopes that is not applied, the closing rule judges each tab by the
+// last applied object, so one bad message never closes every live session's page; the scope rules still
+// go as C4 says (new navigations fail closed). A tab of the orphan set has no list in any object.
+test("a set_scopes that is not applied (a bad scopes or lists field) sweeps nothing and is no reference; its rules fail closed, and its closing rule judges each tab by the last applied object", async () => {
+  for (const bad of [{ lists: { md: ["a.example"] }, scopes: ["md-lead"], default: "md" }, { lists: "x", scopes: { "md-lead": "md" }, default: null }]) {
+    const tabs = [
+      blank(7), // md-lead, about:blank
+      { id: 8, windowId: 1, url: "https://a.example/" }, // md-lead, on md
+      { id: 9, windowId: 1, url: "https://a.example/" }, // md-lead; it goes to z.example below
+      { id: 5, windowId: 1, url: "https://a.example/" }, // no scope: the last applied union covers it
+      { id: 13, windowId: 1, url: "https://a.example/old" }, // the orphan set: no list
+      blank(3),
+    ];
+    const s = await startReceiver({ tabs, copy: { "tab:7": "md-lead", "tab:8": "md-lead", "tab:9": "md-lead" }, targets: tabs.map((t) => ({ id: "T" + t.id, tabId: t.id, type: "page" })) });
+    await s.set({ lists: { md: ["a.example"] }, scopes: { "md-lead": "md" }, default: null });
+    s.r.map.addOrphan(13);
+    s.f.tabs_.find((t) => t.id === 9).url = "https://z.example/"; // a page that left md (after the last set_scopes)
+    const ref = s.r.map.reference;
+    const res = await s.set(bad);
+    assert.equal(res.refused, 1, JSON.stringify(bad));
+    assert.equal(s.r.map.reference, ref, "the last applied set_scopes stays the reference");
+    assert.deepEqual(s.f.sessionRules_, [], "C4's reading gives no scope a list: the scope rules go");
+    const open = s.f.tabs_.map((t) => t.id);
+    assert.deepEqual(open, [7, 8, 5, 3], `${JSON.stringify(bad)}: no sweep; tabs 8 and 5 stay by the last applied lists; tab 9 left md; tab 13 has no list`);
+    assert.equal(res.closed, 2);
+    assert.equal(s.r.map.scopeOf(8), "md-lead", "the map stays");
+  }
+  // A bad first set_scopes after the worker's start: no object applied yet, so the closing rule closes nothing.
+  const t = await startReceiver({ tabs: [{ id: 8, windowId: 1, url: "https://a.example/" }, blank(3)], copy: { "tab:8": "md-lead" } });
+  const res = await t.set({ lists: { md: ["a.example"] }, scopes: "md-lead", default: null });
+  assert.equal(res.closed, 0);
+  assert.equal(t.r.map.reference, null);
+});
+
+// review-20 B1 (C10's window rule): when the sweep item's query fails or comes late, the item closes no
+// tab, and the tabs of the ended scope still leave their scope into the orphan set.
+test("a sweep item whose tabs.query fails or comes late closes no tab, and the ended scope's tabs leave the map and the copy into the orphan set", async () => {
+  for (const kind of ["fails", "late"]) {
+    const s = await startReceiver({ tabs: [blank(7), blank(8), blank(3)], copy: { "tab:7": "md-old", "tab:8": "md-lead" }, targets: [{ id: "T7", tabId: 7, type: "page" }] });
+    await s.set({ lists: { md: ["a.example"] }, scopes: { "md-old": "md", "md-lead": "md" }, default: null });
+    s.f.impl["tabs.query"] = kind === "fails" ? async () => { throw new Error("busy"); } : () => new Promise(() => {});
+    const p = s.set({ lists: { md: ["a.example"] }, scopes: { "md-lead": "md" }, default: null });
+    await flush();
+    if (kind === "late") await s.fire(REMOVAL_WAIT_MS);
+    const res = await p;
+    delete s.f.impl["tabs.query"];
+    assert.equal(res.closed, 0, kind);
+    assert.equal(s.r.map.has(7), false, `${kind}: tab 7 left its scope`);
+    assert.equal(s.r.map.isOrphan(7), true, kind);
+    assert.equal(s.r.map.scopeOf(8), "md-lead", `${kind}: a scope with a list keeps its tab`);
+    assert.deepEqual(s.f.storage_.session, { "tab:8": "md-lead" }, `${kind}: the copy`);
+    // A later session of the same name never gets the tab, and the next sweep closes it.
+    const later = await s.set({ lists: { md: ["a.example"] }, scopes: { "md-old": "md", "md-lead": "md" }, default: null });
+    assert.deepEqual(s.r.map.list(), [{ tabId: 8, scope: "md-lead" }], kind);
+    assert.equal(later.closed, 1, kind);
+    assert.equal(s.f.tabs_.some((t) => t.id === 7), false, kind);
+  }
+});
+
+// review-20 B2 (probe P2): a set_scopes whose new rules are in force but whose answer is ok:false moves
+// no "last" of the worker removal; so the worker removal is owed to the next set_scopes.
+test("a set_scopes that answers ok:false with its rules in force (a failed key removal) owes the worker removal to the next one", async () => {
+  const s = await startReceiver({ tabs: [blank(7), blank(8), blank(3)], copy: { "tab:7": "md-lead", "tab:8": "md-old" }, targets: [{ id: "T8", tabId: 8, type: "page" }] });
+  const removals = () => s.f.callsTo("browsingData.remove").length;
+  await s.set({ lists: { md: ["a.example"], o: [] }, scopes: { "md-lead": "md", "md-old": "o" }, default: null });
+  assert.equal(removals(), 1);
+  // S2: md gains z.example; md-old ends (its tab 8 closes) and its key removal fails.
+  s.f.impl["storage.session.remove"] = async () => {
+    throw new Error("quota");
+  };
+  await assert.rejects(s.set({ lists: { md: ["a.example", "z.example"] }, scopes: { "md-lead": "md" }, default: null }), /copy key removal failed/);
+  delete s.f.impl["storage.session.remove"];
+  assert.deepEqual(s.f.sessionRules_.find((r) => r.id === 100).condition.requestDomains, ["a.example", "z.example"], "S2's rules are in force");
+  // S3: z.example leaves md. Against S1 nothing shrinks, but z.example's workers may exist.
   await s.set({ lists: { md: ["a.example"] }, scopes: { "md-lead": "md" }, default: null });
-  const ref = s.r.map.reference;
-  const res = await s.set({ lists: { md: ["a.example"] }, scopes: ["md-lead"], default: "md" });
-  assert.equal(res.refused, 1);
-  assert.equal(s.r.map.reference, ref, "the last applied set_scopes stays the reference");
-  assert.deepEqual(s.f.sessionRules_, [], "C4 applies scopes as {}: no scope has a list");
-  assert.ok(s.f.tabs_.some((t) => t.id === 7), "no sweep: the about:blank tab stays");
-  assert.ok(!s.f.tabs_.some((t) => t.id === 8), "the closing rule: md-lead has no list in what applies");
+  assert.equal(removals(), 2, "the owed removal ran");
+  await s.set({ lists: { md: ["a.example"] }, scopes: { "md-lead": "md" }, default: null });
+  assert.equal(removals(), 2, "and is no longer owed");
+});
+
+// review-20 note 3: a time limit on the worker removal; a late one fails closed (the tabs still close, the
+// answer is ok:false, the removal is owed), with a log line.
+test("a worker removal that has not ended in REMOVAL_WAIT_MS fails the call after the tabs closed and is owed", async () => {
+  const s = await startReceiver({ tabs: [{ id: 8, windowId: 1, url: "https://z.example/" }, blank(3)], copy: { "tab:8": "md-lead" }, targets: [{ id: "T8", tabId: 8, type: "page" }] });
+  const warn = console.warn;
+  const logged = [];
+  console.warn = (...a) => logged.push(a.join(" "));
+  try {
+    s.f.impl["browsingData.remove"] = () => new Promise(() => {});
+    const p = s.set({ lists: { md: ["a.example"] }, scopes: { "md-lead": "md" }, default: null });
+    await flush();
+    await s.fire(REMOVAL_WAIT_MS);
+    await assert.rejects(p, /service worker removal failed/);
+    assert.equal(s.f.tabs_.some((t) => t.id === 8), false, "the closing rule ran");
+    assert.ok(logged.some((l) => /service worker removal/.test(l)), "a log line");
+    delete s.f.impl["browsingData.remove"];
+    const before = s.f.callsTo("browsingData.remove").length;
+    await s.set({ lists: { md: ["a.example", "b.example"] }, scopes: { "md-lead": "md" }, default: null });
+    assert.equal(s.f.callsTo("browsingData.remove").length, before + 1, "owed");
+  } finally {
+    console.warn = warn;
+  }
 });
 
 // ---- the map, its copy and its restore ----
@@ -269,7 +361,7 @@ test("a restore whose read fails or does not answer in RESTORE_MAX_MS starts wit
     await flush();
     if (kind === "hangs") {
       assert.equal(f.ports.length, 0, "the port waits for the restore");
-      timers.find((t) => t.ms === RESTORE_MAX_MS).fn();
+      for (const t of timers.filter((x) => x.ms === RESTORE_MAX_MS)) t.fn(); // the start's removal has the same limit
     }
     await started;
     assert.equal(f.ports.length, 1, kind);
@@ -382,6 +474,31 @@ test("tabs.onReplaced of a tab whose scope has no list: from the first applied s
   await flush();
   assert.equal(s.r.map.has(21), false);
   assert.equal(s.f.tabs_.some((t) => t.id === 21), false);
+});
+
+// review-20 note 1 (a surviving mutation of TabMap.adopt): with a default list, the scope of a tab of
+// the orphan set would fall back to that list; the orphan set wins.
+test("tabs.onReplaced of a tab of the orphan set, under a default list: the added tab joins the orphan set and closes", async () => {
+  const s = await startReceiver({ tabs: [blank(3), blank(13)], copy: { "tab:13": "md-gone" } });
+  s.f.impl["debugger.getTargets"] = async () => [];
+  s.f.impl["tabs.remove"] = async (id) => {
+    if (id === 13) throw new Error("held");
+  };
+  await s.set({ lists: { md: ["a.example"] }, scopes: { "md-gone": null }, default: "md" });
+  delete s.f.impl["debugger.getTargets"];
+  delete s.f.impl["tabs.remove"];
+  assert.equal(s.r.map.isOrphan(13), true);
+  s.f.tabs_ = s.f.tabs_.filter((t) => t.id !== 13);
+  s.f.tabs_.push(blank(14));
+  s.f.targets_.push({ id: "T14", tabId: 14, type: "page" });
+  const before = s.evs().length;
+  s.f.chrome.tabs.onReplaced.fire(14, 13);
+  await flush();
+  assert.equal(s.r.map.has(14), false);
+  assert.ok(!s.evs().slice(before).some((e) => e.ev === "bridge.tabScope"));
+  assert.equal(s.f.tabs_.some((t) => t.id === 14), false, "closed");
+  assert.deepEqual(s.r.map.adopt(15, { orphan: true }), { orphan: true });
+  assert.equal(s.r.map.has(15), false);
 });
 
 test("the kept entries: a tab that left the map keeps its scope for TOMBSTONE_MS (for a popup of it, part 1b), the orphan set spreads, and an applied set_scopes that gives the scope a list drops its kept entries", async () => {

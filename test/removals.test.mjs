@@ -351,3 +351,81 @@ test("tabs.create answers when the tab's scope rule is in force and its key is i
   assert.equal(s.r.map.scopeOf(50), B.scope);
   assert.deepEqual(s.f.sessionRules_.find((r) => r.id === 100).condition.tabIds, [id, 50]);
 });
+
+// review-20 note 1 (a surviving mutation): "Detached while handling command." is no error, also when the
+// command answers before the tab's tabs.onRemoved: no fallback runs.
+test("Target.closeTarget that answers Detached while handling command. before the tab's tabs.onRemoved: no fallback, and the op answers at the close", async () => {
+  const s = await startReceiver({ tabs: [blank(3), blank(8)], targets: [target(8)] });
+  let removed;
+  s.f.impl["debugger.sendCommand"] = async (t, m) => {
+    if (m !== "Target.closeTarget") return {};
+    removed = () => s.f.closeTab(8);
+    throw new Error("Detached while handling command.");
+  };
+  s.send({ t: "req", id: "r", op: "tabs.remove", args: [8] });
+  await flush();
+  assert.deepEqual(s.resOf("r"), [], "the close ends at the tab's tabs.onRemoved");
+  assert.deepEqual(s.f.callsTo("tabs.remove"), [], "no fallback");
+  removed();
+  await flush();
+  assert.deepEqual(s.resOf("r").map((m) => m.data), [null]);
+  assert.deepEqual(s.f.callsTo("tabs.remove"), []);
+});
+
+// review-20 note 2: the fallback never ends its own attach while Target.closeTarget still runs (a detach
+// before the command's answer makes the command fail, review-17b E4b); it ends it after the answer.
+test("a command with no answer in time: the fallback calls chrome.tabs.remove at once, and ends the close's own attach only after the command answered", async () => {
+  const s = await startReceiver({ tabs: [blank(7), blank(3)], targets: [target(7)] });
+  let answer;
+  s.f.impl["debugger.sendCommand"] = (t, method) => (method === "Target.closeTarget" ? new Promise((res) => (answer = res)) : Promise.resolve({}));
+  s.f.impl["tabs.remove"] = () => new Promise(() => {}); // a beforeunload dialog holds it
+  s.send({ t: "req", id: "r", op: "tabs.remove", args: [7] });
+  await flush();
+  await s.fire(REMOVAL_WAIT_MS);
+  assert.deepEqual(s.f.callsTo("tabs.remove"), [[7]], "the fallback ran");
+  assert.deepEqual(s.f.callsTo("debugger.detach"), [], "no detach while the command runs");
+  answer({ success: true });
+  s.f.closeTab(7);
+  await flush();
+  assert.deepEqual(s.resOf("r").map((m) => m.data), [null]);
+  // A command that answers with an error, and a tab that stays: the own attach ends then.
+  const t = await startReceiver({ tabs: [blank(7), blank(3)], targets: [target(7)] });
+  let fail;
+  t.f.impl["debugger.sendCommand"] = (x, method) => (method === "Target.closeTarget" ? new Promise((res, rej) => (fail = rej)) : Promise.resolve({}));
+  t.f.impl["tabs.remove"] = () => Promise.reject(new Error("held"));
+  t.send({ t: "req", id: "r", op: "tabs.remove", args: [7] });
+  await flush();
+  await t.fire(REMOVAL_WAIT_MS);
+  assert.deepEqual(t.f.callsTo("debugger.detach"), []);
+  fail(new Error("Target closed"));
+  await flush();
+  assert.deepEqual(t.f.callsTo("debugger.detach"), [[{ tabId: 7 }]], "the own attach ends after the answer");
+  assert.deepEqual(t.resOf("r").map((m) => m.error), ["held"]);
+});
+
+// review-20 Q3 (C10): a failed copy write is a failed rule update: the new tab joins the orphan set and
+// closes, and the op answers the error.
+test("a tabs.create or windows.create whose copy write fails: the new tab joins the orphan set and closes, and the op answers the error", async () => {
+  for (const op of ["tabs.create", "windows.create"]) {
+    const s = await startReceiver({ tabs: [blank(3), blank(9)], copy: { "tab:9": B.scope }, scopes: B.setScopes });
+    s.f.impl["storage.session.set"] = async () => {
+      throw new Error("QUOTA_BYTES quota exceeded");
+    };
+    s.f.impl["tabs.create"] = async (p) => {
+      s.f.tabs_.push(blank(41));
+      s.f.targets_.push(target(41));
+      return { id: 41, ...p };
+    };
+    s.f.impl["windows.create"] = async (d) => {
+      s.f.tabs_.push(blank(41, 6));
+      s.f.targets_.push(target(41));
+      return { id: 6, ...d, tabs: [{ id: 41, windowId: 6 }] };
+    };
+    const args = op === "tabs.create" ? [{ url: "about:blank" }, B.scope] : [{ url: "about:blank", focused: false }, B.scope];
+    const res = await s.answer({ id: "c", op, args });
+    assert.equal(res.error, "QUOTA_BYTES quota exceeded", op);
+    assert.equal(s.r.map.has(41), false, op);
+    assert.equal(isOpen(s.f, 41), false, `${op}: closed`);
+    assert.deepEqual(s.f.sessionRules_.find((r) => r.id === 100).condition.tabIds, [9], `${op}: its rule went`);
+  }
+});

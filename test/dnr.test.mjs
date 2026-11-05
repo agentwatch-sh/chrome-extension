@@ -127,3 +127,53 @@ test("a start whose removal failed: the next full replace removes the rules that
   assert.equal(await rules.replaceAll(), 2);
   assert.deepEqual(session(), [[100, ["a.example"], [7]], [101, ["a.example"], [7]]]);
 });
+
+// review-20 note 3: a time limit on the removal at the worker's start; a late one fails closed (the
+// next full replace removes every rule of the scheme), with a log line.
+test("a removal at the start that has not ended in time fails closed: the start goes on, and the next full replace removes the old rules", async () => {
+  const f = makeFakeChrome();
+  const timers = [];
+  const clock = { setTimer: (fn, ms) => (timers.push({ fn, ms }), timers.at(-1)), clearTimer: () => {} };
+  const rules = new SessionRules(f.chrome, () => new Map([["md", { entries: ["a.example"], tabIds: [7] }]]), clock);
+  f.sessionRules_ = [{ id: 100, condition: {} }, { id: 102, condition: {} }];
+  let hang = true;
+  f.impl["declarativeNetRequest.updateSessionRules"] = (d) => {
+    if (hang) return new Promise(() => {});
+    f.sessionRules_ = f.sessionRules_.filter((r) => !d.removeRuleIds.includes(r.id)).concat(d.addRules ?? []);
+    return Promise.resolve();
+  };
+  const warn = console.warn;
+  const logged = [];
+  console.warn = (...a) => logged.push(a.join(" "));
+  try {
+    const started = rules.start();
+    await new Promise((r) => setTimeout(r, 0));
+    timers.find((t) => t.ms === 2000).fn();
+    await started;
+    assert.ok(logged.some((l) => /session rules/.test(l)), "a log line");
+  } finally {
+    console.warn = warn;
+  }
+  hang = false;
+  assert.equal(await rules.replaceAll(), 2);
+  assert.deepEqual(f.sessionRules_.map((r) => r.id), [100, 101]);
+});
+
+// review-20 note 4: after a failed removal at the start, the next full replace also removes rules 6 and 7
+// when no import runs (an import's own rules stay).
+test("after a failed removal at the start, a full replace removes rules 6 and 7 when no import runs", async () => {
+  for (const importing of [false, true]) {
+    const { f, rules } = rulesWith({ md: { entries: ["a.example"], tabIds: [7] } });
+    f.sessionRules_ = [{ id: 6, condition: {} }, { id: 7, condition: {} }, { id: 100, condition: {} }];
+    let fail = true;
+    f.impl["declarativeNetRequest.updateSessionRules"] = async (d) => {
+      if (fail) throw new Error("no");
+      f.sessionRules_ = f.sessionRules_.filter((r) => !d.removeRuleIds.includes(r.id)).concat(structuredClone(d.addRules ?? []));
+    };
+    await rules.start();
+    fail = false;
+    if (importing) await rules.addImport("i.example", 31);
+    await rules.replaceAll();
+    assert.deepEqual(f.sessionRules_.map((r) => r.id).sort((a, b) => a - b), importing ? [6, 7, 100, 101] : [100, 101], `an import runs: ${importing}`);
+  }
+});
