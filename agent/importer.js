@@ -219,16 +219,18 @@ async function runImport(chrome, state, opts) {
     // Tabs of the origin hold the state being replaced (an open IndexedDB
     // connection blocks its deletion). They close before the cookie swap, so
     // no page of the origin can write a cookie between the swap and the close.
+    const ofOrigin = (tabs) => tabs.filter((t) => {
+      const u = tabUrl(t);
+      return u !== null && u.origin === state.origin;
+    });
     const tabsClosed = await step("close tabs", async () => {
-      const done = await r.removals.closeOwn({
-        select: (tabs) => tabs.filter((t) => {
-          const u = tabUrl(t);
-          return u !== null && u.origin === state.origin;
-        }).map((t) => t.id),
-      });
+      const done = await r.removals.closeOwn({ select: (tabs) => ofOrigin(tabs).map((t) => t.id) });
       // A close that has not ended in the item's wait (a page that a dialog
-      // holds) fails the step: a page of the origin may still be open.
+      // holds) fails the step, and so does a tab of the origin that is still
+      // open after the item (a close that ended with an error can leave it).
       if (done.error || done.pending.length > 0) throw new Error("close tabs");
+      const again = await chrome.tabs.query({});
+      if (ofOrigin(Array.isArray(again) ? again : []).length > 0) throw new Error("close tabs");
       return done.closed.length;
     });
 

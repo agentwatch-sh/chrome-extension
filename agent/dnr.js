@@ -14,6 +14,8 @@
 // when it runs. A failed scope update fails closed: a remove-only call takes
 // every scope rule out, and the next update is a full replace.
 
+import { RESTORE_MAX_MS } from "./tabmap.js";
+
 const OLD_RULE_ID = 2;
 const OLD_FRAME_RULE_ID = 4;
 export const HEADER_RULE_ID = 5;
@@ -70,10 +72,6 @@ export function headerRule(extensionId) {
   };
 }
 
-// The time limit of the removal of every session rule at the worker's start
-// (C10, the restore: RESTORE_MAX_MS).
-export const START_MAX_MS = 2000;
-
 export class SessionRules {
   #chrome;
   #model; // () => Map(list name -> {entries, tabIds}): the lists of the open tabs of the map
@@ -102,11 +100,13 @@ export class SessionRules {
 
   // The worker's start: dynamic rules 2 and 4 go (a package before part 1a
   // leaves them in the profile), and every session rule (also 6, 7 and 8).
-  // It has START_MAX_MS: a removal that fails or has not ended by then fails
-  // closed (the next full replace removes every rule of the scheme, and
-  // rules 6 and 7 when no import runs), with a log line.
+  // It has RESTORE_MAX_MS (C10, the restore): a removal that fails or has
+  // not ended by then fails closed (the next full replace removes every rule
+  // of the scheme, and rules 6 and 7 when no import runs), with a log line.
+  // Its late part removes nothing: it could take the full replace's rules.
   start() {
     return this.#run(async () => {
+      let over = false;
       const work = (async () => {
         try {
           await this.#dnr.updateDynamicRules({ removeRuleIds: [OLD_RULE_ID, OLD_FRAME_RULE_ID] });
@@ -114,12 +114,16 @@ export class SessionRules {
           // set_scopes removes them again.
         }
         const rules = await this.#dnr.getSessionRules();
+        if (over) return;
         const ids = (Array.isArray(rules) ? rules : []).map((r) => r.id);
         if (ids.length > 0) await this.#dnr.updateSessionRules({ removeRuleIds: ids });
       })();
       let handle;
       const late = new Promise((resolve) => {
-        handle = this.#clock.setTimer(() => resolve(false), START_MAX_MS);
+        handle = this.#clock.setTimer(() => {
+          over = true;
+          resolve(false);
+        }, RESTORE_MAX_MS);
       });
       const ok = await Promise.race([work.then(() => true, () => false), late]).finally(() => this.#clock.clearTimer(handle));
       if (!ok) {

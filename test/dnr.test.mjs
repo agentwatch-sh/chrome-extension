@@ -3,6 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { headerRule, importRules, scopeRules, SessionRules, TRUSTWORTHY } from "../agent/dnr.js";
+import { RESTORE_MAX_MS } from "../agent/tabmap.js";
 import { makeFakeChrome } from "./fake-chrome.mjs";
 
 const ID = "abcdefghijklmnopabcdefghijklmnop"; // the fake's chrome.runtime.id
@@ -130,7 +131,7 @@ test("a start whose removal failed: the next full replace removes the rules that
 
 // review-20 note 3: a time limit on the removal at the worker's start; a late one fails closed (the
 // next full replace removes every rule of the scheme), with a log line.
-test("a removal at the start that has not ended in time fails closed: the start goes on, and the next full replace removes the old rules", async () => {
+test("a removal at the start that has not ended in time fails closed: the start goes on, and the next full replace removes the old rules", { timeout: 5000 }, async () => {
   const f = makeFakeChrome();
   const timers = [];
   const clock = { setTimer: (fn, ms) => (timers.push({ fn, ms }), timers.at(-1)), clearTimer: () => {} };
@@ -148,7 +149,7 @@ test("a removal at the start that has not ended in time fails closed: the start 
   try {
     const started = rules.start();
     await new Promise((r) => setTimeout(r, 0));
-    timers.find((t) => t.ms === 2000).fn();
+    timers.find((t) => t.ms === RESTORE_MAX_MS).fn();
     await started;
     assert.ok(logged.some((l) => /session rules/.test(l)), "a log line");
   } finally {
@@ -176,4 +177,77 @@ test("after a failed removal at the start, a full replace removes rules 6 and 7 
     await rules.replaceAll();
     assert.deepEqual(f.sessionRules_.map((r) => r.id).sort((a, b) => a - b), importing ? [6, 7, 100, 101] : [100, 101], `an import runs: ${importing}`);
   }
+});
+
+// review-20b probe N1: the start's late read of the session rules (after RESTORE_MAX_MS) removes
+// nothing: the next full replace removes those rules, and its own rules stay.
+test("a late read of the session rules at the start removes nothing after its time limit; the full replace's rules stay", { timeout: 5000 }, async () => {
+  const f = makeFakeChrome();
+  const timers = [];
+  const clock = { setTimer: (fn, ms) => (timers.push({ fn, ms }), timers.at(-1)), clearTimer: () => {} };
+  const rules = new SessionRules(f.chrome, () => new Map([["md", { entries: ["a.example"], tabIds: [7] }], ["ops", { entries: ["b.example"], tabIds: [8] }]]), clock);
+  f.sessionRules_ = [{ id: 100, condition: {} }, { id: 101, condition: {} }]; // a worker before this one left them
+  let release;
+  const old = structuredClone(f.sessionRules_);
+  f.impl["declarativeNetRequest.getSessionRules"] = () => {
+    if (!release) return new Promise((res) => (release = () => res(old)));
+    return Promise.resolve(structuredClone(f.sessionRules_));
+  };
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    const started = rules.start();
+    await new Promise((r) => setTimeout(r, 0));
+    timers.find((t) => t.ms === RESTORE_MAX_MS).fn();
+    await started;
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(await rules.replaceAll(), 4);
+  const now = () => f.sessionRules_.map((r) => [r.id, r.condition.tabIds]);
+  assert.deepEqual(now(), [[100, [7]], [101, [7]], [102, [8]], [103, [8]]]);
+  release(); // the start's late read answers now, with the old worker's ids
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(now(), [[100, [7]], [101, [7]], [102, [8]], [103, [8]]], "the late part of the start removed nothing");
+});
+
+// review-20b note 3: the branch of a full replace with no list of the session rules (the read fails at
+// the start and again at the replace) removes rules 6, 7 and 8 and every scope id of the scheme.
+test("a full replace after a failed start, when the session rules cannot be read, removes rules 6, 7 and 8 and the scheme's ids", async () => {
+  const { f, rules, updates } = rulesWith({ md: { entries: ["a.example"], tabIds: [7] } });
+  f.impl["declarativeNetRequest.getSessionRules"] = async () => {
+    throw new Error("no");
+  };
+  await rules.start();
+  await rules.replaceAll();
+  const removed = updates().at(-1).removeRuleIds;
+  for (const id of [6, 7, 8, 100, 101, 5099, 10099]) assert.ok(removed.includes(id), String(id));
+  assert.ok(!removed.includes(5), "rule 5 is a dynamic rule");
+  // During an import, 6 and 7 stay.
+  const g = rulesWith({ md: { entries: ["a.example"], tabIds: [7] } });
+  g.f.impl["declarativeNetRequest.getSessionRules"] = async () => {
+    throw new Error("no");
+  };
+  await g.rules.start();
+  await g.rules.addImport("i.example", 31);
+  await g.rules.replaceAll();
+  const kept = g.updates().at(-1).removeRuleIds;
+  assert.ok(!kept.includes(6) && !kept.includes(7) && kept.includes(8));
+});
+
+// review-20b note 3: the end of an import (removeImport) ends its claim on rules 6 and 7.
+test("after an import ended, a full replace in the failed-start state removes rules 6 and 7 again", async () => {
+  const { f, rules } = rulesWith({ md: { entries: ["a.example"], tabIds: [7] } });
+  let fail = true;
+  f.impl["declarativeNetRequest.getSessionRules"] = async () => {
+    if (fail) throw new Error("no");
+    return structuredClone(f.sessionRules_);
+  };
+  await rules.start();
+  fail = false;
+  await rules.addImport("i.example", 31);
+  await rules.removeImport();
+  f.sessionRules_.push({ id: 6, condition: {} }, { id: 7, condition: {} }); // rules of a worker before this one
+  await rules.replaceAll();
+  assert.deepEqual(f.sessionRules_.map((r) => r.id), [100, 101]);
 });

@@ -306,7 +306,7 @@ test("a set_scopes that answers ok:false with its rules in force (a failed key r
 
 // review-20 note 3: a time limit on the worker removal; a late one fails closed (the tabs still close, the
 // answer is ok:false, the removal is owed), with a log line.
-test("a worker removal that has not ended in REMOVAL_WAIT_MS fails the call after the tabs closed and is owed", async () => {
+test("a worker removal that has not ended in REMOVAL_WAIT_MS fails the call after the tabs closed and is owed", { timeout: 5000 }, async () => {
   const s = await startReceiver({ tabs: [{ id: 8, windowId: 1, url: "https://z.example/" }, blank(3)], copy: { "tab:8": "md-lead" }, targets: [{ id: "T8", tabId: 8, type: "page" }] });
   const warn = console.warn;
   const logged = [];

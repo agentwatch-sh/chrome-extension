@@ -667,8 +667,9 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
    in the per-scope build these closes, and the closes of the restore tab in step 5, run in the
    removal queue of C10, by the receiver's close and with its window rule). A close that has not
    ended within its item's wait (a page that a dialog holds), or a window rule that fails, fails the
-   step ("close tabs"): no cookie is swapped while a page of the origin can be open (review-20 note
-   5). Then (measured: a
+   step ("close tabs"); after the item the step reads the tabs again (`tabs.query`) and fails too
+   while a tab of the origin is open (a close that ended with an error can leave it open): no cookie
+   is swapped while a page of the origin can be open (review-20 note 5, review-20b). Then (measured: a
    partitioned cookie of an http secure-context test site, `*.localhost`, does not move with this
    URL rule; https sites are not affected) remove every cookie of `domain` and its subdomains
    (`getAll({domain})` and `getAll({domain, partitionKey: {}})`), then `cookies.set` each sent
@@ -1235,9 +1236,9 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
     removal queue, by the receiver's close: removals and the last window, below), and the op answers
     `no list for this scope`. When the rule update fails,
     the receiver closes the new tab in the same way, and the op answers with the error (C5: a failed
-    update fails closed). A write of its key in the copy that fails is a failed rule update too: the
-    new tab leaves the map, joins the orphan set and closes, and the op answers with the error
-    (review-20 Q3).
+    update fails closed). A write of its key in the copy that fails is handled as a failed rule
+    update of that tab: the new tab leaves the map, joins the orphan set and closes, and the op
+    answers with the error (review-20 Q3).
     Measured: the probe's whole assignment (its rule update and the wait for it, small lists, its
     tabs open) took 11 to 15 ms, and the next `Page.navigate` loaded 20 of 20. Chrome's index cost
     alone grows with the entries of all lists in use (about 46 ms to replace one list's rules with
@@ -1307,7 +1308,8 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
     limit). The removal of every session rule before the read has `RESTORE_MAX_MS` too: one that
     fails or has not ended by then fails closed, and the receiver logs it; its next full replace
     removes every rule of the scheme (the scope rules and rule 8, and rules 6 and 7 when no import
-    runs) before it adds the new ones (review-20 notes 3 and 4). The kept tabs fail closed until the next `set_scopes`, which comes soon: a worker's
+    runs) before it adds the new ones (review-20 notes 3 and 4). The late part of such a removal
+    removes nothing more, so it never takes the rules of that full replace (review-20b). The kept tabs fail closed until the next `set_scopes`, which comes soon: a worker's
     start is a link change, and the daemon sends `set_scopes` after each link up (C4).
   - A new entry after the sweep (board ab-v16.41). The receiver checks each new entry against its
     last applied `set_scopes` (C5, the sweep: the last one whose `scopes` and `lists` are objects):

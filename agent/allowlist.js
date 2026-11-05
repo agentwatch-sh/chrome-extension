@@ -114,7 +114,7 @@ async function apply(r, s, msg) {
     if (await within(r, removed)) {
       s.workersOwed = false;
     } else {
-      s.workersOwed = true;
+      // The failure below makes the removal owed (the end of apply).
       console.warn("agentwatch receiver: the service worker removal failed or did not end in time");
       fail(new Error("service worker removal failed"));
     }

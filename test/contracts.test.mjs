@@ -1442,7 +1442,9 @@ test("review-20's decisions are the contract: the closing rule at a set_scopes t
     [C6, "so the daemon's Browser page says that the sign-in was sent but that the named step failed"],
     [C6, "A close that has not ended within its item's wait (a page that a dialog holds), or a window rule that fails, fails the step (\"close tabs\")"],
     // Q3, note 2, notes 3 and 4: C10.
-    [C10, "A write of its key in the copy that fails is a failed rule update too: the new tab leaves the map, joins the orphan set and closes, and the op answers with the error"],
+    [C10, "A write of its key in the copy that fails is handled as a failed rule update of that tab: the new tab leaves the map, joins the orphan set and closes, and the op answers with the error"],
+    [C10, "The late part of such a removal removes nothing more, so it never takes the rules of that full replace"],
+    [C6, "after the item the step reads the tabs again (`tabs.query`) and fails too while a tab of the origin is open (a close that ended with an error can leave it open): no cookie is swapped while a page of the origin can be open"],
     [C10, "the fallback then calls `chrome.tabs.remove` at once and ends its own attach only after the command answered, because a detach makes a running command fail"],
     [C10, "The removal of every session rule before the read has `RESTORE_MAX_MS` too: one that fails or has not ended by then fails closed, and the receiver logs it; its next full replace removes every rule of the scheme (the scope rules and rule 8, and rules 6 and 7 when no import runs)"],
   ];

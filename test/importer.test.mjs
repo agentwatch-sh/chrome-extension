@@ -136,7 +136,8 @@ test("the import follows C6 in order and sums the counts", async () => {
 
   const relevant = f.calls.filter(([p]) => !p.startsWith("runtime.") && !p.startsWith("port."));
   assert.deepEqual(relevant.map(describeCall), [
-    "tabs.query",
+    "tabs.query", // the removal queue's item
+    "tabs.query", // the step's second read: no tab of the origin is open
     "cookies.getAll", "cookies.getAll",
     "cookies.remove", "cookies.remove",
     "cookies.set", "cookies.set",
@@ -567,7 +568,7 @@ test("the origin's tabs close before the cookie swap and before the restore tab 
   f.targets_ = [1, 2].map((id) => ({ id: "T" + id, tabId: id, type: "page", attached: false }));
   const result = await importState(f.chrome, makeState(), opts());
   assert.equal(result.tabs_closed, 2);
-  assert.deepEqual(f.callsTo("tabs.query"), [[{}]]);
+  assert.deepEqual(f.callsTo("tabs.query"), [[{}], [{}]], "the item's query, then the step's second read");
   // The closes run in the removal queue, by the receiver's close: an attach for the close,
   // Target.closeTarget (no beforeunload), and the tab's tabs.onRemoved.
   const order = f.calls
@@ -607,10 +608,14 @@ test("a window with other tabs gets no about:blank; a tab already gone does not 
     { id: 2, windowId: 1, url: ORIGIN + "/b" },
     { id: 3, windowId: 1, url: "https://other.localhost/" },
   ]);
-  // Tab 2 has no target and its fallback finds no tab: it does not count.
+  // Tab 2 closed by itself after the item's query: it has no target, and the fallback finds no tab.
+  // It does not count, and the step's second read finds no tab of the origin open.
   f.targets_ = [{ id: "T1", tabId: 1, type: "page", attached: false }];
   f.impl["tabs.remove"] = async (id) => {
-    if (id === 2) throw new Error("No tab with id");
+    if (id === 2) {
+      f.tabs_ = f.tabs_.filter((t) => t.id !== 2);
+      throw new Error("No tab with id: 2.");
+    }
   };
   const result = await importState(f.chrome, makeState(), opts());
   assert.equal(result.tabs_closed, 1);
@@ -630,7 +635,24 @@ test("a window rule that fails closes no tab of the origin and fails close tabs"
 
 // review-20 note 5 (C6 step 1): a close that has not ended at the end of the item's wait (a page that a
 // dialog holds) fails the step: no cookie swap while a page of the origin can still write a cookie.
-test("a close of the origin's tab that has not ended in the item's wait fails close tabs", async () => {
+// review-20b (probe N2, C6 step 1): a close can end with an error and leave the tab open (the attach
+// fails, and the fallback's chrome.tabs.remove is refused). The step reads the tabs again after the
+// item and fails while a tab of the origin is open: no cookie swap, and no ok with tabs_closed 0.
+test("a close of the origin's tab that ends with an error and leaves the tab open fails close tabs", { timeout: 5000 }, async () => {
+  const f = makeFakeChrome();
+  f.setTabs([{ id: 1, windowId: 1, url: ORIGIN + "/a" }, { id: 3, windowId: 1, url: "https://other.localhost/" }]);
+  f.impl["debugger.attach"] = async () => {
+    throw new Error("Another debugger is already attached to the tab");
+  };
+  f.impl["tabs.remove"] = async () => {
+    throw new Error("Tabs cannot be edited right now (user may be dragging a tab).");
+  };
+  await rejectsWith(importState(f.chrome, makeState(), opts()), "close tabs");
+  assert.equal(f.callsTo("cookies.getAll").length, 0, "no cookie swap");
+  assert.deepEqual(f.callsTo("tabs.query"), [[{}], [{}]], "the item's query, then the step's second read");
+});
+
+test("a close of the origin's tab that has not ended in the item's wait fails close tabs", { timeout: 5000 }, async () => {
   const { receiver } = await import("../agent/receiver.js");
   const { REMOVAL_WAIT_MS } = await import("../agent/removals.js");
   const f = makeFakeChrome();
@@ -733,7 +755,7 @@ test("after the cookies step times out, its background work stops", async () => 
   await settle();
   assert.equal(f.callsTo("cookies.set").length, 1);
   // The tabs closed before the cookies (M7); no later step runs.
-  assert.equal(f.callsTo("tabs.query").length, 1);
+  assert.equal(f.callsTo("tabs.query").length, 2);
   assert.equal(f.callsTo("tabs.create").length, 0);
 });
 
