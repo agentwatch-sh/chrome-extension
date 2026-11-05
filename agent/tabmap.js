@@ -232,13 +232,11 @@ export class TabMap {
     return { scope: from.scope };
   }
 
-  // tabs.onReplaced: the removed tab leaves the map (or the orphan set), and
-  // the added tab takes its place. Gives what adopt() gives.
-  replaced(addedTabId, removedTabId) {
-    const from = this.opener(removedTabId);
-    this.leave(removedTabId);
-    this.#leaveOrphans(removedTabId);
-    return this.adopt(addedTabId, from);
+  // tabs.onReplaced: the removed tab leaves the map (its entry is kept) and
+  // the orphan set; its added tab takes its place (opener() before, adopt() after).
+  release(tabId) {
+    this.leave(tabId);
+    this.#leaveOrphans(tabId);
   }
 
   // ---- set_scopes ----

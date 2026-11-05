@@ -82,6 +82,26 @@ export class Receiver {
     void this.removals.closeOwn({ ids: [tabId] }).catch(() => {});
   }
 
+  // A new tab that a tab of the map replaces (tabs.onReplaced) or opens (a
+  // popup: part 1b calls this from webNavigation.onCreatedNavigationTarget)
+  // takes that tab's scope (C10, each tab's scope). from: map.opener() of the
+  // other tab. The new tab enters the map: bridge.tabScope goes as soon as
+  // the entry is in the map, then its key and its list's rules follow. Or
+  // (a scope with no list from the first applied set_scopes on, or a tab of
+  // the orphan set) it joins the orphan set and closes, with no key and no
+  // bridge.tabScope. Gives what map.adopt() gives.
+  adoptTab(tabId, from) {
+    const got = this.map.adopt(tabId, from);
+    if (got && got.orphan) {
+      this.orphanClose(tabId);
+    } else if (got) {
+      this.emit("bridge.tabScope", { tabId, scope: got.scope });
+      void this.map.writeKey(tabId, got.scope).catch(() => {});
+      void this.rules.replaceLists([this.listName(got.scope)]).catch(() => {});
+    }
+    return got;
+  }
+
   // tabs.create and windows.create (C10, each tab's scope): the scope of the
   // last applied set_scopes has a list, else no list for this scope and no
   // tab. create() calls Chrome at once (no await before it). The new tab
@@ -137,18 +157,15 @@ export class Receiver {
     // tab joins the orphan set and closes.
     c.tabs.onReplaced.addListener((addedTabId, removedTabId) => this.map.whenRestored(() => {
       const before = this.map.scopeOf(removedTabId);
-      const got = this.map.replaced(addedTabId, removedTabId);
-      if (got && got.scope !== undefined) this.emit("bridge.tabScope", { tabId: addedTabId, scope: got.scope });
+      const from = this.map.opener(removedTabId);
+      this.map.release(removedTabId);
+      this.adoptTab(addedTabId, from);
       this.emit("tabs.onReplaced", { addedTabId, removedTabId });
       this.removals.tabRemoved(removedTabId);
-      if (before !== undefined) void this.dropKey(removedTabId);
-      if (got && got.orphan) {
-        this.orphanClose(addedTabId);
-      } else if (got) {
-        void this.map.writeKey(addedTabId, got.scope).catch(() => {});
+      if (before !== undefined) {
+        void this.dropKey(removedTabId);
+        void this.rules.replaceLists([this.listName(before)]).catch(() => {});
       }
-      const names = [before, got && got.scope].filter((s) => s !== undefined).map((s) => this.listName(s));
-      if (names.length > 0) void this.rules.replaceLists(names).catch(() => {});
     }));
   }
 }
