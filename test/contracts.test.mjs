@@ -58,7 +58,7 @@ const K = bridge.constants;
 const NAME = new RegExp(scopesV.pattern);
 const HEX64 = /^[0-9a-f]{64}$/;
 // A valid name (C4): a string that matches the scope pattern. A field that must name a list and
-// holds anything else counts 1 in refused and applies as null.
+// holds neither a valid name nor null (nor "*" for operator) counts 1 in refused and applies as null.
 const validName = (v) => typeof v === "string" && NAME.test(v);
 const normalized = (e) => {
   const r = normalizeEntry(e);
@@ -165,7 +165,7 @@ test("each set_scopes vector applies by C4's rules, with its count in refused", 
   assert.ok(has((v) => Object.values(lists(v)).some((l) => !Array.isArray(l))), "a list that is not an array");
   assert.ok(has((v) => Object.values(lists(v)).some((l) => Array.isArray(l) && l.length === 0)), "an empty list");
   assert.ok(has((v) => Object.values(scopes(v)).includes(null)), "a scope with null");
-  assert.ok(has((v) => Object.entries(scopes(v)).some(([s, l]) => !NAME.test(s) || !(typeof l === "string" || l === null))), "a scope that applies as absent");
+  assert.ok(has((v) => Object.entries(scopes(v)).some(([s, l]) => !NAME.test(s) || !(typeof l === "string" || l === null))), "a scope that applies as absent (a bad name) or as null (a bad value)");
   assert.ok(has((v) => Object.hasOwn(v.in, "lists") && !isObj(v.in.lists)), "lists that is not an object");
   assert.ok(has((v) => Object.hasOwn(v.in, "scopes") && !isObj(v.in.scopes)), "scopes that is not an object");
   assert.ok(has((v) => !Object.hasOwn(v.in, "default")), "a missing default");

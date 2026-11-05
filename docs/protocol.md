@@ -221,8 +221,8 @@ held one list for the whole agent browser. The request is above. Its fields and 
   apply. So an invalid entry never keeps an older, wider rule.
 - A valid name (of a list, in `scopes`, `default` and `operator`) is a string that matches the scope
   pattern. A field that must hold a list name and holds a valid name that is not in `lists` gives
-  no list, with no count; one that holds any other value counts 1 in `refused` and applies as
-  `null`.
+  no list, with no count; one that holds neither a valid name nor `null` (nor `"*"` for `operator`)
+  counts 1 in `refused` and applies as `null`.
 - `scopes` maps a scope to a list name or `null`. A scope with `null`, or whose list is not in
   `lists` (also a list that applies as absent), has no list: it does not fall back to `default`, and
   it counts nothing. A scope that does not match the scope pattern applies as absent and counts 1
@@ -230,9 +230,9 @@ held one list for the whole agent browser. The request is above. Its fields and 
   value is neither a valid name nor `null` applies as `null` and counts 1 in `refused`: it has no
   list and does not fall back to `default`, so a broken entry never gives a session another list.
 - Each scope in `scopes` is the scope that agentwatch fixed at the session's launch (C11, the
-  socket and the URL): `set_scopes` names that scope only, never the session's current name or one
-  of its aliases (`AGENTWATCH_SESSION_ALIASES`). A rename changes no scope, and the receiver never
-  moves a tab to another scope at a rename.
+  socket and the URL): `set_scopes` names only the launch scope (`AGENTWATCH_SESSION_ID`); another
+  name of the session is never a scope. A rename changes no scope, and the receiver never moves a
+  tab to another scope at a rename.
 - `default` is a list name or `null`: the list of a scope that `scopes` does not name. With `null`,
   or a valid name that is not in `lists`, such a scope has no list. A `default` that is neither a
   valid name nor `null` (also a missing one) counts 1 in `refused` and applies as `null`.
@@ -276,12 +276,11 @@ held one list for the whole agent browser. The request is above. Its fields and 
   choice 5 a) a dropped scope has no list, so its tabs fail closed. Only with a `default` list
   (choice 5 b) does the daemon first send the ended scope as `null`, so that it never falls back to
   the `default` list. The daemon drops the `null` entry after the receiver answered `ok` to a
-  `set_scopes` that holds it (the closing rule of C5 has closed the scope's tabs then), not after a
-  time and not at the next `link` up: else a scope that ended while the link was down would fall
-  back to the `default` list, and its tabs would stay (agent-browser PR #48, the orphan-tabs design,
-  section 15, rule 3). The `null` entries live in the daemon's memory only. aw-lead prefers choice
-  5 a, which needs no `null` entry (mail mcbd5352); with 5 b the daemon reads the receiver's map at
-  each `link` up, and aw-lead builds that only if the operator takes 5 b. The daemon can also write
+  `set_scopes` that holds it, not after a time and not at the next `link` up (the rule of the
+  orphan-tabs design, agent-browser PR #48, section 15, rule 3; the other details of 5 b come with
+  that design's contract change). The `null` entries live in the daemon's memory only. aw-lead
+  prefers choice 5 a, which needs no `null` entry (mail mcbd5352), and builds the rest of 5 b only
+  if the operator takes 5 b. The daemon can also write
   an `end_scope` for each alias of the ended session; the relay does nothing for a name that is no
   scope (C10, C11).
 - The rollout. The hello's `"features":["scopes"]` says that the receiver speaks `set_scopes`. When
