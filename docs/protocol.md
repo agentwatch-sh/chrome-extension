@@ -813,8 +813,11 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
   - `Input.dispatchKeyEvent` with `"type"` `keyDown`, `rawKeyDown` or `char`;
   - `Input.insertText`;
   - `Input.dispatchTouchEvent` with `"type":"touchStart"`;
-  - `Runtime.callFunctionOn` with an argument whose `value` is a string that holds `.focusNode(`
-    (Playwright's focus call, below).
+  - `Runtime.callFunctionOn` with an argument whose `value` is a string that is all of Playwright's
+    function `([injected, node, ...]) => injected.focusNode(...)`: the whole string matches
+    `^\(\[injected\b[^\]]*\]\)\s*=>\s*injected\.focusNode\([^)]*\)\s*$` (Playwright's focus call,
+    below). A string that only contains `.focusNode(`, for example in a client's own function, does
+    not count.
 
   Before such an input goes to Chrome, the model activates its page, as a person's press does:
   1. It reads the tab (`tabs.get`). When the tab is not active (a popup tab that the site opened in
@@ -832,13 +835,14 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
 - The reason for the activation: on Linux Chrome raises a window for a press in it, but not for a
   key. A key into a window that does not have the focus gives its page the focus while another page
   keeps it.
-- Playwright's focus call. `pressSequentially`, `press`, `type` and `focus` on a locator first call
-  Playwright's injected `focusNode` (Playwright 1.64.1). Playwright sends the function's text as a
-  string argument of `Runtime.callFunctionOn`. `focusNode` moves the caret of an input to its start
-  when `document.hasFocus()` is false. So without the activation, Playwright types at the start of a
-  field whose window does not have the focus. The rule depends on Playwright's internal name
-  `focusNode`. If a later Playwright renames it, the caret moves to the start again, and nothing
-  else changes.
+- Playwright's focus call. `pressSequentially`, `press` and `type` on a locator first call
+  Playwright's injected `focusNode` with a caret reset (Playwright 1.64.1). `focus` on a locator
+  calls `focusNode` too, without the caret reset, and its window comes forward too. Playwright sends
+  the text of its utility-script function as a string argument of `Runtime.callFunctionOn`. With the
+  caret reset, `focusNode` moves the caret of an input to its start when `document.hasFocus()` is
+  false. So without the activation, Playwright types at the start of a field whose window does not
+  have the focus. The rule depends on Playwright's internal names `injected` and `focusNode`. If a
+  later Playwright renames them, the caret moves to the start again, and nothing else changes.
 - On Linux and on the Mac, `Target.activateTarget` only selects the tab in its window (`tabs.update`
   with `{"active":true}`). `Page.bringToFront` goes to Chrome, which selects the tab and focuses its
   window (measured on Linux).
