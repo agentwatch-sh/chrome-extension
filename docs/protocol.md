@@ -1090,7 +1090,10 @@ vectors: `test/vectors/endpoint.json`.
   1000, `Browser.close ends this connection; the agent browser keeps running`.
 - `end_scope` (C10): the relay closes the scope's connections with
   1000, `The agentwatch session ended`, and removes the scope's tabs. An `end_scope` whose name is
-  no scope of the relay (for example an alias of the session, C4) does nothing.
+  no scope of the relay (for example a name of the session other than its launch scope,
+  `AGENTWATCH_SESSION_ID`; C4) does nothing. agentwatch writes no `end_scope` for a name that is the
+  launch scope of another live session: a rename into a former name can make one session's alias
+  another session's scope.
 - A link drop (C10 `link` down): every connection closes with
   1011, `The agent browser's link went down`. The model starts again at the next `link` up.
 - The relay stops: every connection closes with 1001, `The agent browser stopped`.
