@@ -1108,8 +1108,9 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
   `windows.create` as on Linux only for `"newWindow":true`.
 - Focus emulation. On Linux the model answers `Emulation.setFocusEmulationEnabled` on a page session
   with `{}` (above), also for `"enabled":false`. A page in a window of its own draws without focus
-  emulation. Playwright sends the call for each page unless it connects with `noDefaults: true`; the
-  Playwright MCP connects with `noDefaults`. On the Mac the call goes to Chrome.
+  emulation, with the agent unit's Chrome flags (agentwatch's part). Playwright sends the call for
+  each page unless it connects with `noDefaults: true`; the Playwright MCP connects with
+  `noDefaults`. On the Mac the call goes to Chrome.
 - The window comes forward for input, on Linux only. An input that starts an action is one of these
   calls on a page session:
   - `Input.dispatchMouseEvent` with `"type":"mousePressed"`;
@@ -1118,9 +1119,9 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
   - `Input.dispatchTouchEvent` with `"type":"touchStart"`;
   - `Runtime.callFunctionOn` with an argument whose `value` is a string that is all of Playwright's
     function `([injected, node, ...]) => injected.focusNode(...)`: the whole string matches
-    `^\(\[injected\b[^\]]*\]\)\s*=>\s*injected\.focusNode\([^)]*\)\s*$` (Playwright's focus call,
-    below). A string that only contains `.focusNode(`, for example in a client's own function, does
-    not count.
+    `^\(\[injected\b[^\]]*\]\)\s*=>\s*injected\.focusNode\([^)]*\)\s*$` (the relay's
+    `PLAYWRIGHT_FOCUS`; Playwright's focus call, below). A string that only contains `.focusNode(`,
+    for example in a client's own function, does not count.
 
   Before such an input goes to Chrome, the model activates its page, as a person's press does:
   1. It reads the tab (`tabs.get`). When the tab is not active (a popup tab that the site opened in
@@ -1128,12 +1129,13 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
   2. It reads the window (`windows.get`). When the window does not have the focus, it focuses the
      window (`windows.update` with `{"focused":true}`).
   3. It sends the input (`debugger.sendCommand`).
-- The order and the limit. The tab's later calls wait behind that input, and reach Chrome in the
-  client's order. The model runs one activation at a time, for all connections: an activation
-  starts when the activation before it and its input went to the bridge. When an activation does not
-  end in 2 s, the input goes on, and that activation then changes no tab and no window (no
-  `tabs.update`, no `windows.update`). When an activation fails, the relay logs the error, and the
-  input goes on. Every other input (a move, a wheel event, a release, a key-up) needs no
+- The order and the limit. The tab's later calls for Chrome (`debugger.sendCommand`) wait behind
+  that input, and reach Chrome in the client's order. The calls that the model answers go at once.
+  The model runs one activation at a time, for all connections: an activation starts when the
+  activation before it and its input went to the bridge. When an activation does not end in 2 s,
+  the input goes on. After the limit, that activation sends no `tabs.update` and no
+  `windows.update`; one already sent still runs. When an activation fails, the relay logs the error,
+  and the input goes on. Every other input (a move, a wheel event, a release, a key-up) needs no
   activation. On the Mac every input goes to Chrome at once.
 - The reason for the activation: on Linux Chrome raises a window for a press in it, but not for a
   key. A key into a window that does not have the focus gives its page the focus while another page
@@ -1148,14 +1150,16 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
   later Playwright renames them, the caret moves to the start again, and nothing else changes.
 - On Linux and on the Mac, `Target.activateTarget` only selects the tab in its window (`tabs.update`
   with `{"active":true}`). `Page.bringToFront` goes to Chrome, which selects the tab and focuses its
-  window (measured on Linux).
+  window. On Linux the live test measured that `Page.bringToFront` focuses the page's window; it
+  measured no tab switch.
 - A popup stays where the site opened it: a tab in the opener's window (`target=_blank`, or
   `window.open` with no features), or a window of its own. The relay never moves a tab to another
   window.
 - Measured (taylor, Chromium 156 in Xvfb, chrome-extension main 7e36332, three runs on 2026-11-05;
   the live group `windows` of agent-browser PR #44): with Playwright's defaults, with `noDefaults`
   and with the Playwright MCP, a page in its own window stayed `visible` while another window had
-  the focus, and it got the focus only with the input. Playwright typed where the caret was. No
+  the focus (with the live test's Chrome flags; the agent unit's Chrome flags are agentwatch's part),
+  and it got the focus only with the input. Playwright typed where the caret was. No
   `Emulation.setFocusEmulationEnabled` reached Chrome. An activation took a median of 16 ms
   (`tabs.get` 3 ms, `windows.get` 13 ms), and `windows.update` 29 ms more when the window came
   forward.
