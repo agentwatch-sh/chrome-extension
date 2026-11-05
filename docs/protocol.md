@@ -844,6 +844,19 @@ hold it; the last bullet gives the numbers and what the relay does about it.
     `set_allowlist` on the current connection). It comes after each such answer.
   - `{"t":"end_scope","scope":"<scope>"}`: the agentwatch session of that name ended. The relay
     closes the scope's connections and removes its tabs (C11).
+- At each `link` up, before it admits a connection, the relay detaches every attached tab. After a
+  `bridge.info` answer with `bridge` 1 or more, it sends `debugger.getTargets`, then
+  `debugger.detach` for each tab that the answer reports attached (`"attached":true` and a
+  `tabId`). It ignores the errors of these detaches. It logs a failed `debugger.getTargets` and
+  goes on. The daemon writes the link-up line to each relay that starts while the link is up, so
+  this also runs at each relay start. The reason: a relay that starts with no link change (the
+  daemon restarts a relay that ended) finds the tabs of the relay before it still attached, with
+  the domain state of their clients, because the receiver's cleanup ("What stops a handler",
+  above) runs only at a link change. Measured (board ab-v16.39, Chromium 156): the old client's
+  `Fetch` pattern still paused a page's request, and its user-agent override stayed. After the
+  detaches no CDP state of an earlier client stays. After a link change the receiver has already
+  detached every bridge tab, so each detach answers `null`. The restore tab of a running import
+  answers `not an agent tab` and keeps its attachment.
 - No side logs the args, the results or the event params of the bridge: they can contain page
   content and sign-in values. A log line contains an op, a CDP method, a tab id, a size or a time.
 
@@ -1012,6 +1025,15 @@ vectors: `test/vectors/endpoint.json`.
   1000, `Browser.close ends this connection; the agent browser keeps running`.
 - `end_scope` (C10): the relay closes the scope's connections with
   1000, `The agentwatch session ended`, and removes the scope's tabs.
+- The relay never closes the browser's last window. Before each `tabs.remove` (`end_scope`,
+  `Target.closeTarget`) it sends `tabs.query` with `{}`. When the tab is the browser's only tab, it
+  first opens a window with `windows.create` and `{"url":"about:blank","focused":false}`, as C5's
+  closing rule opens `about:blank` before it closes a window's last tab. The tab of that window is
+  in no scope. The relay does one such query and removal at a time, so two removals cannot each
+  find the other's tab and together close the last window. When the query or the new window fails,
+  the relay does not remove the tab: `end_scope` leaves it open, and `Target.closeTarget` gives the
+  client the error. Measured (board ab-v16.39, Chromium 156): an `end_scope` that removed the
+  browser's only tab ended Chromium (exit 0).
 - A link drop (C10 `link` down): every connection closes with
   1011, `The agent browser's link went down`. The model starts again at the next `link` up.
 - The relay stops: every connection closes with 1001, `The agent browser stopped`.
