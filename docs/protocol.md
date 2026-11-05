@@ -1061,8 +1061,9 @@ vectors: `test/vectors/endpoint.json`.
   - 503 `The agent browser is not ready: its extension is too old for agent mode.`
   - 503 `The agent browser is not ready: the allowlist has keys, but the relay was started without --keys.`
 - A scope with no list: 503 `The agent browser is not ready: the allowlist has no list for this scope.`
-- The relay is ready while the link is up (C10 `link`), an `allowlist` line came after that, and
-  `bridge.info` answered with `bridge` 1 or more. A receiver before stage 2 answers `unknown op` to
+- The relay is ready while the link is up (C10 `link`), an `allowlist` line came after that,
+  `bridge.info` answered with `bridge` 1 or more, and the detaches of the link up (C10, "The daemon
+  and the relay") are done. A receiver before stage 2 answers `unknown op` to
   `bridge.info`: it is too old. The relay admits a connection of a scope while it is ready and the
   last `allowlist` line gives the scope a list (the scope's list, below). A scope whose list is
   empty is admitted; it can open `about:blank` only. So the endpoint fails closed: no connection
@@ -1076,7 +1077,8 @@ vectors: `test/vectors/endpoint.json`.
   4. The relay is not ready, in this order: the link is down (`its extension is not connected`);
      `bridge.info` answered `unknown op` or `bridge` below 1 (`its extension is too old for agent
      mode`); no `allowlist` line came since the link came up (`its extension has not confirmed the
-     allowlist`); `bridge.info` has not answered yet (`its extension is not connected`); a relay
+     allowlist`); `bridge.info` has not answered yet, or the detaches of the link up are not done
+     (`its extension is not connected`); a relay
      without `--keys` whose last `allowlist` line has a `keys` field (`the allowlist has keys, but
      the relay was started without --keys`).
   5. With keys on, a scope that the last `allowlist` line does not name: the no-list 503.
@@ -1117,9 +1119,9 @@ vectors: `test/vectors/endpoint.json`.
   Chromium 156): an `end_scope` that removed the browser's only tab ended Chromium (exit 0).
   - Today's relay (before part 2, so with main `27543ce`'s ops) opens the window with
     `windows.create` and `[{"url":"about:blank","focused":false}]`.
-  - Open for part 2: there `windows.create` needs a scope (C10), which would put the window into
-    one. The orphan-tabs design (board ab-v16.39, section 7) moves this rule into the receiver's
-    `tabs.remove`.
+  - In the per-scope build `windows.create` needs a scope (C10), which would put the window into
+    one. So there the receiver's `tabs.remove` does this, and this bullet goes (the orphan-tabs
+    design, board ab-v16.39, sections 7 and 13).
 - A link drop (C10 `link` down): every connection closes with
   1011, `The agent browser's link went down`. The model starts again at the next `link` up.
 - The relay stops: every connection closes with 1001, `The agent browser stopped`.
