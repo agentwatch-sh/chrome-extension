@@ -40,11 +40,15 @@
 //   Form Resubmission" dialog, which waits for a person). The retry is only
 //   for the popup's first navigation: after its first main-frame commit that
 //   is not about:blank, a block sends its notice at once.
+// - A popup of a marked tab (the operator's own; part 1d) is marked too. For
+//   the retry its list is its operator value: with "*" every host is covered,
+//   with a list name that list, with null none.
 //
 // No log line holds a URL or a host.
 import { call } from "./attach.js";
 import { HOLD_MAX_MS } from "./hold.js";
 import { covers } from "./lib/domains.js";
+import { ANY } from "./scopes.js";
 
 export const NEW_TAB_WAIT_MS = 50;
 export const RULE_QUIET_MS = 50;
@@ -61,9 +65,10 @@ const isBlank = (url) => typeof url === "string" && /^about:blank([?#]|$)/.test(
 // navigation has not started; started: the reload's navigation started;
 // over: no retry from now on.
 class Popup {
-  scope = undefined; // undefined: not adopted yet; null: no scope (or the orphan set); else its scope
+  scope = undefined; // undefined: not adopted yet; null: no scope (or the orphan set, or marked); else its scope
+  marked = false; // a popup of a marked tab: marked too
   ruleEnd = null; // when the rule update that put it under its list ended
-  entries = null; // its list then (null: no list, or the update failed)
+  entries = null; // its list then (ANY: every host; null: no list, or the update failed)
   navStarted = false; // a main-frame navigation that is not about:blank started
   ended = false; // an end condition of the held tabs.onCreated came
   phase = "open";
@@ -111,7 +116,7 @@ export class Popups {
     this.#popups.set(tabId, p);
   }
 
-  // The popup took its scope (receiver.js adoptTab gave got): with a scope,
+  // The popup took its scope or the mark (receiver.js adoptTab gave got):
   // got.ruled is the rule update that puts it under its list.
   adopted(tabId, got) {
     const p = this.#popups.get(tabId);
@@ -120,15 +125,27 @@ export class Popups {
       p.scope = null;
       return;
     }
-    p.scope = got.scope;
+    if (got.mark) {
+      p.scope = null;
+      p.marked = true;
+    } else {
+      p.scope = got.scope;
+    }
     got.ruled.then(() => true, () => false).then((ok) => this.#ruleEnded(p, ok));
+  }
+
+  // The popup is still where its adoption put it: in its scope (not in the
+  // orphan set), or marked.
+  #stillIn(p) {
+    const map = this.#r.map;
+    return p.marked ? map.isMarked(p.tabId) : map.scopeOf(p.tabId) === p.scope && !map.isOrphan(p.tabId);
   }
 
   #ruleEnded(p, ok) {
     if (this.#popups.get(p.tabId) !== p) return;
-    const map = this.#r.map;
+    const cur = this.#r.map.current;
     p.ruleEnd = this.#clock.now();
-    p.entries = ok && map.scopeOf(p.tabId) === p.scope ? map.current.entriesOf(p.scope) : null;
+    p.entries = !ok || !this.#stillIn(p) ? null : p.marked ? cur.markEntries() : cur.entriesOf(p.scope);
     if (p.phase === "wait") this.#decide(p);
     this.#quiet(p.tabId);
   }
@@ -311,7 +328,7 @@ export class Popups {
     const p = this.#popups.get(details.tabId);
     if (!p) return false;
     if (p.phase === "open") {
-      if (typeof p.scope !== "string") {
+      if (typeof p.scope !== "string" && !p.marked) {
         // A popup of no scope: no retry, the notice goes now.
         p.phase = "over";
         this.#ended(p.tabId);
@@ -336,10 +353,8 @@ export class Popups {
   // At the end of the popup's rule update: a reload when its list then
   // covered the blocked host, else the notice.
   #decide(p) {
-    const map = this.#r.map;
     const host = p.block.msg.host;
-    const covered = p.entries !== null && p.entries.some((d) => covers(d, host)) &&
-      map.scopeOf(p.tabId) === p.scope && !map.isOrphan(p.tabId);
+    const covered = p.entries !== null && (p.entries === ANY || p.entries.some((d) => covers(d, host))) && this.#stillIn(p);
     if (!covered) return this.#notice(p);
     // A blocked request that is not a GET (a form's POST) gets no reload.
     const method = this.#methodFor(p.tabId, p.block.url);
@@ -353,10 +368,9 @@ export class Popups {
   #reload(p) {
     p.timer = null;
     if (this.#popups.get(p.tabId) !== p || p.phase !== "planned") return;
-    const map = this.#r.map;
-    // The tab left its scope meanwhile (the sweep): no retry. A GET only; a
-    // method that the receiver has not seen by now fails closed too.
-    if (map.scopeOf(p.tabId) !== p.scope || map.isOrphan(p.tabId) || !this.#isGet(p)) return this.#notice(p);
+    // The tab left its scope (or its mark) meanwhile (the sweep): no retry. A
+    // GET only; a method that the receiver has not seen by now fails closed too.
+    if (!this.#stillIn(p) || !this.#isGet(p)) return this.#notice(p);
     p.phase = "reloaded";
     p.timer = this.#clock.setTimer(() => {
       p.timer = null;

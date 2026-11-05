@@ -81,13 +81,16 @@ const KINDS = {
 
 // The restore tab of a running import is never an agent tab.
 const restoreTab = (c, [tabId]) => (c.att.isRestoreTab(tabId) ? NOT_AGENT_TAB : null);
+// No client acts on a tab of no live session: a tab of the orphan set (C5,
+// the sweep) or a marked tab (the operator's own).
+const noSession = (c, tabId) => c.r.map.isOrphan(tabId) || c.r.map.isMarked(tabId);
 // The ops by which a client acts on a tab (attach, select, close) refuse the
-// restore tab and a tab of the orphan set (C5, the sweep): it belongs to no
-// live session. debugger.detach, tabs.get and bridge.release stay allowed.
-const agentTab = (c, [tabId]) => (c.att.isRestoreTab(tabId) || c.r.map.isOrphan(tabId) ? NOT_AGENT_TAB : null);
+// restore tab, a tab of the orphan set and a marked tab. debugger.detach,
+// tabs.get and bridge.release stay allowed.
+const agentTab = (c, [tabId]) => (c.att.isRestoreTab(tabId) || noSession(c, tabId) ? NOT_AGENT_TAB : null);
 // A command never goes to a tab of the orphan set, through the import's
 // attachment, or to a tab that the bridge did not attach: not an agent tab
-// first, then not attached.
+// first, then not attached (a marked tab is never a bridge tab).
 const commandTab = (c, [target]) =>
   c.r.map.isOrphan(target.tabId) ? NOT_AGENT_TAB : c.att.isBridgeTab(target.tabId) ? null : "not attached";
 
@@ -148,11 +151,11 @@ async function bridgeInfo(c) {
 
 export const OPS = Object.freeze({
   // The own-origin check reads the tab inside the attach, in the tab's order;
-  // the orphan set's check runs again right before Chrome's attach.
+  // the orphan set's and the mark's check runs again right before Chrome's attach.
   "debugger.attach": op(["id"], 1, (c, [tabId]) => c.att.attach(tabId, () =>
     call(() => c.chrome.tabs.get(tabId)).then((tab) => {
       if (ownOrigin(c, tab) || c.att.isRestoreTab(tabId)) throw new Error(NOT_AGENT_TAB);
-    }), () => (c.r.map.isOrphan(tabId) ? NOT_AGENT_TAB : null)), { tab: agentTab }),
+    }), () => (noSession(c, tabId) ? NOT_AGENT_TAB : null)), { tab: agentTab }),
   "debugger.detach": op(["id"], 1, (c, [tabId]) => c.att.detach(tabId), { tab: restoreTab, nullResult: true }),
   "debugger.sendCommand": op(["target", "string", "object"], 2,
     (c, [target, method, params], o) => sendCommand(c, o, target, method, params), { tab: commandTab, wait: WAIT_MAX_MS }),
@@ -300,7 +303,11 @@ export class Bridge {
     // hold of the tab are on (or failed), and a popup whose hold is on keeps
     // it longer (popups.js); an event of the tab that Chrome fires meanwhile
     // can come before it. Off, it comes after the tab's navigation target, or
-    // NEW_TAB_WAIT_MS late when none comes (popups.js).
+    // NEW_TAB_WAIT_MS late when none comes (popups.js). The eager attach
+    // skips a tab of the agent package's own origin and a marked tab: the
+    // receiver's listener of this event marks the operator's tab before this
+    // one runs, and a popup of a marked tab that its navigation target marks
+    // during the attach is detached at the attach's end (attach.js).
     c.tabs.onCreated.addListener((tab) => {
       const at = this.#r.clock.now();
       if (!tab || !isId(tab.id)) {
@@ -311,7 +318,8 @@ export class Bridge {
         this.#r.popups.created(tab, { attached: false, held: false });
         return;
       }
-      void att.attachNewTab(tab.id, ownOrigin(this.#ctx, tab)).then((fields) => this.#r.popups.attached(tab, fields, at));
+      const own = ownOrigin(this.#ctx, tab);
+      void att.attachNewTab(tab.id, () => own || this.#r.map.isMarked(tab.id)).then((fields) => this.#r.popups.attached(tab, fields, at));
     });
     c.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       if (!isObj(changeInfo) || !["url", "title", "status"].some((k) => Object.hasOwn(changeInfo, k))) return;

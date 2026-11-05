@@ -9,9 +9,12 @@
 // The map also holds, in memory only: the kept entries (an entry that left
 // the map, for TOMBSTONE_MS), the orphan set (a tab that a sweep item did not
 // close, or a new tab whose scope has no list) with its kept memberships, the
-// object of the last set_scopes (what applies now: the scope rules and the
-// closing rule) and the last applied one (the reference of the checks of a
-// new entry, the sweep and contentDetails).
+// operator marks (choice 3 of the design: the operator's own tabs, which have
+// no scope) with their kept marks, the object of the last set_scopes (what
+// applies now: the scope rules and the closing rule) and the last applied one
+// (the reference of the checks of a new entry, the sweep and contentDetails).
+// The marks have no copy: they go at the worker's start, and those tabs then
+// fail closed.
 import { NO_SCOPES, isName } from "./scopes.js";
 
 export const TOMBSTONE_MS = 10000;
@@ -27,6 +30,8 @@ export class TabMap {
   #orphans = new Set();
   #keptOrphans = new Map(); // tabId -> until: orphan memberships of closed tabs
   #gone = new Map(); // tabId -> until: tabs that closed (no entry is written for them)
+  #marks = new Set(); // the marked tabs: the operator's own
+  #keptMarks = new Map(); // tabId -> until: marks of tabs that closed or were replaced
   #restored = false;
   #restoring = null;
   // The object of the last set_scopes (it applies now), and the last applied one.
@@ -125,7 +130,7 @@ export class TabMap {
 
   #prune() {
     const now = this.#clock.now();
-    for (const m of [this.#kept, this.#keptOrphans, this.#gone]) {
+    for (const m of [this.#kept, this.#keptOrphans, this.#gone, this.#keptMarks]) {
       for (const [k, v] of m) if ((typeof v === "number" ? v : v.until) <= now) m.delete(k);
     }
   }
@@ -194,13 +199,44 @@ export class TabMap {
     return true;
   }
 
+  // ---- the operator marks ----
+
+  isMarked(tabId) {
+    return this.#marks.has(tabId);
+  }
+
+  // The marked tabs, in the order of their marks.
+  marked() {
+    return [...this.#marks];
+  }
+
+  mark(tabId) {
+    this.#marks.add(tabId);
+  }
+
+  // The mark goes with no kept mark: the tab is no operator tab (a page
+  // opened it, or a bridge op created it). True when it had the mark.
+  unmark(tabId) {
+    return this.#marks.delete(tabId);
+  }
+
+  // The mark of a tab that closed or was replaced: kept for TOMBSTONE_MS.
+  #leaveMarks(tabId) {
+    if (!this.#marks.delete(tabId)) return false;
+    this.#prune();
+    this.#keptMarks.set(tabId, this.#clock.now() + TOMBSTONE_MS);
+    return true;
+  }
+
   // ---- the events ----
 
-  // tabs.onRemoved: the entry and the orphan membership leave, and both are
-  // kept for TOMBSTONE_MS. Gives the scope that the tab had, or undefined.
+  // tabs.onRemoved: the entry, the orphan membership and the mark leave, and
+  // each is kept for TOMBSTONE_MS. Gives the scope that the tab had, or
+  // undefined.
   removed(tabId) {
     const scope = this.leave(tabId);
     this.#leaveOrphans(tabId);
+    this.#leaveMarks(tabId);
     this.#gone.set(tabId, this.#clock.now() + TOMBSTONE_MS);
     return scope;
   }
@@ -208,22 +244,30 @@ export class TabMap {
   // The scope of a new tab that a tab of the map opens or replaces (a popup's
   // sourceTabId, a replaced tab): {orphan: true} for a tab of the orphan set
   // or a kept membership of one (the set spreads as the mark does), else its
-  // entry or kept entry, else null (no scope).
+  // entry, {mark: true} for a marked tab, else its kept entry or kept mark,
+  // else null (no scope).
   opener(tabId) {
     this.#prune();
     if (this.#orphans.has(tabId) || this.#keptOrphans.has(tabId)) return { orphan: true };
     if (this.#entries.has(tabId)) return { scope: this.#entries.get(tabId) };
+    if (this.#marks.has(tabId)) return { mark: true };
     if (this.#kept.has(tabId)) return { scope: this.#kept.get(tabId).scope };
+    if (this.#keptMarks.has(tabId)) return { mark: true };
     return null;
   }
 
-  // The new tab of opener() joins the map, or the orphan set. From the first
-  // applied set_scopes after the worker's start on, a scope with no list
-  // never enters the map: its tab joins the orphan set. Before it, such a tab
-  // enters the map with its scope (that set_scopes sweeps it). Gives
-  // {orphan: true}, {scope} (the tab entered the map) or null.
+  // The new tab of opener() joins the map, the orphan set or the marks. From
+  // the first applied set_scopes after the worker's start on, a scope with no
+  // list never enters the map: its tab joins the orphan set. Before it, such
+  // a tab enters the map with its scope (that set_scopes sweeps it). A tab of
+  // a marked tab is marked. Gives {orphan: true}, {mark: true}, {scope} (the
+  // tab entered the map) or null.
   adopt(tabId, from) {
     if (from === null) return null;
+    if (from.mark) {
+      this.#marks.add(tabId);
+      return { mark: true };
+    }
     if (from.orphan || (this.reference !== null && this.reference.listOf(from.scope) === null)) {
       this.#orphans.add(tabId);
       return { orphan: true };
@@ -232,11 +276,13 @@ export class TabMap {
     return { scope: from.scope };
   }
 
-  // tabs.onReplaced: the removed tab leaves the map (its entry is kept) and
-  // the orphan set; its added tab takes its place (opener() before, adopt() after).
+  // tabs.onReplaced: the removed tab leaves the map (its entry is kept), the
+  // orphan set and the marks; its added tab takes its place (opener() before,
+  // adopt() after).
   release(tabId) {
     this.leave(tabId);
     this.#leaveOrphans(tabId);
+    this.#leaveMarks(tabId);
   }
 
   // ---- set_scopes ----
