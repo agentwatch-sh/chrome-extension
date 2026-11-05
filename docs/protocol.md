@@ -274,11 +274,16 @@ held one list for the whole agent browser. The request is above. Its fields and 
   `scopes` in its next `set_scopes` (agentwatch stage 4, B5). So `scopes` holds only the live
   sessions, and the receiver's map cannot grow without bound. With `default` `null` (the design's
   choice 5 a) a dropped scope has no list, so its tabs fail closed. Only with a `default` list
-  does the daemon first send the ended scope as `null`, so that it never falls back to the
-  `default` list. `end_scope` has no answer, so the daemon cannot see when the tabs are gone: it
-  drops the `null` entry 60 s after `end_scope` (the relay removes the tabs at once), or at the
-  next `link` up. The daemon can also write an `end_scope` for each alias of the ended session; the
-  relay does nothing for a name that is no scope (C10, C11).
+  (choice 5 b) does the daemon first send the ended scope as `null`, so that it never falls back to
+  the `default` list. The daemon drops the `null` entry after the receiver answered `ok` to a
+  `set_scopes` that holds it (the closing rule of C5 has closed the scope's tabs then), not after a
+  time and not at the next `link` up: else a scope that ended while the link was down would fall
+  back to the `default` list, and its tabs would stay (agent-browser PR #48, the orphan-tabs design,
+  section 15, rule 3). The `null` entries live in the daemon's memory only. aw-lead prefers choice
+  5 a, which needs no `null` entry (mail mcbd5352); with 5 b the daemon reads the receiver's map at
+  each `link` up, and aw-lead builds that only if the operator takes 5 b. The daemon can also write
+  an `end_scope` for each alias of the ended session; the relay does nothing for a name that is no
+  scope (C10, C11).
 - The rollout. The hello's `"features":["scopes"]` says that the receiver speaks `set_scopes`. When
   one side meets the other side's old form, it fails closed, in the named way:
   - A new daemon and an old receiver (its latest hello has no `"scopes"` in `features`): the daemon
