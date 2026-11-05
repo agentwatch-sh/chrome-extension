@@ -76,6 +76,26 @@ const cmds = (f, mark) => callsSince(f, mark).filter(([p]) => p === "debugger.se
 const PENDING_1A = OPS["tabs.create"].kinds.includes("scope") ? false : "board ab-v16.31 (part 1a): tabs.create and windows.create take the scope arg";
 const SCOPED_OPS = new Set(["tabs.create", "windows.create"]);
 const scoped = (v) => SCOPED_OPS.has(v.req.op);
+// Since board ab-v16.41 the vectors also hold the op bridge.tabScopes (C10, the orphan-tabs rules), which the
+// receiver gets in part 1a too. Until then its vectors run as todo tests in the same way: when OPS has the op,
+// PENDING_TAB_SCOPES is false. Part 1a then removes PENDING_TAB_SCOPES, and its test puts the vector's tabs
+// (9 and 12, scope ab-lead) into the map first.
+// The no-list vectors (b38 to b40, no list for this scope) are scoped ones. Today's setup applies no setScopes,
+// so they would also pass for a receiver that ignores it: part 1a's setup must apply the vector's setScopes,
+// and keep a positive tabs.create of a scope with a list (ab-lead) in the same setup (review-17 L8).
+// The request vector of tabs.remove holds the receiver's close of the per-scope build (Target.closeTarget
+// through chrome.debugger, board ab-v16.41): it runs with the scoped ones, under PENDING_1A. Part 1a's setup
+// for it: debugger.getTargets gives the target id D8E9F0 for tab 8, tab 8 is open with one other tab (so the
+// window rule opens no about:blank), and a tabs.onRemoved of tab 8 comes (the fake timers never fire, so the
+// item would wait for ever). Until part 1a the plain test runs the same vector with today's chrome call,
+// its chromeToday (chrome.tabs.remove), so today's good path of the op keeps a plain test (review-17b N5).
+// The bad request vectors with "perScope": true (b41 to b44: an op of a tab of the orphan set gets not an agent
+// tab) run with the scoped ones too. Part 1a's setup for them puts tab 13 into the receiver's orphan set.
+const PENDING_TAB_SCOPES = Object.hasOwn(OPS, "bridge.tabScopes") ? false : "board ab-v16.31 (part 1a): the op bridge.tabScopes";
+const NEW_OPS = new Set(["bridge.tabScopes"]);
+const newOp = (v) => NEW_OPS.has(v.req.op);
+const PER_SCOPE_REQUESTS = new Set(["tabs.remove"]);
+const perScopeRequest = (v) => scoped(v) || PER_SCOPE_REQUESTS.has(v.req.op);
 
 test("the bridge's constants and ops are C10's", () => {
   const K = V.constants;
@@ -85,8 +105,9 @@ test("the bridge's constants and ops are C10's", () => {
   assert.equal(MAX_RESULT, K.MAX_RESULT);
   assert.equal(RESULT_PART_BYTES, K.RESULT_PART_BYTES);
   assert.deepEqual(CONTENT_TYPES, V.contentTypes);
-  assert.deepEqual(Object.keys(OPS).sort(), V.ops.map((o) => o.op).sort(), "the 19 ops and no other (no cookie op)");
-  for (const o of V.ops.filter((x) => !SCOPED_OPS.has(x.op))) {
+  const known = V.ops.filter((o) => !(PENDING_TAB_SCOPES && NEW_OPS.has(o.op)));
+  assert.deepEqual(Object.keys(OPS).sort(), known.map((o) => o.op).sort(), "the ops of C10 and no other (no cookie op)");
+  for (const o of known.filter((x) => !SCOPED_OPS.has(x.op))) {
     const spec = OPS[o.op];
     assert.deepEqual(spec.kinds, o.kinds, o.op);
     assert.equal(spec.required, o.required, o.op);
@@ -116,9 +137,20 @@ async function requestVectors(vectors) {
   }
 }
 
-test("each request vector makes its chrome call and gets the vector's res", () => requestVectors(V.requests.filter((v) => !scoped(v))));
+const today = (v) => (PENDING_1A && v.chromeToday ? { ...v, chrome: v.chromeToday } : v);
+test("each request vector makes its chrome call and gets the vector's res", () =>
+  requestVectors(V.requests.filter((v) => !scoped(v) && !newOp(v) && (PENDING_1A ? true : !PER_SCOPE_REQUESTS.has(v.req.op))).map(today)));
 
-test("each request vector of tabs.create and windows.create: the scope arg", { todo: PENDING_1A }, () => requestVectors(V.requests.filter(scoped)));
+test("bridge.tabScopes is C10's op, and its request vector gets the vector's res", { todo: PENDING_TAB_SCOPES }, async () => {
+  const o = V.ops.find((x) => x.op === "bridge.tabScopes");
+  assert.ok(Object.hasOwn(OPS, o.op), "the receiver has the op");
+  assert.deepEqual(OPS[o.op].kinds, o.kinds);
+  assert.equal(OPS[o.op].required, o.required);
+  assert.equal(OPS[o.op].wait, V.constants[o.defaultWait]);
+  await requestVectors(V.requests.filter(newOp));
+});
+
+test("each request vector of the per-scope build: tabs.create and windows.create (the scope arg), tabs.remove (the receiver's close)", { todo: PENDING_1A }, () => requestVectors(V.requests.filter(perScopeRequest)));
 
 async function badRequestVectors(vectors) {
   const s = await setup({
@@ -138,9 +170,9 @@ async function badRequestVectors(vectors) {
   }
 }
 
-test("each bad request vector gets its error, and its op never reaches Chrome", () => badRequestVectors(V.badRequests.filter((v) => !scoped(v))));
+test("each bad request vector gets its error, and its op never reaches Chrome", () => badRequestVectors(V.badRequests.filter((v) => !scoped(v) && !v.perScope)));
 
-test("each bad request vector of tabs.create and windows.create: the scope arg", { todo: PENDING_1A }, () => badRequestVectors(V.badRequests.filter(scoped)));
+test("each bad request vector of the per-scope build: tabs.create and windows.create (the scope arg, no list), the orphan set", { todo: PENDING_1A }, () => badRequestVectors(V.badRequests.filter((v) => scoped(v) || v.perScope)));
 
 test("the checks run in C10's order: the op, the args, the wait, the tab", async () => {
   const s = await setup();

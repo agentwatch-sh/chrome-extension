@@ -350,7 +350,12 @@ test("each request vector is a valid bridge request, and its res has the C10 sha
     if (o.result === "`null`") assert.equal(res.data, null, `${req.id}: ${req.op} answers null`);
     // The chrome call the receiver makes for it (null: the receiver's own op).
     if (req.op.startsWith("bridge.")) assert.equal(v.chrome, null);
-    else assert.ok(Array.isArray(v.chrome) && v.chrome[0].startsWith(req.op.split(".")[0] + "."), `${req.id}: chrome call`);
+    else if (req.op === "tabs.remove") {
+      // The receiver's close of the per-scope build (C10, board ab-v16.41): Target.closeTarget through chrome.debugger.
+      assert.deepEqual([v.chrome[0], v.chrome[1][0], v.chrome[1][1], Object.keys(v.chrome[1][2])], ["debugger.sendCommand", { tabId: req.args[0] }, "Target.closeTarget", ["targetId"]], `${req.id}: the receiver's close`);
+      // Today's receiver (before part 1a) calls chrome.tabs.remove: the plain test of test/bridge.test.mjs uses it.
+      assert.deepEqual(v.chromeToday, ["tabs.remove", [req.args[0]]], `${req.id}: today's chrome call`);
+    } else assert.ok(Array.isArray(v.chrome) && v.chrome[0].startsWith(req.op.split(".")[0] + "."), `${req.id}: chrome call`);
   }
   assert.deepEqual([...seen].sort(), [...opByName.keys()].sort(), "every op has a request vector");
   assert.ok(bridge.requests.some((v) => Object.keys(v.req).some((k) => !["t", "id", "op", "args", "wait"].includes(k))), "a vector with a field that the receiver ignores");
@@ -366,7 +371,12 @@ test("each bad request vector breaks one C10 rule and gets an error text of C10"
     if (error === "unknown op") assert.equal(o, undefined, req.id);
     else if (error === "bad args") assert.ok(!argsFit(o, req.args ?? []), req.id);
     else if (error === "bad wait") assert.ok(argsFit(o, req.args ?? []) && !waitFits(req), req.id);
-    else assert.ok(argsFit(o, req.args ?? []) && waitFits(req), `${req.id}: only the tab check fails`);
+    else if (error === "no list for this scope") {
+      // The scope check of tabs.create and windows.create (board ab-v16.41): the samples' last applied set_scopes gives the scope no list.
+      assert.ok(["tabs.create", "windows.create"].includes(req.op), `${req.id}: only tabs.create and windows.create check the scope's list`);
+      assert.ok(argsFit(o, req.args) && waitFits(req), `${req.id}: only the scope check fails`);
+      assert.equal(applySetScopes(bridge.setScopes).listOf(req.args[1]), null, `${req.id}: the scope has no list`);
+    } else assert.ok(argsFit(o, req.args ?? []) && waitFits(req), `${req.id}: only the tab check fails`);
     if (error === "not an agent tab") kinds.add(req.op);
   }
   // S4 and S6: the restore tab and the receiver's own pages are never bridge tabs.
@@ -495,6 +505,196 @@ test("the daemon's allowlist line is the confirmed set_scopes object; keys only 
   }
   assert.ok(lines.some((l) => isObj(l.keys)) && lines.some((l) => !Object.hasOwn(l, "keys")), "a line with keys and one without");
   assert.ok(C10.includes("the\n    receiver never sees the keys") || C10.includes("the receiver never sees the keys"));
+});
+
+// ---- C10 and C5: the orphan-tabs rules (board ab-v16.41) ----
+
+// Whether a contract's text says s, whatever its line breaks.
+const flat = (t) => t.replace(/\s+/g, " ");
+const says = (text, s) => flat(text).includes(flat(s));
+
+test("the samples' last applied set_scopes: the union of its lists is the allowlist, and the samples' scope has a list", () => {
+  const a = applySetScopes(bridge.setScopes);
+  assert.equal(a.refused, 0, "the daemon sends only valid objects");
+  assert.deepEqual([...new Set(Object.values(a.lists).flat())].sort(), [...bridge.allowlist].sort());
+  assert.notEqual(a.listOf(bridge.scope), null, bridge.scope);
+  const noList = bridge.badRequests.filter((v) => v.error === "no list for this scope");
+  for (const op of ["tabs.create", "windows.create"]) assert.ok(noList.some((v) => v.req.op === op), `a no-list vector for ${op}`);
+  assert.ok(noList.some((v) => Object.hasOwn(bridge.setScopes.scopes, v.req.args[1])), "a scope named null");
+  assert.ok(noList.some((v) => !Object.hasOwn(bridge.setScopes.scopes, v.req.args[1])), "a scope that it does not name");
+  assert.ok(C10.includes("`no list for this scope`"));
+});
+
+test("bridge.tabScopes: C10 states the op, its place in the steps of the link up, and its vector lists tabs and scopes", () => {
+  const o = opByName.get("bridge.tabScopes");
+  assert.deepEqual([o.args, o.required, o.defaultWait], [[], 0, "WAIT_DEFAULT_MS"]);
+  const v = bridge.requests.find((r) => r.req.op === "bridge.tabScopes");
+  assert.ok(Array.isArray(v.res.data) && v.res.data.length > 0, "a list");
+  for (const e of v.res.data) {
+    assert.deepEqual(Object.keys(e).sort(), ["scope", "tabId"]);
+    assert.ok(int(e.tabId) && e.tabId >= 0 && SCOPE.test(e.scope), JSON.stringify(e));
+  }
+  assert.equal(new Set(v.res.data.map((e) => e.tabId)).size, v.res.data.length, "one item for each tab");
+  for (const s of ["**steps of the link up**", "2. In the per-scope build only", "When `bridge.tabScopes` fails or times out", "Today's relay (before part 2) runs steps 1, 3 (the list only) and 4"]) {
+    assert.ok(says(C10, s), `C10 says: ${s}`);
+  }
+  assert.ok(says(C11, "the steps of the link up (C10, \"The daemon and the relay\") are done"), "C11's readiness waits for the steps of the link up");
+});
+
+// C10's window rule: the receiver first opens about:blank when no tab stays open other than the item's tabs and the
+// tabs with a pending close.
+const guardOf = (v) => !v.open.some((t) => !v.closes.includes(t) && !v.pending.includes(t));
+
+test("the window rule: each vector follows C10's rule, also for a pending close (board ab-v16.43)", () => {
+  for (const v of bridge.windowRule) {
+    assert.ok(v.closes.every((t) => v.open.includes(t)), `${v.note}: an item closes open tabs`);
+    assert.equal(guardOf(v), v.guard, v.note);
+  }
+  const has = (f) => bridge.windowRule.some(f);
+  assert.ok(has((v) => v.guard && v.pending.length === 0 && v.open.length === 1), "the browser's only tab");
+  assert.ok(has((v) => v.guard && v.pending.some((t) => v.open.includes(t))), "a pending close that is still open counts as closed");
+  assert.ok(has((v) => !v.guard && v.pending.length > 0), "a pending close and a tab that stays");
+  assert.ok(has((v) => v.closes.length > 1 && v.guard) && has((v) => v.closes.length > 1 && !v.guard), "an item with several closes");
+  assert.ok(has((v) => v.guard && v.closes.some((t) => v.pending.includes(t))), "a later item closes a pending tab again (review-17 M1)");
+  for (const s of ["**removal queue**", "**window rule**", "**pending close**", "`REMOVAL_WAIT_MS = 2000`", "a client's `Page.close`", "`windowRule`",
+    // review-17: the receiver's close (H1), the fallback, a pending close closed again (M1), the gate and the link change (M4),
+    // the limits of the item's calls (L1), the bound of the answer (L2), a child session's Page.close (L3), the memory-only limit (L5).
+    "The **receiver's close**", "`Target.closeTarget` with the tab's target id", "`Detached while handling command.`", "The fallback: when the attach",
+    "a later item that closes the tab (also a `tabs.remove` or an import's close) closes it again, by the receiver's close", "The gate opens at each of these ends", "drops every bridge request that waits in the queue or at a gate",
+    "The query and that tab each have a limit of `REMOVAL_WAIT_MS`", "The bound of a `set_scopes` answer", "A `Page.close` on a child session of the tab",
+    "The pending closes live in the worker's memory only", "the close of a new tab whose rule update failed", "a restore tab that came after its step's deadline"]) {
+    assert.ok(says(C10, s), `C10 says: ${s}`);
+  }
+  assert.ok(says(C5, "The sweep closes a tab with a pending close again, by the receiver's close"), "C5: the sweep does not skip a held tab");
+  // review-17b: B1 (pending from the start of the close), N1 (the chain), N2 (step 3), N3 (a tab that the sweep cannot close leaves its scope).
+  for (const s of ["a close is pending from the moment its item starts it (for the receiver's close, from the moment it joins the tab's chain; for a client's `Page.close`, from its send) until the tab's `tabs.onRemoved`, or until it fails and the tab stays (after the fallback too, and only after the `Target.closeTarget` command also answered",
+    "a late `Page.close` answer with no error leaves the close pending, and a late error ends it", "also one that still waits in the tab's chain, or is still in its attach",
+    // review-17c: the chain op ends before a held fallback (note 1); the orphan set in C10 (T11, T12, T13); a new entry's limit (note 5).
+    "The op ends when the command answered, or when the fallback called `chrome.tabs.remove`;", "The close stays pending outside the chain (below), so a held fallback never stops the tab's chain",
+    "a tab of the sweep leaves its scope at the end of the item, into the orphan set", "the sweep takes such a tab out of its scope into the orphan set",
+    "The limits of a tab that a sweep item does not close", "a window rule that failed or came late, with no close and no dialog", "the held `chrome.tabs.remove` call does not end",
+    "The limit of a new entry", "the end of a sweep item that did not close the tab", "The receiver's close is one op of the tab's chain of attaches",
+    "only when it made one: never the bridge's attachment", "lists no target for the tab", "it never detaches the attach of a receiver's close that runs"]) {
+    assert.ok(says(C10, s), `C10 says: ${s}`);
+  }
+  // review-17c B1: both cases, the orphan set, the true limits.
+  for (const s of ["A tab that the sweep's item does not close leaves its scope at the end of that item", "The item's window rule failed or came late (C10): then no close starts, and no dialog opens",
+    "The receiver keeps the tab's id in the **orphan set**, in memory", "the guard and the closing rule treat it as a tab with no list", "Each later sweep item closes it again by the receiver's close, whatever its URL",
+    "after a dismiss the page stays, and the held `chrome.tabs.remove` call does not end", "After a worker start the orphan set is gone", "its key leaves the copy. The answer waits for that removal",
+    "The relay drops it from its model at its next `allowlist` line whose `scopes` and `lists` are objects", "except a tab of the orphan set"]) {
+    assert.ok(says(C5, s), `C5 says: ${s}`);
+  }
+  assert.ok(!says(C5, "The case needs a failed attach, a `beforeunload` handler and a user activation of the page; its limit is a tab of no scope that stays open until someone answers its dialog"), "C5: the old, wrong limit is gone");
+  // review-17c notes 3 and 4, and the C4 nits (T18).
+  assert.ok(says(C4, "the copy's key removals of the sweep have ended"), "C4: the answer waits for the key removals");
+  assert.ok(says(C4, "after an answer that came later than 10 s (C10, the bound of a `set_scopes` answer), the receiver's new rules are in force"), "C4: a late answer");
+  assert.ok(says(C4, "After an `ok: false` of a failed worker removal (C5)"), "C4: an ok:false of a failed worker removal");
+  assert.ok(says(C11, "at a line whose `scopes` and `lists` are objects, it also drops from its model each tab of a scope that the line gives no list"), "C11: the relay drops the tabs of a scope with no list");
+  assert.ok(says(C11, "A tab that still waits for its `bridge.tabScope` (up to `TAB_SCOPE_WAIT_MS`) has no scope yet, and it stays"), "C11: a popup that waits for its scope stays");
+  // review-17d N4: each orphan-set text that part 1a builds from, and the full windowRuleNote.
+  for (const [name, text, list] of [
+    ["C5", C5, ["a tab of the orphan set (the sweep, below) has no list, so its `http:`/`https:` page closes", "but every host for a tab of the orphan set",
+      "Rule 2 counts only an `ok` in time (C4: the daemon wrote its line)", "its next `allowlist` line whose `scopes` and `lists` are objects",
+      "a removal that fails, or that has not ended within `REMOVAL_WAIT_MS`, makes the answer `ok: false`", "but the queue item does not",
+      "a popup of a tab of the set, and the added tab of a `tabs.onReplaced` of a tab of the set",
+      "as the removed tab of a `tabs.onReplaced`"]],
+    ["C10", C10, ["a tab of the orphan set (C5, the sweep), and the operator's own tabs", "The sweep never closes a tab of no scope, except a tab of the orphan set",
+      "`set_scopes` sweeps again, also the tabs of the orphan set", "The orphan set lives in memory too", "After a worker start such a tab is a plain tab of no scope",
+      "never enters the map (review-17d): it joins the orphan set at once", "gets no key in the copy and no `bridge.tabScope`", "The orphan set spreads as the mark does",
+      "whose id leaves the set", "A popup or a replaced tab whose scope has no list never enters the map: it is in the orphan set from the start",
+      "a window rule that failed or came late (case 2)", "a command that has not answered within `REMOVAL_WAIT_MS` counts as failed, and the fallback runs",
+      "and for the copy's key removals of the sweep", "it writes no entry, the new tab joins the orphan set"]],
+    ["C11", C11, ["At a line whose `scopes` or `lists` is not an object it drops no tab"]],
+    ["C4", C4, ["answered `ok` in time (within the 10 s, so the daemon wrote its `allowlist` line", "answered `ok` in time to a `set_scopes` that holds it",
+      "A key removal that fails, or that has not ended within `REMOVAL_WAIT_MS`"]],
+  ]) {
+    for (const s of list) assert.ok(says(text, s), `${name} says: ${s}`);
+  }
+  assert.ok(!says(C10, "stays in its scope until the next applied `set_scopes`"), "C10: the false limit of a new entry is gone");
+  // review-17e: B1 (rule 2's split and its restart gate), the second layer, N1 to N7, and the mutations that no test caught
+  // (M3, M8, M10, M11, M12, M13, M15, M19, M32, M33).
+  for (const [name, text, list] of [
+    ["C4", C4, ["sends the second after the `ok` in time of the first", "no launch's scope enters a `set_scopes` until the first `set_scopes` of rule 1 is answered `ok` in time",
+      "After an `ok: false` or a late answer to it, the daemon sends that object again, without the launch's scope, until one gets an `ok` in time",
+      "or of a failed key removal (C5, the sweep)", "(C10), makes the answer `ok: false` (C5, the sweep)"]],
+    ["C5", C5, ["A tab leaves the set at its `tabs.onRemoved`", "also at its gate after a daemon restart", "from the first applied `set_scopes` after the worker's start on; it never enters the map",
+      "a new tab of `tabs.create` or `windows.create` whose scope loses its list during the op"]],
+    ["C10", C10, ["and closes in the removal queue by the receiver's close, with the window rule", "leaves it open in no scope, never in the ended scope",
+      "also after the opener's own kept entry of its old scope has expired", "or has a kept entry of one (`TOMBSTONE_MS` after its close), joins the set",
+      "it joins the orphan set and closes at once", "So neither a close that a dialog holds (case 1) nor a window rule that failed or came late (case 2) leaves it in its old scope, and a later session of the same name never gets it",
+      "Before that first applied `set_scopes` the lists are not known yet: such a tab enters the map with its scope", "It also keeps the orphan-set membership of a tab that closed for `TOMBSTONE_MS`",
+      "only after the `Target.closeTarget` command also answered", "a command that has not answered keeps the close pending, also when the fallback failed",
+      "`debugger.attach`, `debugger.sendCommand`, `tabs.update` and `tabs.remove` of a tab of the orphan set", "`debugger.detach`, `tabs.get` and `bridge.release`",
+      "a tab of the orphan set, not an entry of the map", "the end of a sweep item that did not close it, or a `tabs.onReplaced`"]],
+  ]) {
+    for (const s of list) assert.ok(says(text, s), `${name} says: ${s}`);
+  }
+  assert.ok(!says(C10, "also the entry of a popup that closed at once"), "C10: the stale kept-entry phrase is gone (review-17e N2)");
+  // The second layer: an op of a tab of the orphan set gets not an agent tab, for each op that gives a client control of a tab.
+  const orphanOps = bridge.badRequests.filter((v) => v.perScope && v.error === "not an agent tab").map((v) => v.req.op).sort();
+  assert.deepEqual(orphanOps, ["debugger.attach", "debugger.sendCommand", "tabs.remove", "tabs.update"], "a vector for each refused op of an orphan-set tab");
+  assert.equal(flat(bridge.windowRuleNote), flat("C10, removals and the last window (board ab-v16.41): one item of the receiver's removal queue. open: the tab ids of its tabs.query; pending: the tabs with a pending close (a close is pending from the moment its item starts it, for the receiver's close from the moment it joins the tab's chain, for a client's Page.close from its send, until the tab's tabs.onRemoved, or until it fails and the tab stays, after the fallback too and only after the Target.closeTarget command also answered; a late answer counts as any answer); closes: the tabs that the item closes. guard: the receiver first opens an about:blank tab (not active, in no scope) in the window of the item's last tab, because no tab stays open other than the item's tabs and the pending ones."), "the full windowRuleNote");
+  assert.ok(says(bridge.windowRuleNote, "a close is pending from the moment its item starts it"), "the windowRuleNote has the same definition");
+  // review-17b N7 and review-17c note 7: no sentence lets the sweep, the closing rule or a later item skip a tab with a
+  // pending close (also a paraphrase: "skips", "never closes ... again").
+  for (const [name, text] of [["C5", C5], ["C10", C10]]) {
+    for (const sentence of flat(text).split(/(?<=\.)\s+/)) {
+      const skips = /\b(skips?|skipped|neither does|ignores?|ignored|alone|passes over)\b/i.test(sentence) || /\bnever close[sd]?\b[^.]*\bagain\b/i.test(sentence);
+      assert.ok(!(skips && /pending close/i.test(sentence)), `${name}: no rule skips a tab with a pending close: ${sentence}`);
+    }
+  }
+  assert.ok(says(C11, "while Chrome's own `Target.closeTarget` does not"), "C11: today's relay's Target.closeTarget runs beforeunload");
+});
+
+// C5's sweep: at an applied set_scopes (scopes and lists are objects), every tab of the map whose scope has no list,
+// and every tab of the orphan set, whatever its old scope; never another tab of no scope.
+function sweepOf(msg, map, orphans = []) {
+  if (!isObj(msg.scopes) || !isObj(msg.lists)) return { applied: false, closes: [] };
+  const a = applySetScopes(msg);
+  const closes = Object.entries(map).filter(([, scope]) => a.listOf(scope) === null).map(([id]) => Number(id));
+  return { applied: true, closes: [...closes, ...orphans].sort((x, y) => x - y) };
+}
+
+test("the sweep: each vector closes the tabs whose scope has no list, and none at a set_scopes that is not applied", () => {
+  for (const v of scopesV.sweep) {
+    for (const [id, scope] of Object.entries(v.map)) assert.ok(/^\d+$/.test(id) && NAME.test(scope), `${v.note}: ${id} -> ${scope}`);
+    const orphans = Object.keys(v.orphans ?? {}).map(Number), noScope = v.noScope ?? [];
+    for (const t of [...orphans, ...noScope]) assert.ok(!Object.hasOwn(v.map, String(t)), `${v.note}: tab ${t} is in no scope, so not in the map`);
+    for (const old of Object.values(v.orphans ?? {})) assert.ok(NAME.test(old), `${v.note}: the old scope ${old}`);
+    assert.deepEqual(sweepOf(v.in, v.map, orphans), { applied: v.applied, closes: v.closes }, v.note);
+  }
+  const has = (f) => scopesV.sweep.some(f);
+  const scopes = (v) => (isObj(v.in.scopes) ? v.in.scopes : {});
+  assert.ok(has((v) => v.in.default === null && v.closes.some((t) => !Object.hasOwn(scopes(v), v.map[t]))), "a scope that is not named, with default null");
+  assert.ok(has((v) => v.closes.some((t) => scopes(v)[v.map[t]] === null)), "a scope named null");
+  assert.ok(has((v) => v.closes.some((t) => typeof scopes(v)[v.map[t]] === "string" && !Object.hasOwn(v.in.lists, scopes(v)[v.map[t]]))), "a list that is not in lists");
+  assert.ok(has((v) => typeof v.in.default === "string" && Object.values(v.map).some((s) => !Object.hasOwn(scopes(v), s)) && v.closes.length === 0), "a scope that is not named, with a default list, stays");
+  assert.ok(has((v) => !v.applied && Object.hasOwn(v.in, "scopes") && !isObj(v.in.scopes)), "scopes not an object: no sweep");
+  assert.ok(has((v) => !v.applied && Object.hasOwn(v.in, "lists") && !isObj(v.in.lists)), "lists not an object: no sweep");
+  // A refused scopes entry (neither null nor a valid name) applies as null, and its tab closes.
+  assert.ok(has((v) => v.applied && v.closes.some((t) => { const e = scopes(v)[v.map[t]]; return e !== undefined && e !== null && !validName(e); })), "a refused entry follows what applies");
+  // review-17d N5: an orphan-set tab closes (also when its old scope has a list again), a plain tab of no scope stays, and no sweep
+  // at a set_scopes that is not applied closes an orphan-set tab.
+  // review-17e N6: the old scope of the orphan-set tab has a list again in that set_scopes, and the tab still closes.
+  assert.ok(has((v) => v.applied && Object.entries(v.orphans ?? {}).some(([t, old]) => applySetScopes(v.in).listOf(old) !== null && v.closes.includes(Number(t))) && (v.noScope ?? []).length > 0), "an orphan-set tab whose old scope has a list again closes; a plain tab of no scope stays");
+  assert.ok(has((v) => !v.applied && Object.keys(v.orphans ?? {}).length > 0 && v.closes.length === 0), "no sweep of the orphan set at a set_scopes that is not applied");
+  for (const s of ["The sweep (board ab-v16.41", "An **applied** `set_scopes`", "at its rule update, before the sweep's `tabs.query`", "`sweep` in `test/vectors/scopes.json`"]) {
+    assert.ok(says(C5, s), `C5 says: ${s}`);
+  }
+});
+
+test("the orphan-tabs rules are in the text: the kept map, its copy and restore, the kept entries, and the daemon's rules", () => {
+  for (const s of ["The map stays at each disconnect", "`chrome.storage.session`", "`tab:<id>`", "`TRUSTED_CONTEXTS`", "`RESTORE_MAX_MS = 2000`", "`TOMBSTONE_MS = 10000`", "never goes to `chrome.storage.local`", "A new entry after the sweep (board ab-v16.41)", "drops only a write for a tab that no longer exists"]) {
+    assert.ok(says(C10, s), `C10 says: ${s}`);
+  }
+  assert.ok(says(C5, "keeps every session rule, the map and the marks"), "C5: the scope rules stay at a link change");
+  const daemon = C4.slice(C4.indexOf("**The tabs of a session that ended (board ab-v16.41).**"));
+  assert.ok(daemon.length > 100, "C4 has the daemon's rules");
+  for (let i = 1; i <= 6; i++) assert.ok(daemon.includes(`\n${i}. `), `C4: rule ${i}`);
+  for (const s of ["first complete read of its sessions", "a good read of zero sessions sends an empty `scopes`", "splits a merged update", "not at the next `link` up", "`end_scope` stays as it is", "Declined (aw-lead"]) {
+    assert.ok(says(daemon, s), `C4 says: ${s}`);
+  }
+  assert.ok(protocol.includes("The orphan-tabs rules (board task ab-v16.41"), "the intro says which build holds them");
 });
 
 test("the bridge vector names all three sides", () => {
