@@ -1275,33 +1275,43 @@ settings and the allowlist refusals above. The rest of C11 stays.
   (only with the scope's key). With a token, `default` is `null`: a scope that `scopes` does not
   name has no token. The same OS user can read `/proc/<pid>/environ`, so the token guards against
   mistakes and against an injected instruction that only names another scope. It does not guard
-  against a process of that user that reads another process's environment, a transcript or a pane.
+  against a process of that user that reads another process's environment, a token file, a
+  transcript or a pane.
   The agent's own shell commands inherit the key: an `env` writes it into the transcript.
   - The token: 64 lowercase hex digits (32 random bytes; `ws` cuts a `ws+unix:` URL at each `:`, and
     a `#` is an error, so hex is safe). Its hash: SHA-256 of those 64 ASCII characters, in lowercase
     hex.
-  - Where it lives: only in the session's environment, put there by agentwatch at the session's
-    launch, in one variable, `AGENTWATCH_BROWSER_CRED` (its name keeps `KEY`, `SECRET` and `TOKEN`
-    out: Codex's default policy removes such names from the commands that the model runs). Never in
-    an argv, never in the output of `agentwatch browser endpoint` or `agentwatch browser env`, never
-    in a log, and never in a URL that a tool gets as an argument. agent-browser and a script read it
-    from their environment and add it to the URL at the connect call only (agent-browser never puts
-    it into its `Settings.cdpUrl`: `agent-browser status` prints that). The daemon keeps each
-    session's key in a token file under `~/.config/agentwatch/tokens/` (0600 files in 0700 folders,
-    the modes applied again at each write), never in the browser state folder.
+  - Where it lives: only in its token file and in the session's environment, where the launch line
+    puts it at the session's launch, in one variable, `AGENTWATCH_BROWSER_CRED` (its name keeps
+    `KEY`, `SECRET` and `TOKEN` out: Codex's default policy removes such names from the commands
+    that the model runs). Never in an argv, never in the output of `agentwatch browser endpoint` or
+    `agentwatch browser env`, never in a log, and never in a URL that a tool gets as an argument.
+    agent-browser and a script read it from their environment and add it to the URL at the connect
+    call only (agent-browser never puts it into its `Settings.cdpUrl`: `agent-browser status` prints
+    that). The daemon keeps each session's key in a token file under `~/.config/agentwatch/tokens/`
+    (0600 files in 0700 folders, the modes applied again at each write), never in the browser state
+    folder.
   - The session's environment is the agent's process environment. The launch line reads the key
     from the token file. agentwatch never sets the key with `tmux -e` or `set-environment`: both put
     the value into tmux's argv.
-  - Only the daemon reads the token files. No agentwatch command reads a key from them: the CLI
-    cannot tell which session calls (agentwatch #563).
+  - Only the daemon, and the launch line that it writes, read the token files. No agentwatch command
+    reads a key from them: the CLI cannot tell which session calls (agentwatch #563).
   - The operator's answer age-4ks ("env: no", 2026-11-04) stands. Without a key, agentwatch puts no
-    endpoint URL into a session's environment; only `agentwatch browser env` prints it, on request.
-    With a key, agentwatch puts only the key variable into the environment.
-    `PLAYWRIGHT_MCP_CDP_ENDPOINT` with the key goes into it only after the operator answers that
-    question again: it sends each session's Playwright MCP to the signed-in agent browser.
+    endpoint URL into a session's environment; only `agentwatch browser endpoint` and `agentwatch
+    browser env` print it, on request. With a key, agentwatch puts only the key variable into the
+    environment. `PLAYWRIGHT_MCP_CDP_ENDPOINT` with the key goes into it only after the operator
+    answers that question again: it sends each session's Playwright MCP to the signed-in agent
+    browser. (ab-dm6's options do not offer that variable, so a yes there does not answer age-4ks
+    again.)
   - With keys on, `agentwatch browser env` prints the keyless URL and one line that names the key
-    variable (`AGENTWATCH_BROWSER_CRED`), never the key. `agentwatch browser <command>` passes the
-    key variable into agent-browser's environment: that one named variable only.
+    variable, never the key. Both lines are comments, not assignments, so an `eval` of the output
+    sets nothing (it can neither empty `AGENTWATCH_BROWSER_CRED` nor give an MCP the keyless URL,
+    which gets the 403): `# PLAYWRIGHT_MCP_CDP_ENDPOINT without its key: ws+unix://<socket
+    path>:/devtools/browser/<scope>` and `# The key is in AGENTWATCH_BROWSER_CRED: add it to the URL
+    as ?key=<its value>.` `agentwatch browser <command>` passes the key to agent-browser only in
+    that one variable, from its own environment, never in a URL or an argv.
+  - `agentwatch browser endpoint` and `agentwatch browser env` print the scope that agentwatch fixed
+    at the session's launch (below), not the calling session's current name.
   - The URL form: the token goes in the query, `ws+unix://<socket
     path>:/devtools/browser/<scope>?key=<token>`, or in an upgrade header `X-Agentwatch-Key:
     <token>` for a client that can send one. Never in the path: playwright-core 1.61.1 and 1.63.0
@@ -1321,18 +1331,24 @@ settings and the allowlist refusals above. The rest of C11 stays.
   - The order of the checks before the upgrade, with keys on: a request with an `Origin` header gets
     its 403; a path or scope that does not match gets the 404; a request with no key, or with a key
     in both the query and the header, gets 403 `The agent browser needs this session's key. A
-    session that started before the key existed gets one when it starts again.` at once, also while
-    the relay is not ready; then the three "not ready" 503s (`its extension is not connected`, `its
-    extension has not confirmed the allowlist`, `its extension is too old for agent mode`); then a
-    key whose hash is not the scope's entry in `keys` (or no entry, or no `keys`) gets the same 403;
-    then `the allowlist has no list for this scope` gets its 503. So a session that is live before
-    the deploy (it has no key until its restart) gets the 403, fail closed.
+    session that started before the key existed gets one when agentwatch launches it again.` at
+    once, also while the relay is not ready; then the three "not ready" 503s (`its extension is not
+    connected`, `its extension has not confirmed the allowlist`, `its extension is too old for agent
+    mode`); then a scope that the `allowlist` line does not name gets the 503 `the allowlist has no
+    list for this scope` (so a just-launched session, whose scope the daemon has not sent yet, waits
+    as the launch rule below says); last the hash check: a named scope with a wrong key, or with no
+    entry in `keys` (or a line with no `keys`), gets the same 403. The 503 of that step shows
+    whether a scope is named; scopes are session names, which `agentwatch session list` shows
+    anyway. So a session that is live before the deploy (it has no key until its next launch) gets
+    the 403, fail closed.
   - The key's life: the daemon makes a new key at each launch of a session and keeps it over a
     restart of the session's agent. At the session's end it removes the token file and drops the
     scope's entry from `keys`, in the line that drops the scope. A later session of the same name
     never gets an old key. Over a daemon restart the daemon keeps each live session's key in its
     token file (the session's environment still holds it) and sends the hashes again in its next
-    `allowlist` line. A lost token file means that its session gets the 403 until it starts again.
+    `allowlist` line. Only a new launch makes a key: a restart of the session's agent reads the
+    existing token file, and with no token file the agent gets no key, so its session gets the 403
+    until agentwatch launches it again.
   - agentwatch picks each session's scope at its launch and keeps it for the session's life. A
     rename does not change it. No two live sessions share one scope.
   - A launch never waits for the agent browser. The daemon adds the scope to its map before the
