@@ -14,7 +14,7 @@ function setup(handlers = {}, bridge = {}) {
   const setTimer = (fn, ms) => timers.push({ fn, ms });
   const clears = [];
   const changes = [];
-  const main = { ping: async () => ({}), set_allowlist: async () => ({ rules: 1, closed: 0 }), import: async () => ({}), ...handlers };
+  const main = { ping: async () => ({}), set_scopes: async () => ({ rules: 1, closed: 0 }), import: async () => ({}), ...handlers };
   const bridgeHandler = async (req) => {
     if (!Object.hasOwn(bridge, req.op)) throw new Error("unknown op");
     return bridge[req.op](req);
@@ -28,25 +28,25 @@ function setup(handlers = {}, bridge = {}) {
 const sendReq = (port, req, ch) => {
   for (const p of splitParts(req.id, req, PART_BYTES, ch)) port.fireMessage(p);
 };
-const HELLO = { t: "hello", v: 2, version: "0.1.0", channels: ["main", "bridge"] };
+const HELLO = { t: "hello", v: 2, version: "0.1.0", channels: ["main", "bridge"], features: ["scopes"] };
 const resOf = (port) => port.posted.filter((m) => m.t === "res");
 const byId = (list) => list.slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
-test("connect posts hello and a link up posts hello again; the hello names the channels", () => {
+test("connect posts hello and a link up posts hello again; the hello names the channels and the features", () => {
   const { f } = setup();
   assert.deepEqual(f.callsTo("runtime.connectNative")[0], ["sh.agentwatch.browser"]);
   const port = f.ports[0];
-  assert.deepEqual(port.posted, [{ t: "hello", v: 2, version: "0.1.0", channels: ["main", "bridge"] }]);
+  assert.deepEqual(port.posted, [HELLO]);
   port.fireMessage({ t: "link", up: true });
   assert.equal(port.posted.length, 2);
-  assert.deepEqual(port.posted[1], { t: "hello", v: 2, version: "0.1.0", channels: ["main", "bridge"] });
+  assert.deepEqual(port.posted[1], HELLO);
 });
 
-test("parts dispatch set_allowlist once and post res ok", async () => {
+test("parts dispatch set_scopes once and post res ok", async () => {
   const seen = [];
-  const { f } = setup({ set_allowlist: async (r) => (seen.push(r), { rules: 1, closed: 2 }) });
+  const { f } = setup({ set_scopes: async (r) => (seen.push(r), { rules: 1, closed: 2 }) });
   const port = f.ports[0];
-  const req = { t: "req", id: "r1", op: "set_allowlist", domains: ["a.example"], pad: "x".repeat(1500000) };
+  const req = { t: "req", id: "r1", op: "set_scopes", lists: { md: ["a.example"] }, scopes: {}, default: null, pad: "x".repeat(1500000) };
   sendReq(port, req);
   await tick();
   assert.equal(seen.length, 1);
@@ -76,11 +76,11 @@ test("requests run one at a time in arrival order", async () => {
   const gate = new Promise((r) => (release = r));
   const { f } = setup({
     ping: async () => { order.push("ping-start"); await gate; order.push("ping-end"); return {}; },
-    set_allowlist: async () => { order.push("allow"); return {}; },
+    set_scopes: async () => { order.push("allow"); return {}; },
   });
   const port = f.ports[0];
   sendReq(port, { t: "req", id: "a", op: "ping" });
-  sendReq(port, { t: "req", id: "b", op: "set_allowlist", domains: [] });
+  sendReq(port, { t: "req", id: "b", op: "set_scopes", lists: {}, scopes: {}, default: null });
   await tick();
   assert.deepEqual(order, ["ping-start"]);
   release();
@@ -120,7 +120,7 @@ test("a never-settling handler times out at 9 s and the next request runs", asyn
   const { f, timers } = setup({ ping: () => new Promise(() => {}) });
   const port = f.ports[0];
   sendReq(port, { t: "req", id: "a", op: "ping" });
-  sendReq(port, { t: "req", id: "b", op: "set_allowlist", domains: [] });
+  sendReq(port, { t: "req", id: "b", op: "set_scopes", lists: {}, scopes: {}, default: null });
   await tick();
   assert.equal(timers.at(-1).ms, 9000);
   timers.at(-1).fn();

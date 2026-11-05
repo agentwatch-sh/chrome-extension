@@ -1,30 +1,21 @@
+// The DNR rules of the allowlists per scope (contract C5): the scope rules as session rules, the
+// import's rules 6 and 7, rule 5, and no rule 2 or 4.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { allowRule, applyAllowlist, frameRule, headerRule, TRUSTWORTHY } from "../agent/dnr.js";
+import { headerRule, importRules, scopeRules, SessionRules, TRUSTWORTHY } from "../agent/dnr.js";
 import { makeFakeChrome } from "./fake-chrome.mjs";
-
-test("allowRule is C5 rule 2", () => {
-  assert.deepEqual(allowRule(["a.example", "b.example"]), {
-    id: 2,
-    priority: 2,
-    action: { type: "allow" },
-    condition: { requestDomains: ["a.example", "b.example"], resourceTypes: ["main_frame"] },
-  });
-  assert.equal(allowRule([]), null);
-});
 
 const ID = "abcdefghijklmnopabcdefghijklmnop"; // the fake's chrome.runtime.id
 
-test("frameRule and headerRule are C5 rules 4 and 5", () => {
-  // A frame and an <object> or <embed> document of a tab whose top-level page is on the list.
-  assert.deepEqual(frameRule(["a.example", "b.example"]), {
-    id: 4,
-    priority: 2,
-    action: { type: "allow" },
-    condition: { resourceTypes: ["sub_frame", "object"], topDomains: ["a.example", "b.example"] },
-  });
-  // With an empty list no top-level page is on the list: static rule 3 blocks every frame.
-  assert.equal(frameRule([]), null);
+test("the scope rules of one list are C5's: priority 2, main frames by requestDomains and frames by topDomains, the tabIds of its tabs", () => {
+  assert.deepEqual(scopeRules(100, ["a.example", "b.example"], [7, 9]), [
+    { id: 100, priority: 2, action: { type: "allow" }, condition: { requestDomains: ["a.example", "b.example"], resourceTypes: ["main_frame"], tabIds: [7, 9] } },
+    { id: 101, priority: 2, action: { type: "allow" }, condition: { topDomains: ["a.example", "b.example"], resourceTypes: ["sub_frame", "object"], tabIds: [7, 9] } },
+  ]);
+  assert.deepEqual(importRules("a.example", 31), [
+    { id: 6, priority: 2, action: { type: "allow" }, condition: { requestDomains: ["a.example"], resourceTypes: ["main_frame"], tabIds: [31] } },
+    { id: 7, priority: 2, action: { type: "allow" }, condition: { topDomains: ["a.example"], resourceTypes: ["sub_frame", "object"], tabIds: [31] } },
+  ]);
   assert.deepEqual(headerRule(ID), {
     id: 5,
     priority: 3,
@@ -32,7 +23,7 @@ test("frameRule and headerRule are C5 rules 4 and 5", () => {
     condition: { resourceTypes: ["main_frame"], initiatorDomains: [ID], regexFilter: TRUSTWORTHY },
   });
   // Chrome applies a modifyHeaders rule only above the priority of every allow rule that matches.
-  assert.ok(headerRule(ID).priority > allowRule(["a.example"]).priority);
+  assert.ok(headerRule(ID).priority > scopeRules(100, ["a.example"], [1])[0].priority);
 });
 
 // Chrome sends Sec-Fetch-* only to a potentially trustworthy URL; the rule
@@ -49,135 +40,90 @@ test("the header rule's regexFilter covers the potentially trustworthy URLs only
   }
 });
 
-test("applyAllowlist updates the rule and closes uncovered tabs", async () => {
+// A model as the receiver gives it: list name -> {entries, tabIds}.
+function rulesWith(model) {
   const f = makeFakeChrome();
-  f.setTabs([
-    { id: 1, windowId: 1, url: "https://x.a.example/p" },
-    { id: 2, windowId: 1, url: "https://a.example/" },
-    { id: 3, windowId: 1, url: "https://c.example/" },
-    { id: 4, windowId: 1, url: "chrome://settings" },
-    { id: 5, windowId: 1, url: "about:blank", pendingUrl: "https://c.example/new" },
-  ]);
-  const r = await applyAllowlist(f.chrome, ["a.example", "b.example"]);
-  assert.deepEqual(r, { rules: 1, closed: 2, refused: 0 });
-  // The three dynamic rules change in one call.
-  assert.deepEqual(f.callsTo("declarativeNetRequest.updateDynamicRules"), [[{
-    removeRuleIds: [2, 4, 5],
-    addRules: [allowRule(["a.example", "b.example"]), frameRule(["a.example", "b.example"]), headerRule(ID)],
-  }]]);
-  assert.deepEqual(f.callsTo("tabs.remove").map((a) => a[0]).sort(), [3, 5]);
-  assert.equal(f.callsTo("tabs.create").length, 0);
+  const m = { current: model };
+  const rules = new SessionRules(f.chrome, () => new Map(Object.entries(m.current)));
+  const session = () => f.sessionRules_.map((r) => [r.id, r.condition.requestDomains ?? r.condition.topDomains, r.condition.tabIds]);
+  return { f, m, rules, session, updates: () => f.callsTo("declarativeNetRequest.updateSessionRules").map(([d]) => d) };
+}
+
+test("the worker's start removes dynamic rules 2 and 4 and every session rule; set_scopes writes rule 5 with the removal of 2 and 4", async () => {
+  const { f, rules } = rulesWith({});
+  f.sessionRules_ = [{ id: 6 }, { id: 8 }, { id: 100 }, { id: 101 }];
+  await rules.start();
+  assert.deepEqual(f.callsTo("declarativeNetRequest.updateDynamicRules"), [[{ removeRuleIds: [2, 4] }]]);
+  assert.deepEqual(f.callsTo("declarativeNetRequest.updateSessionRules"), [[{ removeRuleIds: [6, 8, 100, 101] }]]);
+  assert.deepEqual(f.sessionRules_, []);
+  await rules.writeHeader();
+  assert.deepEqual(f.callsTo("declarativeNetRequest.updateDynamicRules")[1], [{ removeRuleIds: [2, 4, 5], addRules: [headerRule(ID)] }]);
 });
 
-test("an empty list adds no allow rule", async () => {
-  const f = makeFakeChrome();
-  const r = await applyAllowlist(f.chrome, []);
-  assert.deepEqual(r, { rules: 0, closed: 0, refused: 0 });
-  assert.deepEqual(f.callsTo("declarativeNetRequest.updateDynamicRules")[0][0], { removeRuleIds: [2, 4, 5], addRules: [headerRule(ID)] });
+test("a full replace: two rules for each list with an entry and an open tab, ids from 100, in one call", async () => {
+  const { m, rules, session, updates } = rulesWith({
+    md: { entries: ["a.example"], tabIds: [7, 8] },
+    vedlo: { entries: ["v.example"], tabIds: [9] },
+    empty: { entries: [], tabIds: [10] }, // an empty list has no rule: its tabs can open about:blank only
+    unused: { entries: ["u.example"], tabIds: [] },
+  });
+  assert.equal(await rules.replaceAll(), 4);
+  assert.deepEqual(session(), [[100, ["a.example"], [7, 8]], [101, ["a.example"], [7, 8]], [102, ["v.example"], [9]], [103, ["v.example"], [9]]]);
+  // The next one replaces every scope rule in one call.
+  m.current = { vedlo: { entries: ["v.example", "w.example"], tabIds: [9] } };
+  assert.equal(await rules.replaceAll(), 2);
+  assert.deepEqual(updates().at(-1).removeRuleIds, [100, 101, 102, 103]);
+  assert.deepEqual(session(), [[100, ["v.example", "w.example"], [9]], [101, ["v.example", "w.example"], [9]]]);
 });
 
-test("about:blank opens before the last tab of a window closes", async () => {
-  const f = makeFakeChrome();
-  f.setTabs([
-    { id: 1, windowId: 7, url: "https://c.example/" },
-    { id: 2, windowId: 8, url: "https://c.example/" },
-    { id: 3, windowId: 8, url: "https://a.example/" },
-  ]);
-  const r = await applyAllowlist(f.chrome, ["a.example"]);
-  assert.deepEqual(r, { rules: 1, closed: 2, refused: 0 });
-  assert.deepEqual(f.callsTo("tabs.create"), [[{ windowId: 7, url: "about:blank", active: false }]]);
-  const order = f.calls.map(([p]) => p);
-  assert.ok(order.indexOf("tabs.create") < order.indexOf("tabs.remove"));
+test("a tab that gets or loses a scope replaces only its list's two rules; a new list takes free ids", async () => {
+  const { m, rules, session, updates } = rulesWith({ md: { entries: ["a.example"], tabIds: [7] }, vedlo: { entries: ["v.example"], tabIds: [9] } });
+  await rules.replaceAll();
+  m.current.md = { entries: ["a.example"], tabIds: [7, 8] };
+  await rules.replaceLists(["md"]);
+  assert.deepEqual(updates().at(-1), { removeRuleIds: [100, 101], addRules: scopeRules(100, ["a.example"], [7, 8]) });
+  // md loses its last tab: its rules go; vedlo keeps its own.
+  m.current.md = { entries: ["a.example"], tabIds: [] };
+  await rules.replaceLists(["md"]);
+  assert.deepEqual(updates().at(-1), { removeRuleIds: [100, 101], addRules: [] });
+  assert.deepEqual(session().map(([id]) => id), [102, 103]);
+  m.current.other = { entries: ["o.example"], tabIds: [11] };
+  await rules.replaceLists(["other", null]);
+  assert.deepEqual(session().map(([id]) => id), [102, 103, 100, 101], "the lowest free pair");
+  const calls = updates().length;
+  await rules.replaceLists([null, "nolist"]);
+  assert.equal(updates().length, calls, "nothing to change: no call");
 });
 
-test("chrome:// tabs are never touched, even alone in a window", async () => {
-  const f = makeFakeChrome();
-  f.setTabs([{ id: 1, windowId: 1, url: "chrome://newtab/" }]);
-  const r = await applyAllowlist(f.chrome, ["a.example"]);
-  assert.deepEqual(r, { rules: 1, closed: 0, refused: 0 });
-  assert.equal(f.callsTo("tabs.remove").length, 0);
-});
-
-test("invalid entries are refused and counted; the valid ones apply, never an older wider rule", async () => {
-  for (const bad of ["EVIL.example", "https://x.example", "nodot", 5, null, "a.example."]) {
-    const f = makeFakeChrome();
-    f.setTabs([
-      { id: 1, windowId: 1, url: "https://a.example/" },
-      { id: 2, windowId: 1, url: "https://evil.example/" },
-    ]);
-    const r = await applyAllowlist(f.chrome, ["a.example", bad]);
-    assert.deepEqual(r, { rules: 1, closed: 1, refused: 1 }, String(bad));
-    const [[update]] = f.callsTo("declarativeNetRequest.updateDynamicRules");
-    assert.deepEqual(update, { removeRuleIds: [2, 4, 5], addRules: [allowRule(["a.example"]), frameRule(["a.example"]), headerRule(ID)] });
-    assert.deepEqual(f.callsTo("tabs.remove").map((a) => a[0]), [2]);
-    assert.deepEqual(Object.keys(r), ["rules", "closed", "refused"]); // no entry is echoed
-  }
-  // Only invalid entries: the old rule goes, and no new one comes.
-  const f = makeFakeChrome();
-  const r = await applyAllowlist(f.chrome, ["EVIL.example", "x"]);
-  assert.deepEqual(r, { rules: 0, closed: 0, refused: 2 });
-  assert.deepEqual(f.callsTo("declarativeNetRequest.updateDynamicRules")[0][0], { removeRuleIds: [2, 4, 5], addRules: [headerRule(ID)] });
-  // A list that is not an array blocks everything.
-  const g = makeFakeChrome();
-  g.setTabs([{ id: 1, windowId: 1, url: "https://a.example/" }, { id: 2, windowId: 1, url: "chrome://newtab/" }]);
-  assert.deepEqual(await applyAllowlist(g.chrome, "a.example"), { rules: 0, closed: 1, refused: 1 });
-  assert.deepEqual(g.callsTo("declarativeNetRequest.updateDynamicRules")[0][0], { removeRuleIds: [2, 4, 5], addRules: [headerRule(ID)] });
-});
-
-test("a tab already gone is not an error and is not counted", async () => {
-  const f = makeFakeChrome();
-  f.setTabs([
-    { id: 1, windowId: 1, url: "https://c.example/" },
-    { id: 2, windowId: 1, url: "https://d.example/" },
-    { id: 3, windowId: 1, url: "https://a.example/" },
-  ]);
-  f.chrome.tabs.remove = async (id) => {
-    if (id === 1) throw new Error("No tab with id: 1.");
+test("a failed update fails closed: a remove-only call takes every scope rule out, and the next change is a full replace", async () => {
+  const { f, m, rules, session, updates } = rulesWith({ md: { entries: ["a.example"], tabIds: [7] }, vedlo: { entries: ["v.example"], tabIds: [9] } });
+  await rules.replaceAll();
+  await rules.addImport("i.example", 31);
+  let fail = true;
+  f.impl["declarativeNetRequest.updateSessionRules"] = async (d) => {
+    if (fail && d.addRules && d.addRules.length > 0) throw new Error("Session rule count exceeded.");
+    f.sessionRules_ = f.sessionRules_.filter((r) => !d.removeRuleIds.includes(r.id)).concat(d.addRules ?? []);
   };
-  const r = await applyAllowlist(f.chrome, ["a.example"]);
-  assert.deepEqual(r, { rules: 1, closed: 1, refused: 0 });
+  m.current.md = { entries: ["a.example"], tabIds: [7, 8] };
+  await assert.rejects(rules.replaceLists(["md"]), /Session rule count exceeded/);
+  assert.deepEqual(updates().at(-1), { removeRuleIds: [100, 101, 102, 103] }, "the remove-only call");
+  assert.deepEqual(session().map(([id]) => id), [6, 7], "every tab of every scope is blocked; the import's rules stay");
+  fail = false;
+  await rules.replaceLists(["md"]);
+  assert.deepEqual(session().map(([id]) => id), [6, 7, 100, 101, 102, 103], "a full replace from the map");
+  // The import's rules go by their own call.
+  await rules.removeImport();
+  assert.deepEqual(updates().at(-1), { removeRuleIds: [6, 7] });
 });
 
-// I1 (measured live: a removed host's service worker answered a link to it,
-// past DNR): every service worker goes whenever the list loses an entry.
-test("a shrinking list removes every service worker before the tabs close; a growing one does not", async () => {
-  const f = makeFakeChrome();
-  f.setTabs([{ id: 1, windowId: 1, url: "https://a.example/" }, { id: 2, windowId: 1, url: "https://c.example/" }]);
-  const removals = () => f.callsTo("browsingData.remove");
-  // The first call after a worker start counts as a shrink.
-  await applyAllowlist(f.chrome, ["a.example", "b.example"]);
-  assert.deepEqual(removals(), [[{}, { serviceWorkers: true }]]);
-  const order = f.calls.map(([p]) => p).filter((p) => ["declarativeNetRequest.updateDynamicRules", "browsingData.remove", "tabs.remove"].includes(p));
-  assert.deepEqual(order, ["declarativeNetRequest.updateDynamicRules", "browsingData.remove", "tabs.remove"]);
-  // Same list, a longer list: no removal.
-  await applyAllowlist(f.chrome, ["a.example", "b.example"]);
-  await applyAllowlist(f.chrome, ["a.example", "b.example", "d.example"]);
-  assert.equal(removals().length, 1);
-  // An entry gone (also one replaced by a wider entry, or by an invalid one): removal.
-  await applyAllowlist(f.chrome, ["a.example", "d.example"]);
-  assert.equal(removals().length, 2);
-  await applyAllowlist(f.chrome, ["a.example", "d.example", "BAD"]);
-  assert.equal(removals().length, 2);
-  await applyAllowlist(f.chrome, ["example", "a.example"]);
-  assert.equal(removals().length, 3);
-  // Another worker start (another chrome object) starts with a removal again.
-  const g = makeFakeChrome();
-  await applyAllowlist(g.chrome, ["a.example"]);
-  assert.equal(g.callsTo("browsingData.remove").length, 1);
-});
-
-test("a failed service worker removal still closes the tabs, fails the call, and is tried again", async () => {
-  const f = makeFakeChrome();
-  f.setTabs([{ id: 1, windowId: 1, url: "https://a.example/" }, { id: 2, windowId: 1, url: "https://c.example/" }]);
-  f.impl["browsingData.remove"] = async () => { throw new Error("no"); };
-  await assert.rejects(applyAllowlist(f.chrome, ["a.example"]), (e) => e.message === "service worker removal failed");
-  assert.deepEqual(f.callsTo("tabs.remove").map((a) => a[0]), [2]);
-  assert.equal(f.callsTo("declarativeNetRequest.updateDynamicRules").length, 1);
-  // The next call, even one that only grows the list, removes again.
-  delete f.impl["browsingData.remove"];
-  const r = await applyAllowlist(f.chrome, ["a.example", "b.example"]);
-  assert.equal(f.callsTo("browsingData.remove").length, 2);
-  assert.equal(r.rules, 1);
-  await applyAllowlist(f.chrome, ["a.example", "b.example", "e.example"]);
-  assert.equal(f.callsTo("browsingData.remove").length, 2);
+test("a start whose removal failed: the next full replace removes the rules that a worker before it left", async () => {
+  const { f, rules, session } = rulesWith({ md: { entries: ["a.example"], tabIds: [7] } });
+  f.sessionRules_ = [{ id: 100, condition: {} }, { id: 101, condition: {} }, { id: 104, condition: {} }];
+  f.impl["declarativeNetRequest.getSessionRules"] = async () => {
+    throw new Error("not yet");
+  };
+  await rules.start();
+  delete f.impl["declarativeNetRequest.getSessionRules"];
+  assert.equal(await rules.replaceAll(), 2);
+  assert.deepEqual(session(), [[100, ["a.example"], [7]], [101, ["a.example"], [7]]]);
 });

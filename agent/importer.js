@@ -6,19 +6,31 @@
 //
 // A failed step rejects with the step's name only; no error text and no
 // errors entry ever holds a cookie value or a storage value.
+//
+// The import's rules (C5 session rules 6 and 7) allow its domain in the
+// restore tab, whatever the lists hold, so the restore page and the site's
+// own page load also for a domain on no list. They hold from the restore
+// tab's creation until its first main-frame commit (or error) after the last
+// step, at most RULES_END_MS later, and they go in every failure cleanup;
+// the import ends only after they are gone. Every close of the import (the
+// tabs of the origin, the restore tab) runs in the removal queue, by the
+// receiver's close and with its window rule (removals.js).
 import { toSetDetails, toRemoveDetails, inScope, dedupe } from "./lib/cookies.js";
 import { normalizeEntry, covers } from "./lib/domains.js";
 import { replacePageState } from "./page-state.js";
-import { closeTabs, tabUrl } from "./tabs.js";
-import { attachments } from "./attach.js";
+import { tabUrl } from "./tabs.js";
+import { receiver } from "./receiver.js";
 
-// The link answers "timeout" at 115 s. Steps share 100 s, and each of the two
-// cleanup calls gets at most 4 s, so an import always ends before 110 s.
-// Each step has 20 s, except the page's write, which has 60 s.
+// The link answers "timeout" at 115 s. Steps share 100 s; then the wait for
+// the restore tab's commit and the rules' end get at most 4 s each, and in a
+// failure each of the three cleanup calls (detach, close, the rules' end)
+// gets at most 4 s, so an import always ends before 112 s. Each step has
+// 20 s, except the page's write, which has 60 s.
 const STEP_MS = 20000;
 const WRITE_MS = 60000;
 const IMPORT_MS = 100000;
 const CLEANUP_MS = 4000;
+const RULES_END_MS = 4000;
 
 const RESTORE_HEADERS = [
   { name: "Content-Type", value: "text/html; charset=utf-8" },
@@ -151,8 +163,9 @@ async function runImport(chrome, state, opts) {
   // The restore tab is never a bridge tab (C10): attach.js knows it from
   // when its id is known until the import ends. From before tabs.create until
   // then, a flag makes the eager attach of a new tab wait (known clears it).
-  const att = attachments(chrome);
-  const ctx = { tabId: null, tabPending: null, attached: false, listeners: [], known: () => {} };
+  const r = receiver(chrome);
+  const att = r.att;
+  const ctx = { tabId: null, tabPending: null, attached: false, ruled: false, listeners: [], known: () => {} };
   const listen = (event, fn) => {
     event.addListener(fn);
     ctx.listeners.push([event, fn]);
@@ -185,24 +198,37 @@ async function runImport(chrome, state, opts) {
   };
 
   // Best effort: errors are ignored, and a call that hangs is left behind.
-  const bounded = (fn) => {
+  // True when fn ended in time with no error.
+  const bounded = (fn, ms = CLEANUP_MS) => {
     let handle;
     const limit = new Promise((resolve) => {
-      handle = setTimer(resolve, CLEANUP_MS);
+      handle = setTimer(() => resolve(false), ms);
     });
-    const work = Promise.resolve().then(fn).catch(() => {});
+    const work = Promise.resolve().then(fn).then(() => true, () => false);
     return Promise.race([work, limit]).finally(() => clearTimer(handle));
+  };
+  // The receiver's close of the restore tab, in the removal queue.
+  const closeTab = (tabId) => r.removals.closeOwn({ ids: [tabId] });
+  // The end of the import's rules; a failure fails the import (its tab then closes).
+  const endRules = async () => {
+    ctx.ruled = false;
+    if (!(await bounded(() => r.rules.removeImport()))) throw new Error("end rules");
   };
 
   try {
     // Tabs of the origin hold the state being replaced (an open IndexedDB
     // connection blocks its deletion). They close before the cookie swap, so
     // no page of the origin can write a cookie between the swap and the close.
-    const tabsClosed = await step("close tabs", () =>
-      closeTabs(chrome, (t) => {
-        const u = tabUrl(t);
-        return u !== null && u.origin === state.origin;
-      }));
+    const tabsClosed = await step("close tabs", async () => {
+      const done = await r.removals.closeOwn({
+        select: (tabs) => tabs.filter((t) => {
+          const u = tabUrl(t);
+          return u !== null && u.origin === state.origin;
+        }).map((t) => t.id),
+      });
+      if (done.error) throw done.error;
+      return done.closed.length;
+    });
 
     const cookies = await step("cookies", (signal) => replaceCookies(chrome, state, signal));
 
@@ -221,6 +247,12 @@ async function runImport(chrome, state, opts) {
       }
     });
     const target = { tabId };
+
+    // The import's rules, before the restore page's navigation.
+    await step("rules", async () => {
+      ctx.ruled = true;
+      await r.rules.addImport(state.domain, tabId);
+    });
 
     await step("attach", () => att.attachRestore(tabId));
     ctx.attached = true;
@@ -299,8 +331,21 @@ async function runImport(chrome, state, opts) {
       ctx.attached = false;
     });
 
+    // The rules end at the restore tab's first main-frame commit or error
+    // after the last step (not matched to state.url: a redirect commits
+    // another URL), at most RULES_END_MS after it. The navigation starts in a
+    // timer after the script returns, so the listener comes first.
+    let committed;
+    const commit = new Promise((resolve) => (committed = resolve));
+    const mainFrame = (d) => {
+      if (d && d.tabId === tabId && d.frameId === 0) committed();
+    };
+    listen(chrome.webNavigation.onCommitted, mainFrame);
+    listen(chrome.webNavigation.onErrorOccurred, mainFrame);
     await step("navigate", () =>
       chrome.scripting.executeScript({ target: { tabId }, func: leaveRestorePage, args: [state.url] }));
+    await bounded(() => commit, RULES_END_MS);
+    await endRules();
 
     return {
       cookies_removed: cookies.removed,
@@ -315,16 +360,18 @@ async function runImport(chrome, state, opts) {
     };
   } catch (e) {
     // e is always an Error with a step's name: every statement that can throw
-    // runs in a step, and a page that is not the restore page fails "restore page".
+    // runs in a step (or is endRules), and a page that is not the restore
+    // page fails "restore page".
     if (ctx.attached) await bounded(() => att.detachRestore(ctx.tabId));
     if (ctx.tabId !== null) {
-      await bounded(() => chrome.tabs.remove(ctx.tabId));
+      await bounded(() => closeTab(ctx.tabId));
     } else if (ctx.tabPending) {
       // The tab came after its step's deadline: close it when it comes.
       Promise.resolve(ctx.tabPending)
-        .then((tab) => (tab && typeof tab.id === "number" ? chrome.tabs.remove(tab.id) : null))
+        .then((tab) => (tab && typeof tab.id === "number" ? closeTab(tab.id) : null))
         .catch(() => {});
     }
+    if (ctx.ruled) await bounded(() => r.rules.removeImport());
     throw e;
   } finally {
     ctx.known(); // a tabs.create that passed its deadline

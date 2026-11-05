@@ -707,7 +707,8 @@ test("the command packs a copy of agent/ into <out>/agent.crx with the key from 
     assert.equal(r.status, 0, r.stderr);
     const id = extensionId(der.toString("base64"));
     assert.match(r.stdout, new RegExp(`ID ${id}`));
-    assert.match(r.stdout, /version 0\.2\.0/);
+    const version = JSON.parse(readFileSync(join(src, "manifest.json"), "utf8")).version;
+    assert.ok(r.stdout.includes(`version ${version}\n`), "the version of the copy's manifest");
     assert.deepEqual(readdirSync(out), ["agent.crx"], "only the CRX: no key, no temp file");
     const crx = readCrx(readFileSync(join(out, "agent.crx")));
     assert.ok(crx.publicKey.equals(der));
