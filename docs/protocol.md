@@ -316,7 +316,7 @@ above. The entry rules (normalization, refusal) stay.
   main-frame `webNavigation.onBeforeNavigate` and `webNavigation.onCommitted` of an `http:`/`https:`
   URL whose host the tab's list does not cover (for a tab of no scope: the union of the lists; for
   the restore tab: its `domain`), the receiver sends the tab to `about:blank` (`tabs.update`) and
-  sends `blocked`. A page's own navigation was stopped before its commit 15 of 15; a page that commits
+  sends `blocked`. A page's own navigation was stopped before its commit 10 of 10; a page that commits
   runs its scripts until the receiver acts (measured: the tab was at `about:blank` 50 to 75 ms after
   the navigation started). The relay refuses a client's
   navigation off the list itself (C11's target).
