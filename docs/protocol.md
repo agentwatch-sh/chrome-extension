@@ -17,16 +17,27 @@ move only in an agentwatch tip, so a chrome-extension merge alone never reaches 
 The per-scope allowlists (board task ab-v16.23; the design: agent-browser
 `docs/superpowers/specs/2026-11-04-per-scope-allowlist-design.md`) are the contract in C4, C5, C6,
 C10 and C11 since board task ab-v16.30. This file is the master over that design too: where the two
-differ (for example the key's 403 text, or a count in `refused`), this file holds. Each side builds
-the rules in a part of the design's section 12: the receiver in parts 1a to 1d (boards ab-v16.31 to
-ab-v16.34), the relay in part 2 (ab-v16.35 and ab-v16.36), agentwatch in part 3 (aw-lead). Until its
+differ (for example the session's 403 text, or a count in `refused`), this file holds. Each side
+builds the rules in a part of the design's section 12: the receiver in parts 1a to 1d (boards
+ab-v16.31 to ab-v16.34), the relay in part 2 (ab-v16.35, and ab-v16.51 for the peer check, which
+replaces ab-v16.36), agentwatch in part 3 (aw-lead). Until its
 part merges, a side still does what this file said before ab-v16.30 (main `27543ce`:
 `set_allowlist`, one list for the whole agent browser), and this repository's tests run the shared
 vectors that the receiver does not meet yet as `todo` tests. There
 is no backward compatibility: agentwatch pins both repositories and moves them at once, and it
 moves `CHROME_EXTENSION_COMMIT` to a commit with part 1a only together with its part 3 (aw-lead,
-mail md2ae63e). The operator's choices of the design's section 13 that are still open (ab-dm6:
-choice 1, the scope's key; choice 3, the operator's own tabs) change only the rules that name them.
+mail md2ae63e). The operator answered the design's choice 1 in ab-dm6 with no key system: the peer
+check (below) takes the place of the per-scope key. Choice 3 (the operator's own tabs) changes only
+the rules that name it.
+
+The peer check (board task ab-v16.50; the design: agent-browser
+`docs/superpowers/specs/2026-11-05-peer-admission-design.md`, board ab-v16.47, sections 9 and 12) is
+a part of the per-scope build. With it the relay admits a connection of a scope only from a process
+of the agentwatch session of that scope: the relay reads the connecting process from the kernel and
+walks from it to the session's root, its tmux pane's process. The daemon's `allowlist` line carries
+each session's roots (C10). There is no key, no token file and no secret in a URL. The receiver
+does not change (C4). The relay builds it in board ab-v16.51, agentwatch in its part 3 (aw-lead).
+Until the relay starts with `--peer-check`, the scope stays advisory (C11, the scope's session).
 
 The orphan-tabs rules (board task ab-v16.41; the design: agent-browser
 `docs/superpowers/specs/2026-11-05-orphan-agent-tabs-design.md`, board ab-v16.39) are a part of the
@@ -283,17 +294,17 @@ held one list for the whole agent browser. The request is above. Its fields and 
   C5 that `set_scopes` writes: the scope rules, and with choice 3 the marked-tab rule. `closed`
   counts the tabs that closed before the answer: a close that did not end in its item's wait (C10,
   removals and the last window) does not count. The answer can come later than the 10 s (C10, the
-  bound of a `set_scopes` answer); the daemon then sends the object again, as above.
+  bound of a `set_scopes` answer); the daemon then sends its current object again, as above.
 - The daemon names a session's scope in `scopes` before it gives the session its endpoint:
   `agentwatch browser endpoint` and `agentwatch browser env` wait for the receiver's answer and the
   `allowlist` line that name the scope (C11). Else the session could connect in the moment before
   and get the `default` list, which can be another repo's list. The URL is easy to guess, so with a
   `default` list any scope that `scopes` does not name gets it. An endpoint URL in the session's
-  environment at its launch (only when the operator allowed it: C11, the scope's key) cannot wait,
-  because a launch never waits for the agent browser: the daemon adds the scope to its map before
-  the launch. With `default` `null`, such a session gets the no-list 503 (C11) until an `allowlist`
-  line names its scope, and its agent connects again. A limit: with a `default` list, it can
-  connect in that moment and get the `default` list.
+  environment at its launch (only when the operator allowed it: age-4ks, C11, the scope's session)
+  cannot wait, because a launch never waits for the agent browser: the daemon adds the scope to its
+  map before the launch. With `default` `null`, such a session gets the no-list 503 (C11) until an
+  `allowlist` line names its scope, and its agent connects again. A limit: with a `default` list,
+  it can connect in that moment and get the `default` list.
 - At a session's end the daemon writes `end_scope` to the relay (C10) and drops the scope from
   `scopes` in its next `set_scopes` (agentwatch stage 4, B5). So `scopes` holds only the live
   sessions, and the receiver's map cannot grow without bound. With `default` `null` (the design's
@@ -303,7 +314,10 @@ held one list for the whole agent browser. The request is above. Its fields and 
   it drops the `null` entry by rule 3 below. aw-lead prefers choice 5 a, which needs no `null`
   entry (mail mcbd5352), and builds the rest of 5 b only if the operator takes 5 b. The daemon can
   also write an `end_scope` for each alias of the ended session; the relay does nothing for a name
-  that is no scope (C10, C11).
+  that is no scope (C10, C11). With the peer check, the `allowlist` line that drops the scope (with
+  5 b: that names it `null`) also drops its roots, so no process of the ended session connects
+  again, with any scope (C11, the scope's session: the roots' life). `set_scopes` carries no roots:
+  the receiver never sees a pid.
 - The rollout. The hello's `"features":["scopes"]` says that the receiver speaks `set_scopes`. When
   one side meets the other side's old form, it fails closed, in the named way:
   - A new daemon and an old receiver (its latest hello has no `"scopes"` in `features`): the daemon
@@ -366,6 +380,11 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
      of that moment), still without a launch's scope and without the names of the file, until one
      gets an `ok` in time. After a link drop that object is the first `set_scopes` of the next
      connection.
+   - A freed name (review-18 note 3): when a prune frees the name of a live session (a new X that
+     launched while X was in the file), or when the gate's first `ok` in time lets in the scope of a
+     launch or a name of the file that a live session has, the daemon sends its next `set_scopes` at
+     once, with that scope. Else that session waits with the no-list 503 (C11) until the next change
+     of a list or a session.
    - The failure modes of the file, and their fixes:
      - A lost write: a daemon that stops after a session's end and before the write forgets the
        name. So the daemon writes the name first: before its `end_scope`, before its next
@@ -381,8 +400,16 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
        so the receiver's map holds no old tab.
      - A file that the daemon cannot read or parse at its start (a disk error, an edit by hand; a
        missing file holds no name): the daemon counts the name of every live session as a name of
-       the file. The tabs of every live session then close once (fail closed), and the daemon
-       writes the file again.
+       the file, shows the error on the Browser page, and writes the file again with those names
+       before its first `set_scopes` (review-18 note 2). The tabs of every live session then close
+       once (fail closed).
+     - A write that fails while the daemon runs (a full disk, a folder that it cannot write;
+       review-18 note 1): the daemon keeps the name in memory as a name of the file, shows the
+       error on the Browser page, and writes the file again at its next change. No launch takes the
+       name until its prune: a stop then loses only a name that no live session has, and rule 1
+       leaves it out. A prune whose write fails is the same: the name stays a name of the file, in
+       memory and in the file, the daemon shows the error, and no launch takes the name until a
+       write without it succeeds.
      - No `ok` in time for a long time (no receiver, or a link that stays down): the file holds
        each name once, so it grows only with the names that end in that time, and the first `ok`
        in time prunes them all.
@@ -736,9 +763,10 @@ first document request of a new tab (below).
   3. The wait: else `bad wait`.
   4. The tab: first `not an agent tab`, then `not attached` (below). So a `debugger.sendCommand`
      of a tab of the orphan set that is not a bridge tab gets `not an agent tab` (vector b42). In
-     the per-scope build the orphan-set check runs again right before the op's `chrome.*` call
-     (the tab checks, below). For `tabs.create` and `windows.create`, the scope: `no list for this
-     scope` (each tab's scope, below).
+     the per-scope build the orphan-set check runs again right before the `chrome.*` call that acts
+     on the tab, with no `await` between the check and the call (the tab checks, below). For
+     `tabs.create` and `windows.create`, the scope: `no list for this scope` (each tab's scope,
+     below).
 - The kinds of args:
   - `id`: an integer of 0 or more (a tab, window or download id).
   - `object`: a JSON object. `string`: a string that is not empty. `boolean`: true or false.
@@ -793,15 +821,17 @@ first document request of a new tab (below).
       tab).
     - The check again before the send (review-17f note 9). The receiver checks a request's tab when
       the request arrives (the order of the checks, above), and it checks the orphan set again right
-      before the op's `chrome.*` call. A request that waited (a `debugger.attach` in the tab's chain
-      of attaches, a `tabs.remove` or a `Page.close` in the removal queue, a `debugger.sendCommand`
-      at the gate of a `Page.close`: removals and the last window, below) and whose tab joined the
-      orphan set while it waited gets `not an agent tab`, and its call never goes to Chrome. The
-      check reads the receiver's memory with no `await`, so the requests keep their order (the
-      order of requests, below). A call that went to Chrome before its tab joined the set runs to
-      its end (what stops a handler, below), and each later request of the tab gets the check. An op
-      of the removal queue gets the check when its item starts: a tab joins the set only at the end
-      of a sweep item (or as a new tab), and one item runs at a time.
+      before the `chrome.*` call that acts on the tab (the call that attaches to it, sends it a
+      command, selects it or closes it; review-18 note 4). A request that waited (a
+      `debugger.attach` in the tab's chain of attaches, a `tabs.remove` or a `Page.close` in the
+      removal queue, a `debugger.sendCommand` at the gate of a `Page.close`: removals and the last
+      window, below) and whose tab joined the orphan set while it waited gets `not an agent tab`, and
+      its call never goes to Chrome. There is no `await` between that check and the call, so the tab
+      cannot join the set between them. The check reads the receiver's memory only, so the requests
+      keep their order (the order of requests, below). A call that went to Chrome before its tab
+      joined the set runs to its end (what stops a handler, below), and each later request of the
+      tab gets the check. An op of the removal queue gets the check when its item starts: a tab joins
+      the set only at the end of a sweep item (or as a new tab), and one item runs at a time.
     - The vectors in `test/vectors/bridge.json`: b41 to b44 (refused), and the request vectors of
       tab 13 with `"perScope": true` (`debugger.detach`, `tabs.get` and `bridge.release`: allowed).
   - `not attached`: `debugger.sendCommand` for a tab that is not a bridge tab. So a command never
@@ -1103,10 +1133,10 @@ hold it; the last bullet gives the numbers and what the relay does about it.
 **The daemon and the relay.**
 
 - The daemon starts the relay with the unit: `agent-browser relay --socket <path>` (C11 gives the
-  path), with `--keys` when keys are on (C11, the scope's key). The relay reads the daemon's lines on
-  its standard input. It writes its requests on its standard output, and its log on its standard
-  error. When its standard input ends, the relay closes every connection, removes its socket and
-  exits. The daemon stops the relay that way when the unit stops.
+  path), with `--peer-check` when the peer check is on (C11, the scope's session). The relay reads
+  the daemon's lines on its standard input. It writes its requests on its standard output, and its
+  log on its standard error. When its standard input ends, the relay closes every connection,
+  removes its socket and exits. The daemon stops the relay that way when the unit stops.
 - The daemon's lines to the relay, in addition to the receiver's `res` and `ev`:
   - `{"t":"link","up":true,"version":"<manifest version>"}`: a receiver is connected, and its hello
     lists `bridge`.
@@ -1115,8 +1145,10 @@ hold it; the last bullet gives the numbers and what the relay does about it.
     (with `"default":null` when there is none): the object of the `set_scopes` that the receiver
     confirmed (an `ok` answer on the current connection). It comes after each such answer. It also
     carries the `"operator":` field when `set_scopes` has one (the relay ignores it), and with the
-    design's choice 1 b `"keys":{"<scope>":"<sha-256 hex of the key>"}` (C11, the scope's key); the
-    receiver never sees the keys. The relay applies C4's rules to the line (C11, the scope's list).
+    peer check `"roots":{"<scope>":[{"pid":<pane pid>,"start":<pane start>}]}`, each live session's
+    roots (C11, the scope's session); the receiver never sees the roots. A root change needs no
+    `set_scopes`: the daemon writes a line with the new roots and the last confirmed object at once
+    (C11, the roots' life). The relay applies C4's rules to the line (C11, the scope's list).
   - `{"t":"end_scope","scope":"<scope>"}`: the agentwatch session of that scope ended. The relay
     closes the scope's connections and removes its tabs (C11). The daemon can also write one for
     each alias of the session; the relay does nothing for a name that is no scope.
@@ -1527,21 +1559,20 @@ vectors: `test/vectors/endpoint.json`.
   `/run/user/<uid>/agentwatch/browser-cdp.sock` on Linux, `~/.cache/agentwatch/run/browser-cdp.sock`
   on the Mac. A path is at most 103 bytes. There is no TCP port.
 - The URL is `ws+unix://<socket path>:/devtools/browser/<scope>`. Playwright's `connectOverCDP` and
-  the Playwright MCP (`PLAYWRIGHT_MCP_CDP_ENDPOINT`) take it as it is (measured). Without keys the
-  URL contains no secret. With keys on (the scope's key, below) a client adds the key to the URL's
-  query at the connect call, or sends it in a header: the URL with its key is a secret.
-- `agentwatch browser endpoint` prints the URL, with the session's scope (below) and no key.
-  Without keys, `agentwatch browser env` prints `PLAYWRIGHT_MCP_CDP_ENDPOINT=<url>`; with keys on it
-  prints two comment lines and no key (the scope's key, below). With `browser.control: false` there
-  is no relay and no socket.
+  the Playwright MCP (`PLAYWRIGHT_MCP_CDP_ENDPOINT`) take it as it is (measured). The URL contains no
+  secret, with or without the peer check (the scope's session, below).
+- `agentwatch browser endpoint` prints the URL, with the session's scope (below).
+  `agentwatch browser env` prints `PLAYWRIGHT_MCP_CDP_ENDPOINT=<url>`, with no comment lines. With
+  `browser.control: false` there is no relay and no socket.
 - A scope matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`. Every agentwatch session name matches it.
   agentwatch picks each session's scope at its launch (the session's name then) and keeps it for
-  the session's life, with or without keys: a rename does not change it, and no two live sessions
-  share one scope. `agentwatch browser endpoint` and `agentwatch browser env` print that scope, not
-  the calling session's current name.
-- Without keys, every process of the daemon's OS user that can open the socket may connect, with
-  any scope, as with `agentwatch browser` today: the scope is advisory (agent-browser #14). With
-  keys on, a connection needs its scope's key (below).
+  the session's life, with or without the peer check: a rename does not change it, and no two live
+  sessions share one scope. `agentwatch browser endpoint` and `agentwatch browser env` print that
+  scope, not the calling session's current name.
+- Without the peer check, every process of the daemon's OS user that can open the socket may
+  connect, with any scope, as with `agentwatch browser` today: the scope is advisory (agent-browser
+  #14). With the peer check, a connection needs its process in the agentwatch session of its scope
+  (the scope's session, below).
 
 **Before the upgrade.** The relay serves only the WebSocket upgrade of
 `GET /devtools/browser/<scope>` (the path: a query does not change it). Its other answers have a
@@ -1549,13 +1580,18 @@ vectors: `test/vectors/endpoint.json`.
 
 - Another path, or a scope that does not match: 404 `Not found. Connect a CDP client to /devtools/browser/<scope>.`
 - A request with an `Origin` header: 403 `A web page cannot connect to the agent browser.`
-- With keys on, a request with no valid key, or with a key that does not match its scope's entry:
-  403 `The agent browser needs this session's key. A session that started before the key existed has no key; only a new session gets one.`
+- With the peer check, a peer that the relay cannot read (a read at the accept fails, gives no pid,
+  or gives a uid other than the relay's; the scope's session, below): 403 `The agent browser cannot tell which program connects, so it refuses the connection.`
+- With the peer check, a peer that is not in the session of its scope (the session check, below):
+  403 `The agent browser admits a connection only from a program of the agentwatch session of its scope. This program (pid <pid>) is not in it: it is in another session, it was started outside agentwatch, or it left the session. If this session started or restarted just now, connect again in a few seconds.`
+  `<pid>` is the peer's pid, as the relay read it at the accept.
 - The relay is not ready: 503 with one of these bodies.
   - 503 `The agent browser is not ready: its extension is not connected.`
   - 503 `The agent browser is not ready: its extension has not confirmed the allowlist.`
   - 503 `The agent browser is not ready: its extension is too old for agent mode.`
-  - 503 `The agent browser is not ready: the allowlist has keys, but the relay was started without --keys.`
+  - 503 `The agent browser is not ready: the allowlist has session roots, but the relay was started without --peer-check.`
+  - 503 `The agent browser is not ready: the relay cannot read the program of a connection.` (the
+    relay's self-test failed: the scope's session, below)
 - A scope with no list: 503 `The agent browser is not ready: the allowlist has no list for this scope.`
 - The relay is ready while the link is up (C10 `link`), an `allowlist` line came after that,
   `bridge.info` answered with `bridge` 1 or more, and the steps of the link up (C10, "The daemon
@@ -1570,30 +1606,39 @@ vectors: `test/vectors/endpoint.json`.
 - The order of the checks. The relay sends the answer of the first check that fails, at once:
   1. A request with an `Origin` header: its 403.
   2. A path or scope that does not match: the 404.
-  3. With keys on, a request with no valid key (the scope's key, below): the key's 403, also while
-     the relay is not ready.
+  3. With the peer check, the peer read (the relay's own read at the accept: the scope's session,
+     below): a relay whose self-test failed gives its 503 (`the relay cannot read the program of a
+     connection`); else a peer that it cannot read gets the peer's 403. Both come at once, also
+     while the relay is not ready.
   4. The relay is not ready, in this order: the link is down (`its extension is not connected`);
      `bridge.info` answered `unknown op` or `bridge` below 1 (`its extension is too old for agent
      mode`); no `allowlist` line came since the link came up (`its extension has not confirmed the
      allowlist`); `bridge.info` has not answered yet, or the steps of the link up are not done
      (`its extension is not connected`); a relay
-     without `--keys` whose last `allowlist` line has a `keys` field (`the allowlist has keys, but
-     the relay was started without --keys`).
-  5. With keys on, a scope that the last `allowlist` line does not name: the no-list 503.
-  6. With keys on, the hash check: a named scope whose `keys` entry does not match the key, or that
-     has no entry in `keys` (also a line with no `keys` field), gets the key's 403.
-  7. A scope with no list: the no-list 503. With keys on, that is a named scope whose entry is
-     `null` (also an entry that applies as `null`, C4) or names a list that is not in `lists`;
-     without keys, also a scope that the line does not name while `default` gives no list.
+     without `--peer-check` whose last `allowlist` line has a `roots` field (`the allowlist has
+     session roots, but the relay was started without --peer-check`).
+  5. With the peer check, a scope that the last `allowlist` line does not name: the no-list 503. A
+     just-launched session connects again.
+  6. With the peer check, the session check (the scope's session, below): the peer is alive, and
+     the walk from it reaches a root of the scope that counts; a walk that stops at any other root
+     refuses. Only when the walk reaches no root, on Linux, may the peer's cgroup count: it must be
+     in the pane's scope of a root of the scope. Else the session's 403.
+  7. A scope with no list: the no-list 503. With the peer check, that is a named scope whose entry
+     is `null` (also an entry that applies as `null`, C4) or names a list that is not in `lists`;
+     without the peer check, also a scope that the line does not name while `default` gives no
+     list.
 
   The relay never holds an upgrade, and no side retries for the client: the client gets the
   answer's text (agent-browser's `src/cdp.ts` passes the body on in its error), and the agent
   connects again. So a just-launched session, whose scope the daemon has not sent yet, gets the
   no-list 503 until an `allowlist` line names its scope. Step 5 shows whether a scope is named. A
   scope is a session's name at its launch, and `agentwatch session list` shows the session names
-  anyway (the same names, unless a session was renamed). A session that is live before the deploy
-  (it has no key) gets the key's 403 at step 3: fail closed. The shared vector: `upgradeChecks` in
-  `test/vectors/endpoint.json`.
+  anyway (the same names, unless a session was renamed). With the peer check too, the relay never
+  asks the daemon during an upgrade: it reads the peer at the accept, and step 6 runs in its event
+  loop (a walk reads at most 33 `stat` files, at about 66 µs for each new pid on taylor: at most
+  about 2.3 ms; an agent is 2 to 4 hops below its pane). A session that is live at the deploy of
+  the peer check gets its root in the daemon's first line after it, like any live session (the
+  roots' life, below). The shared vector: `upgradeChecks` in `test/vectors/endpoint.json`.
 - A client message is at most `MAX_REQUEST` bytes (C10). A longer one closes the connection (code
   1009). A command whose bridge request would be longer gets an error (the refusals, below).
 
@@ -1672,10 +1717,13 @@ vectors: `test/vectors/endpoint.json`.
   still waits for its `bridge.tabScope` (up to `TAB_SCOPE_WAIT_MS`) has no scope yet, and it stays.
   At a line whose `scopes` or `lists` is not an object it drops no tab: the receiver sweeps nothing
   then (C5).
-- With keys on, at each `allowlist` line, the relay closes every connection of a scope that still
-  has a list (the same list or another one) but whose `keys` entry is gone, or holds another hash
-  than at the connection's upgrade (also a line with no `keys` field),
-  with 1008, `The key of this session is no longer valid`. The shared vector: `lineCloses` in
+- With the peer check, at each `allowlist` line, the relay closes every connection of a scope that
+  still has a list (the same list or another one) but whose root that admitted it (its pid and
+  start, by the walk or by its cgroup) is no longer one of the scope's roots that apply (also at a
+  line with no `roots` field), with 1008, `The session of this scope has a new process: connect again.`
+  That happens when the pane respawns (a restart, an account swap, a resume: the roots' life,
+  below). A connection keeps its scope until it closes, the line drops the root that admitted it,
+  or the scope ends: the check runs once, at the upgrade. The shared vector: `lineCloses` in
   `test/vectors/endpoint.json`.
 
 **Where each call goes.** The model answers the calls of its set (two-modes design, section 4.3) on
@@ -2004,101 +2052,215 @@ sections 6 and 8.4):
 **The scope's list (board ab-v16.23).** The relay applies C4's `set_scopes` rules to the `allowlist`
 line (C10), as the receiver applies them to `set_scopes` (the shared vector
 `test/vectors/scopes.json` checks both). A scope's list: the list that its `scopes` entry names,
-when it has an entry (no fall-back when that list is absent), else the `default` list. With keys
-on, a scope that the line does not name has no list, whatever `default` says (it has no key). The
-relay ignores the line's `operator` field. The readiness per scope and the order of the checks are
-under "Before the upgrade", the 1008 closes under "When a connection ends", and the refusals off
-the scope's list under "Refusals".
+when it has an entry (no fall-back when that list is absent), else the `default` list. With the
+peer check, a scope that the line does not name has no list, whatever `default` says: step 5 gives
+it the no-list 503 before the session check. The relay ignores the line's `operator` field. The
+readiness per scope and the order of the checks are under "Before the upgrade", the 1008 closes
+under "When a connection ends", and the refusals off the scope's list under "Refusals".
 
-**The scope's key (the design's choice 1, aw-lead's "key").** Without keys the scope is advisory:
-any process of the daemon's OS user can connect with any scope and get that scope's list. With the
-design's choice 1 b (asked in ab-dm6) keys are on: the relay admits a connection only with its
-scope's key. That changes two rules of "The socket and the URL" above: the URL with its key is a
-secret, and a process of the daemon's OS user may connect only with the scope's key. With keys on,
-`default` is `null`: a scope that `scopes` does not name has no key. The same OS user can read
-`/proc/<pid>/environ`, so the key guards against mistakes and against an injected instruction that
-only names another scope. It does not guard against a process of that user that reads another
-process's environment, a token file, a transcript or a pane. The agent's own shell commands inherit
-the key: an `env` writes it into the transcript.
+**The scope's session (the peer check; board ab-v16.50).** Without the peer check the scope is
+advisory: any process of the daemon's OS user can connect with any scope and get that scope's
+list. With it, the relay admits a connection of a scope only when the process that connected
+belongs to the agentwatch session of that scope. The relay reads that process from the kernel at
+the accept, and walks from it through its parents to the session's root. No key, no token file and
+no environment variable take part, so nothing that a transcript can leak gives access. The design:
+agent-browser `docs/superpowers/specs/2026-11-05-peer-admission-design.md` (board ab-v16.47;
+sections 3 to 6 and 9 to 11, measured on taylor; nothing ran on the Mac). The operator asked for it
+in ab-dm6 ("see if we can solve it without adding a whole new key system") and kept the pane's
+cgroup in ab-6gs.
 
-- The token (the key): 64 lowercase hex digits (32 random bytes; `ws` cuts a `ws+unix:` URL at each
-  `:`, and a `#` is an error, so hex is safe). Its hash: SHA-256 of those 64 ASCII characters, in
-  lowercase hex.
-- Where it lives: only in its token file and in the session's environment, where the launch line
-  puts it at the session's launch, in one variable, `AGENTWATCH_BROWSER_CRED` (its name keeps `KEY`,
-  `SECRET` and `TOKEN` out: Codex's default policy removes such names from the commands that the
-  model runs). Never in an argv, never in the output of `agentwatch browser endpoint` or
-  `agentwatch browser env`, never in a log, and never in a URL that a tool gets as an argument.
-  agent-browser and a script read it from their environment and add it to the URL at the connect
-  call only (agent-browser never puts it into its `Settings.cdpUrl`: `agent-browser status` prints
-  that). The daemon keeps each session's key in a token file under `~/.config/agentwatch/tokens/`
-  (0600 files in 0700 folders, the modes applied again at each write), never in the browser state
-  folder.
-- The session's environment is the agent's process environment. The launch line reads the key from
-  the token file, and so does each line that starts the session's agent again (a restart, an
-  account swap, a Codex resume). agentwatch never sets the key with `tmux -e` or `set-environment`:
-  both put the value into tmux's argv.
-- Only the daemon, and the launch lines that it writes, read the token files. No agentwatch command
-  reads a key from them: the CLI cannot tell which session calls (agentwatch #563).
-- The operator's answer age-4ks ("env: no", 2026-11-04) stands. Without a key, agentwatch puts no
-  endpoint URL into a session's environment; only `agentwatch browser endpoint` and `agentwatch
-  browser env` print it, on request. With a key, agentwatch puts only the key variable into the
-  environment. `PLAYWRIGHT_MCP_CDP_ENDPOINT` with the key goes into it only after the operator
-  answers that question again: it sends each session's Playwright MCP to the signed-in agent
-  browser. (ab-dm6's options do not offer that variable, so a yes there does not answer age-4ks
-  again.)
-- With keys on, `agentwatch browser env` prints the keyless URL and one line that names the key
-  variable, never the key. Both lines are comments, not assignments, so an `eval` of the output
-  sets nothing (it can neither empty `AGENTWATCH_BROWSER_CRED` nor give an MCP the keyless URL,
-  which gets the 403): `# PLAYWRIGHT_MCP_CDP_ENDPOINT without its key: ws+unix://<socket
-  path>:/devtools/browser/<scope>` and `# The key is in AGENTWATCH_BROWSER_CRED. Set
-  PLAYWRIGHT_MCP_CDP_ENDPOINT in the MCP server's environment (never on a command line) to this
-  URL with ?key=, or use agentwatch browser <command>, which passes it for you.` In zsh without the
-  `interactive_comments` option, an `eval` of the output prints an error for each line and still
-  sets nothing (the Mac stage). `agentwatch browser <command>` passes the key to agent-browser only
-  in that one variable, from its own environment, never in a URL or an argv.
-- The URL form: the token goes in the query, `ws+unix://<socket
-  path>:/devtools/browser/<scope>?key=<token>`, or in an upgrade header `X-Agentwatch-Key:
-  <token>` for a client that can send one. Never in the path: playwright-core 1.61.1 and 1.63.0
-  put the full path of a failed `connectOverCDP` into the error (six times for a 503), and the
-  Playwright MCP gives that error to the agent, so it goes into a transcript; a `?key=` query, and
-  the header, reached the relay, and no error held the key (measured by ab-lead's reviewers,
-  review-42e and review-42f). A client that prints the URL itself removes the `key` query first:
-  agent-browser's own errors and logs (its `cdpUrl` `UsageError` prints the full URL today), and
-  agentwatch's logs. No side logs the URL's query or the `X-Agentwatch-Key` header: not the relay,
-  not the daemon, not `agentwatch browser <command>`. A limit: with `DEBUG=pw:channel` (or
-  `pw:*`), playwright-core 1.61.1 and 1.63.0 write the endpoint URL with its `?key=` and the
-  header's value to standard error; clients do not run with that value.
-- A valid key: 64 lowercase hex digits, once, in the `key` query or in the `X-Agentwatch-Key`
-  header. An empty key, a key of another form, a `key` query or an `X-Agentwatch-Key` header that
-  comes more than once, and a key in both the query and the header are no valid key: the key's 403
-  at step 3 (before the upgrade, above). A relay without `--keys` ignores a key in the request.
-- The hash check (step 6): the relay compares the SHA-256 of the request's key with the scope's
-  `keys` entry in constant time (for example `crypto.timingSafeEqual` on the two 32-byte digests).
-- Where the relay learns that keys are on: from its start, `agent-browser relay --socket <path>
-  --keys`, not from an `allowlist` line (the relay drops the line at each link change). The daemon's
-  `allowlist` line then carries `"keys":{"<scope>":"<hash>"}`. With keys on, for a named scope, a
-  line with no `keys` field and a scope with no entry in `keys` both get the key's 403 (step 6). A
-  `keys` that is not an object applies as an empty object, and an entry whose scope does not match
-  the scope pattern, or whose value is not 64 lowercase hex digits, applies as absent. A relay
-  started without `--keys` that gets a line with a `keys` field (any value) applies no list of that
-  line, as if no line had come: it closes the open connections (1008, no list any more) and answers
-  each upgrade with the 503 `the allowlist has keys, but the relay was started without --keys`,
-  until a line without `keys` comes. So a daemon and a relay that disagree fail closed, with a
-  clear text. The shared vector: `lines` in
-  `test/vectors/scopes.json`.
-- The key's life: the daemon makes a new key at each launch of a new session, before it adds the
-  scope to its map, so the first `allowlist` line that names a scope carries its `keys` entry (else
-  step 6 would give the new session the key's 403 in place of the no-list 503 of step 5). It keeps
-  the key over a restart of the session's agent. At the session's end it removes the token file and
-  drops the scope's entry from `keys`, in the line that drops the scope. A later session of the
-  same name never gets an old key. Over a daemon restart the daemon keeps each live session's key in
-  its token file (the session's environment still holds it) and sends the hashes again in its next
-  `allowlist` line. Only a new session gets a key: a restart, an account swap or a Codex resume of
-  the session's agent reads the existing token file, and with no token file the agent gets no key,
-  so its session gets the 403 until the operator starts a new session. A lost token file refuses its
-  session only at the next restart: of the session's agent (its launch line finds no key) or of the
-  daemon (it sends no hash for the scope).
+- Words.
+  - The **peer** of a connection is the process that called `connect()` on the client's side.
+  - A **root** is a pair `(pid, start)`: the pid of a session's tmux pane process and the start time
+    of that process. On Linux `start` is field 22 of `/proc/<pid>/stat` (clock ticks after the
+    boot); on the Mac it is `pbi_start_tvsec * 1000000 + pbi_start_tvusec` of `proc_pidinfo`'s
+    `PROC_PIDTBSDINFO`. A process **matches** a root when its pid and its start time are both the
+    root's. A pid alone never matches: a pid comes back after its process ends (on taylor the pid
+    space wraps in about 5.5 hours at 210 new pids per second; on the Mac `PID_MAX` is 99999).
+  - The **walk** goes from the peer to its parent (field 4 of `/proc/<pid>/stat`; `pbi_ppid` on the
+    Mac), and on.
+  - The **pane's scope** (Linux) is the systemd scope `tmux-spawn-<uuid>.scope` that tmux makes for
+    each new pane when its server can reach the user's D-Bus. A process's cgroup is the `0::` line
+    of `/proc/<pid>/cgroup`. A cgroup is inherited at a fork and stays at a re-parent, so a job that
+    left the tool's shell (`nohup ... &`, `setsid -f`, a double fork) stays in the pane's scope.
+- Where the relay learns that the check is on: from its start, `agent-browser relay --socket <path>
+  --peer-check`, not from an `allowlist` line (the relay drops the line at each link change).
+- The self-test. With `--peer-check` only, at its start and before its endpoint socket listens, the
+  relay tests its peer reader:
+  1. It loads the reader: a dynamic `import("node:ffi")`, never a static import (on a Node without
+     `node:ffi` a static import makes every agent-browser command fail at load with
+     `ERR_UNKNOWN_BUILTIN_MODULE`: measured), then `dlopen` of libc (and of libproc on the Mac) and
+     its symbols. A relay without `--peer-check` never loads `node:ffi`, so no other agent-browser
+     command prints its `ExperimentalWarning` or depends on it.
+  2. It makes a folder of mode 0700 with `mkdtemp` next to the endpoint socket, so that no other
+     program can take part, and listens on a socket in that folder. The socket's path is at most 103
+     bytes, as the endpoint's; a longer path fails the test.
+  3. It starts a child process (`process.execPath` with a few lines of script) that connects to that
+     socket and stays until the relay has read the connection.
+  4. It reads the peer of the accepted socket and compares it with the child's facts: the pid (the
+     child's pid), the uid (the relay's), and on Linux the pid that the pidfd names (the `Pid:` line
+     of `/proc/self/fdinfo/<pidfd>`). A connection from the relay to itself would not do: a reader
+     of the wrong fd (the listening socket's) gives the relay's own pid too (measured).
+  5. On Linux the answer of `SO_PEERPIDFD` selects the form of every later read: a pidfd of the
+     child selects the **pidfd form**; `ENOPROTOOPT` (a kernel before 6.5) selects the **stat
+     form**, which is not a failure; any other error fails the test. The Mac has one form.
+
+  The whole test has a time limit, `SELF_TEST_MS = 5000`. In every path (a pass, a failure, the
+  time limit) the relay stops the child and removes the folder (review-54b note 3). The relay logs
+  the result on its standard error, for `agentwatch browser status` and the Browser page:
+  `relay: the peer check runs (<form>)`, with `<form>` one of `pidfd`, `stat` and `mac`, or
+  `relay: the peer check cannot run: <reason>`. When the import, the `dlopen`, a symbol, the listen,
+  the child, the read, a compare or the time limit fails, the relay admits no connection, and it
+  answers each upgrade with the 503 `the relay cannot read the program of a connection` (step 3)
+  until it stops: it fails closed. The design's W2 (the relay asks the daemon over Node's IPC
+  channel) is a later build, only if this test fails on a box that agentwatch runs.
+- The peer read, at each accept, before the relay reads the request (step 3):
+  - Linux: `getsockopt(SOL_SOCKET, SO_PEERCRED)` on the accepted socket gives the peer's pid and
+    uid. In the pidfd form `getsockopt(SOL_SOCKET, SO_PEERPIDFD)` gives a pidfd of the same process.
+    In the stat form the relay reads the peer's start time (field 22) at the accept too, so that the
+    window of a reused pid starts there (review-54b note 4). The kernel records the peer at
+    `connect()`: it stays that process after a fork, an exec, and a socket passed on with
+    `SCM_RIGHTS` (measured).
+  - The Mac: `getsockopt(SOL_LOCAL, LOCAL_PEERPID)` gives a pid, `LOCAL_PEERCRED` the uid, and
+    `proc_pidinfo` the peer's start time, read at the accept. From the xnu source (not measured;
+    board ab-v16.52) `LOCAL_PEERPID` is the last process that used the client's socket: at the
+    accept, before the client sent its request, that is the connecter.
+  - The peer's 403 (step 3) is the one answer for every read that fails at the accept (review-54b
+    note 1): a `getsockopt` that fails, no pid (0), a uid other than the relay's, and in the stat
+    form and on the Mac a start time that the relay cannot read. In the pidfd form any error of
+    `SO_PEERPIDFD` is the peer's 403, whatever its code: a peer that exited and was reaped gives
+    `EINVAL` on Linux 6.12, and the relay does not rely on the code.
+- The session check (step 6), for a connection of scope S, in this order:
+  1. The peer is alive. Pidfd form: libc `poll` of the pidfd (`POLLIN`, a 0 ms timeout) does not
+     report it readable, the `Pid:` line of its `fdinfo` is the peer's pid (`-1` means that it was
+     reaped), and the peer's state (field 3 of `/proc/<pid>/stat`) is not `Z`. Each of the three
+     counts alone: a process can show the state `Z` before its pidfd polls readable (a Node peer
+     whose other threads still run), and a pidfd can poll readable while the state still shows `R`
+     (both measured, review-54b note 2). Stat form and the Mac: the pid is still there, its start
+     time is the one of the accept, and its state is not `Z` (on the Mac `pbi_status` is not
+     `SZOMB`).
+  2. The walk, from the peer itself (hop 0) to its parent, and on. It stops at the first process
+     that matches a root of the line, of any scope (also a root that does not count, below); at
+     pid 1; at a pid that has gone, or whose parent is 0; or after 32 hops (a root at most 32
+     parents above the peer counts). When it stops at a root of S that counts, the relay admits the
+     connection. When it stops at any other root, the relay refuses it, whatever the cgroup says:
+     so a process whose own walk reaches its own session's root never counts as another session,
+     also when it joined another session's cgroup.
+  3. On Linux only, and only when the walk stopped at no root: the peer's cgroup. The relay admits
+     the connection when the peer's cgroup is the cgroup of a root of S whose cgroup counts, or a
+     cgroup under it (`<root cgroup>/...`: a path under it, not a longer name with the same
+     start). The Mac has no cgroups: the walk alone decides there.
+  4. Before it admits, the relay checks item 1 again, so the `/proc` files that it read were the
+     peer's. In the pidfd form it then closes the pidfd with libc `close`, as in every other path.
+
+  Any check that fails gives the session's 403.
+- The roots in the line (C10): `"roots":{"<scope>":[{"pid":<pane pid>,"start":<pane start>}]}`. A
+  list, so that a session with more than one pane can name each; a root that one scope names twice
+  is one root. The receiver never sees the roots. The line's rules:
+  - A `roots` that is not an object applies as an empty object.
+  - An entry whose scope does not match the scope pattern, or whose value is not a list, applies as
+    absent.
+  - An item that is not an object with an integer `pid` from 2 to 2^53 - 1 and an integer `start`
+    from 0 to 2^53 - 1 is dropped, and the other items of its list apply. (2^53 - 1 is the largest
+    integer that JavaScript holds exactly, so the relay and the daemon read the same number.) The
+    other fields of an item are ignored.
+  - A scope with no root that applies admits no connection (step 6). A root of a scope that
+    `scopes` does not name still counts for the defensive root rules.
+  - A relay with `--peer-check` that gets a line with no `roots` field applies the lists, and no
+    scope has a root: step 6 refuses each connection.
+  - A relay started without `--peer-check` that gets a line with a `roots` field (any value)
+    applies no list of that line, as if no line had come: it closes the open connections (1008, no
+    list any more) and answers each upgrade with the 503 `the allowlist has session roots, but the
+    relay was started without --peer-check`, until a line without `roots` comes. So a daemon and a
+    relay that disagree fail closed, with a clear text. The shared vector: `lines` in
+    `test/vectors/scopes.json`.
+- The defensive root rules. At each line the relay reads the `stat` and the cgroup of every root
+  that applies, and from them it decides which roots count, so that a wrong line never admits a
+  wrong session:
+  - A root counts only while it lives: the process with its pid has its start time.
+  - A `(pid, start)` that two scopes name counts for neither scope.
+  - A root that is an ancestor of another root (the walk from the other root reaches it) does not
+    count, for the walk or the cgroup: a pane is never under another pane, so such a root is a
+    wrong pid (for example the tmux server's).
+  - A root's cgroup counts only when its pane has a scope of its own: the cgroup is not the cgroup
+    of the root's parent (the tmux server's; on a box where tmux cannot reach D-Bus every pane stays
+    there; a parent that the relay cannot read counts as the same cgroup), no live root of another
+    scope has the same cgroup, and no other live root's cgroup is under it (a nested scope). A root
+    whose cgroup does not count still counts for the walk.
+
+  At a check the relay reads again only the scope's own roots (one `stat` and one cgroup read
+  each): a root counts only while its start time matches, and its cgroup only while it is the
+  cgroup of the line's read.
+- The roots' life (the daemon; aw-lead's part 3, the design's section 10):
+  - The daemon sends the roots of every live session in each `allowlist` line, from the session's
+    first line on: its pane's pid (`tmux list-panes -F '#{pane_pid}'`) and that process's start
+    time.
+  - At a launch, the daemon reads the new pane's pid and start (after `tmux new-session`, before
+    the launch line) before the scope enters its map, so the first line that names the scope
+    carries its root. Else, in the moment between, a just-launched session would get the session's
+    403 (step 6) in place of the no-list 503 (step 5) that tells it to connect again. For such a
+    window the session's 403 ends with `If this session started or restarted just now, connect
+    again in a few seconds.`
+  - The daemon starts the pane's shell first, and types the agent's launch line into it only after
+    the pane is in its own scope. tmux moves a new pane's process into the pane's scope after its
+    fork, and a process that the pane forks before that move stays in the tmux server's cgroup for
+    its life (measured: the `tmux new-window` case of the design's section 4; review-54b note 6).
+    On Linux the daemon reads `/proc/<pane pid>/cgroup` until it names a `tmux-spawn-<uuid>.scope`
+    that is not the tmux server's cgroup, with a time limit (agentwatch picks it; a few seconds).
+    It does not wait on the Mac (no cgroups), nor on a box where the tmux server cannot reach the
+    user's D-Bus (`DBUS_SESSION_BUS_ADDRESS`, `XDG_RUNTIME_DIR`): tmux makes no scope there, and the
+    Browser page says that the pane's cgroup does not count on that box (review-54b note 5). When
+    the time limit passes, the daemon types the launch line, and the Browser page names the
+    session: its root counts for the walk only. agentwatch's launch does this today
+    (`new-session -d` with the default shell, then the launch line), so this is a rule to keep.
+  - When a root changes (a respawned pane: a restart, an account swap, a resume), the daemon
+    writes a line with the new root at once, with the last confirmed object, before the agent
+    starts in the new pane, and it does not wait for a `set_scopes` round trip: the receiver does
+    not use the roots. `tmux respawn-pane -k` gives the pane a new process and a new scope, so the
+    old pane's jobs (in the old scope, under no live root) are refused, also by their cgroup, and
+    the relay closes the connections of the old root (1008, when a connection ends).
+  - At a session's end the daemon drops the scope's roots in the line that drops the scope (with
+    5 b: that names it `null`; C4). Already before that line the pane has ended, so its root
+    matches no process and its cgroup counts for no connection. A process of the ended session
+    that still runs (a `nohup` job, a double-forked job, a command through a server that the session
+    left running, such as a nested tmux server) then connects to no scope: for its own scope it gets
+    the session's 403 until that line and the no-list 503 (step 5) after it, and for any other scope
+    the session's 403. Its open connections closed at the `end_scope` (1000) or close at that line
+    (1008). A later session of the same name has another pane, so another root (the operator's
+    ab-6gs answer).
+  - A session that agentwatch only stops (its agent ends, its pane stays) keeps its pane and its
+    root until agentwatch ends the session: its jobs can still connect until then.
+  - Over a daemon restart the daemon reads the pane of each live session again and sends its roots
+    in its next line. So a session that was live before the peer check came gets its root in the
+    daemon's first line after the deploy, and its processes are under its pane.
+- What a program that no agentwatch session started gets: the session's 403 (step 6). A program in
+  a plain terminal or an editor's terminal, the operator's own shell outside an agentwatch pane, a
+  cron job outside agentwatch, and a command of `systemd-run --user` cannot connect. A cron job of
+  agentwatch is a session of its own, with its own pane and root.
+- Jobs that leave the tool's shell. With the walk alone (the Mac; a Linux box whose panes have no
+  scope of their own) `nohup <job> &` in a shell that exits, `setsid -f`, a double fork and
+  `systemd-run` are refused: an agent starts a long job with Claude Code's `run_in_background`, or
+  without leaving the shell. On Linux with the pane's scope (P2, the operator's ab-6gs answer) such
+  a job is admitted while it stays in the pane's scope; only `systemd-run` and a new tmux pane are
+  refused.
+- The limit (aw-lead's point 3; the design's section 11). The check stops mistakes, an agent that
+  names another session's scope, and an injected instruction that only names a scope. It does not
+  stop a hostile process of the same OS user. Measured on taylor, such a process can join another
+  session's pane scope with one write to `cgroup.procs`, run a command through a server that
+  another session left running (`tmux -L <server> run-shell`: by the server's cgroup it then counts
+  as that session), write into another session's MCP through `/proc/<pid>/fd/0`, and type into
+  another session's pane with `tmux send-keys`. A process of a session can also pass an admitted
+  connection on, or connect for another program: the check binds a connection to the session whose
+  process connected. The key had the same limit (`/proc/<pid>/environ`).
+- The operator's answer age-4ks ("env: no", 2026-11-04) stands: agentwatch puts no endpoint URL
+  into a session's environment, and only `agentwatch browser endpoint` and `agentwatch browser env`
+  print it, on request. The URL holds no secret, so an agent can give it to its own Playwright MCP
+  as a plain argument: the MCP is a child of the agent, under the pane, and the walk admits it
+  (measured). `agentwatch browser <command>` stays: agent-browser runs as the CLI's child, under
+  the pane.
+- The shared vectors: `upgradeChecks` and `lineCloses` in `test/vectors/endpoint.json` (each case
+  gives the peer and a fake process table, so both sides test with a fake peer reader), and `lines`
+  in `test/vectors/scopes.json`.
 - A launch never waits for the agent browser. The daemon adds the scope to its map before the launch
   and sends `set_scopes` when the link is up. With `default` `null`, an earlier connection gets the
   no-list 503 (step 5), and the agent connects again.
