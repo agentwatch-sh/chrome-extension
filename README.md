@@ -164,12 +164,15 @@ npm run pack:agent -- --out release # writes release/agent.crx, the committed co
     SHA-256 of that version (below). The entry of the manifest version
     matches `agent/` and the CRX, and that version is the highest in the
     table, in Chrome's order.
-  - The table keeps each entry of its base: `origin/main`, or `HEAD^1` in
-    GitHub Actions (the main tip of a pull request's merge commit, or the
-    main before a push; the CI checkout has `fetch-depth: 2`). An entry that
-    the base holds never changes or leaves the table. A branch may correct
-    its own new entry. A base from before the table passes. A base commit
-    that is not in the clone fails the test.
+  - The table keeps each entry of its base. On a push run in CI, the base is
+    the main before the push (`github.event.before`): the workflow fetches
+    that commit and passes it to the test as `VERSIONS_BASE`. On a
+    pull_request run, the base is `HEAD^1`, the main tip of the merge commit
+    (the checkout has `fetch-depth: 2`). Elsewhere, the base is
+    `origin/main`. An entry that the base holds never changes or leaves the
+    table. A branch may correct its own new entry. A base from before the
+    table passes. A base commit that is not in the clone, or an all-zero
+    `github.event.before` (a new branch), fails the test.
 - **The content SHA-256:** take the files of the package (not its folders)
   and sort them by the UTF-8 bytes of their paths. For each file, write its
   path, a NUL byte, its size in decimal ASCII digits, a NUL byte and its

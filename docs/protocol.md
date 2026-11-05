@@ -43,8 +43,13 @@ The sender is the operator package (`operator/`, operator mode). The receiver is
   the same commit, signed with that key. agentwatch pins a commit of this repository (40-hex), and
   that commit holds the `release/agent.crx` that agentwatch installs; agentwatch never runs the pack
   script and never opens the key. A test checks, without the key, that the committed CRX has this
-  ID, a valid signature and exactly the files of `agent/`. The steps for a change of `agent/` are in
-  the README (The packed CRX).
+  ID, a valid signature and exactly the files of `agent/`. agentwatch depends on two rules:
+  - Each new content of `agent/` comes with a higher `version` in `agent/manifest.json`: Chrome
+    installs an external CRX again only for a higher `external_version`. `release/versions.json` and
+    `npm test` enforce this rule. The steps for a change of `agent/` are in the README (The packed
+    CRX).
+  - agentwatch pins only a commit that chrome-extension `main` reaches. A PR head can still change
+    its own unreleased entry of `release/versions.json`.
 - The pins of the receiver ID that agentwatch's stage 4 (board ab-v16.7) changes, in agentwatch main
   `4e483512`:
   - `agentwatch/tools/pins.py:32`: `CHROME_EXTENSION_RECEIVER_ID`.

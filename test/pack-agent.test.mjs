@@ -131,21 +131,34 @@ function checkVersion(table, version, sha) {
   }
 }
 
-// The base whose entries the table must keep: in GitHub Actions HEAD^1 (a pull_request run checks out
-// the merge of the PR into main, whose first parent is the main tip; a push to main has the main before
-// it as its first parent), elsewhere origin/main. A branch may change its own new entries: only the
-// base's entries are released.
-const baseRef = (env) => (env.GITHUB_ACTIONS ? "HEAD^1" : "origin/main");
+// The base whose entries the table must keep, as {ref, rev, hint}. A branch may change its own new
+// entries: only the base's entries are released.
+// - VERSIONS_BASE, when it is set: the commit before a push. The push run sets it from
+//   github.event.before and fetches that commit; HEAD^1 would be wrong for a push of more than one
+//   commit (the first can change an entry, and a rebased branch holds its own first tries).
+// - HEAD^1 in GitHub Actions: a pull_request run checks out the merge of the PR into main, whose
+//   first parent is the main tip.
+// - origin/main elsewhere.
+function baseRef(env) {
+  if (env.VERSIONS_BASE !== undefined) {
+    const v = env.VERSIONS_BASE;
+    assert.ok(/^[0-9a-f]{40}$/.test(v) && !/^0+$/.test(v),
+      `VERSIONS_BASE ${JSON.stringify(v)} is not the 40-hex commit before the push: an all-zero github.event.before is a new branch, which has no main before it`);
+    return { ref: "VERSIONS_BASE", rev: v, hint: `the push run fetches it: git fetch --no-tags --depth=1 origin ${v}` };
+  }
+  if (env.GITHUB_ACTIONS) return { ref: "HEAD^1", rev: "HEAD^1", hint: "the CI checkout needs fetch-depth: 2" };
+  return { ref: "origin/main", rev: "origin/main", hint: "run git fetch origin main:refs/remotes/origin/main" };
+}
 
 // {ref, commit, table} of the base. table is null for a base from before the table: no file of the base
-// names release/versions.json. The check fails, and never passes in silence, when the base commit is not
-// in the clone, or when the base names the table but does not hold it.
+// names release/versions.json. The check fails, and never passes in silence, when VERSIONS_BASE is not
+// a commit, when the base commit is not in the clone, or when the base names the table but does not
+// hold it.
 function baseTable(dir, env = process.env) {
-  const ref = baseRef(env);
+  const { ref, rev: name, hint } = baseRef(env);
   const run = (...args) => spawnSync("git", args, { cwd: dir, encoding: "utf8", env: gitEnv() });
-  const rev = run("rev-parse", "--verify", "--quiet", `${ref}^{commit}`);
-  assert.ok(rev.status === 0,
-    `the base ${ref} is not in this clone, so the version table cannot be checked: ${env.GITHUB_ACTIONS ? "the CI checkout needs fetch-depth: 2" : "run git fetch origin"}`);
+  const rev = run("rev-parse", "--verify", "--quiet", `${name}^{commit}`);
+  assert.ok(rev.status === 0, `the base ${ref} is not in this clone, so the version table cannot be checked: ${hint}`);
   const commit = rev.stdout.trim();
   const show = run("show", `${commit}:release/versions.json`);
   if (show.status === 0) return { ref, commit, table: JSON.parse(show.stdout) };
@@ -394,14 +407,14 @@ test("packageFiles packs only the files that git tracks: an ignored or untracked
   });
 });
 
-test("packageFiles refuses a path that is not printable ASCII: a ZIP reader without flag bit 11 (Python zipfile: cp437) reads it as another name", () => {
-  for (const name of ["lib/na\u00efve.js", "\u00e9.js", "r\u00e9gles/a.json", "tab\there.js"]) {
+test("packageFiles refuses a path that is not printable ASCII, or that has a backslash: a ZIP reader without flag bit 11 (Python zipfile: cp437) reads it as another name, and a backslash is a separator for some readers", () => {
+  for (const name of ["lib/na\u00efve.js", "\u00e9.js", "r\u00e9gles/a.json", "tab\there.js", "lib\\a.js", "rules/b\\c.json"]) {
     withTemp((dir) => {
       writeFileSync(join(dir, "manifest.json"), "{}");
       mkdirSync(join(dir, name, ".."), { recursive: true });
       writeFileSync(join(dir, name), "x");
       track(dir);
-      assert.throws(() => packageFiles(dir), (e) => /is not printable ASCII/.test(e.message), JSON.stringify(name));
+      assert.throws(() => packageFiles(dir), (e) => /is not printable ASCII|has a backslash/.test(e.message), JSON.stringify(name));
     });
   }
 });
@@ -969,7 +982,7 @@ test("in GitHub Actions the base is HEAD^1, the main tip of a pull_request merge
       // As actions/checkout does for a pull_request: the merge of the branch into the main tip.
       git(dir, "checkout", "-q", "--detach", main);
       gitc(dir, "merge", "-q", "--no-ff", "-m", `Merge ${branch} into main`, branch);
-      assert.throws(() => baseTable(dir, {}), /the base origin\/main is not in this clone.*git fetch origin/);
+      assert.throws(() => baseTable(dir, {}), /the base origin\/main is not in this clone.*run git fetch origin main:refs\/remotes\/origin\/main/);
       const base = baseTable(dir, { GITHUB_ACTIONS: "true" });
       assert.deepEqual(base, { ref: "HEAD^1", commit: main, table: { "0.2.0": A } });
       if (ok) checkBase(tableOf(dir), base);
@@ -1001,6 +1014,71 @@ test("a CI clone of depth 1 has no HEAD^1: the check fails and asks for fetch-de
   });
 });
 
+test("on a push the base is VERSIONS_BASE (github.event.before): a push of two commits whose first changes 0.2.0 fails", () => {
+  withTemp((dir) => {
+    const before = repoWithMain(dir, { "0.2.0": A });
+    commitTable(dir, { "0.2.0": B }, "push 1: a changed 0.2.0 entry");
+    writeFileSync(join(dir, "notes.txt"), "push 2: another file\n");
+    commitTable(dir, null, "push 2: no change of the table");
+    // HEAD^1 is the first commit of the push, which already holds the changed entry: it misses it.
+    checkBase(tableOf(dir), baseTable(dir, { GITHUB_ACTIONS: "true" }));
+    const base = baseTable(dir, { GITHUB_ACTIONS: "true", VERSIONS_BASE: before });
+    assert.deepEqual(base, { ref: "VERSIONS_BASE", commit: before, table: { "0.2.0": A } });
+    assert.throws(() => checkBase(tableOf(dir), base), /changed the entry of 0\.2\.0 \(the base VERSIONS_BASE/);
+  });
+});
+
+test("on a push the base is VERSIONS_BASE: a rebase and merge of a branch that corrected its own new entry passes", () => {
+  withTemp((dir) => {
+    const before = repoWithMain(dir, { "0.2.0": A });
+    commitTable(dir, { "0.2.0": A, "0.3.0": A }, "rebased 1: add 0.3.0");
+    commitTable(dir, { "0.2.0": A, "0.3.0": B }, "rebased 2: correct 0.3.0");
+    // HEAD^1 holds the branch's own first try at 0.3.0, so it fails with no real fault.
+    assert.throws(() => checkBase(tableOf(dir), baseTable(dir, { GITHUB_ACTIONS: "true" })), /changed the entry of 0\.3\.0/);
+    checkBase(tableOf(dir), baseTable(dir, { GITHUB_ACTIONS: "true", VERSIONS_BASE: before }));
+  });
+});
+
+test("VERSIONS_BASE that is empty, all zeros (a new branch), not a 40-hex commit, or not in the clone fails visibly", () => {
+  withTemp((dir) => {
+    repoWithMain(dir, { "0.2.0": A });
+    for (const v of ["", "0".repeat(40), "abc", "HEAD", "A".repeat(40)]) {
+      assert.throws(() => baseTable(dir, { GITHUB_ACTIONS: "true", VERSIONS_BASE: v }), /VERSIONS_BASE .* is not the 40-hex commit before the push/, JSON.stringify(v));
+    }
+    assert.throws(() => baseTable(dir, { GITHUB_ACTIONS: "true", VERSIONS_BASE: "1".repeat(40) }),
+      /the base VERSIONS_BASE is not in this clone.*git fetch --no-tags --depth=1 origin/);
+  });
+});
+
+test("a clone of depth 1 that fetches the commit before the push by its SHA, as the push run does, has the base", () => {
+  withTemp((dir) => {
+    const repo = join(dir, "repo");
+    mkdirSync(repo);
+    const before = repoWithMain(repo, { "0.2.0": A });
+    commitTable(repo, { "0.2.0": A, "0.3.0": B }, "push 1");
+    writeFileSync(join(repo, "notes.txt"), "push 2\n");
+    commitTable(repo, null, "push 2");
+    git(repo, "config", "uploadpack.allowAnySHA1InWant", "true"); // as GitHub serves a fetch by SHA
+    const clone = join(dir, "clone");
+    git(dir, "clone", "-q", "--depth", "1", "--branch", "main", `file://${repo}`, clone);
+    assert.throws(() => baseTable(clone, { GITHUB_ACTIONS: "true", VERSIONS_BASE: before }), /not in this clone/);
+    git(clone, "fetch", "-q", "--no-tags", "--depth=1", "origin", before);
+    const base = baseTable(clone, { GITHUB_ACTIONS: "true", VERSIONS_BASE: before });
+    assert.equal(base.commit, before);
+    checkBase(tableOf(clone), base);
+  });
+});
+
+test("the workflow fetches github.event.before on a push and passes it as VERSIONS_BASE, and fails on an all-zero before", () => {
+  const wf = readFileSync(new URL(".github/workflows/test.yml", root), "utf8");
+  assert.match(wf, /fetch-depth: 2/);
+  assert.match(wf, /if: github\.event_name == 'push'/);
+  assert.match(wf, /\$\{\{ github\.event\.before \}\}/);
+  assert.match(wf, /git fetch --no-tags --depth=1 origin "\$BEFORE"/);
+  assert.match(wf, /VERSIONS_BASE=\$BEFORE" >> "\$GITHUB_ENV"/);
+  assert.match(wf, /0{40}/);
+});
+
 test("a base from before the table passes; a base that names release/versions.json but lacks it fails", () => {
   withTemp((dir) => {
     writeFileSync(join(dir, "README.md"), "no table yet\n");
@@ -1014,7 +1092,7 @@ test("a base from before the table passes; a base that names release/versions.js
   });
 });
 
-test("release/versions.json keeps each entry of the base table: HEAD^1 in GitHub Actions, origin/main elsewhere", (t) => {
+test("release/versions.json keeps each entry of the base table: VERSIONS_BASE on a push run, HEAD^1 on a pull_request run, origin/main elsewhere", (t) => {
   const base = baseTable(rootDir);
   t.diagnostic(`base ${base.ref} = ${base.commit}${base.table ? "" : " (from before release/versions.json)"}`);
   checkBase(JSON.parse(readFileSync(versionsFile, "utf8")), base);

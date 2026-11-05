@@ -1,9 +1,12 @@
 # The unit tests (npm test) on each pull request and each push to main
 # (board task ab-v16.25). The tests need no key, no secret and no Chrome.
 # They run git (git ls-files, git check-ignore), so the job uses a checkout.
-# fetch-depth 2: the version table test compares release/versions.json with
-# the table of HEAD^1, the main tip of a pull_request merge commit or the main
-# before a push (board task ab-v16.24); a clone of depth 1 has no HEAD^1.
+# The version table test (board task ab-v16.24) compares release/versions.json
+# with the table of a base. On a pull_request run the base is HEAD^1, the main
+# tip of the merge commit, so the checkout has fetch-depth 2 (a clone of depth
+# 1 has no HEAD^1). On a push run the base is the main before the push
+# (github.event.before), not HEAD^1, because a push can add more than one
+# commit: a step fetches it and passes it to the test as VERSIONS_BASE.
 # package.json has no dependencies and no lock file, so no npm ci.
 name: test
 
@@ -28,5 +31,17 @@ jobs:
         with:
           node-version: 26
           package-manager-cache: false
+      - name: Fetch the main before the push (the version table's base)
+        if: github.event_name == 'push'
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          # An all-zero before is a new branch: there is no main before it.
+          if ! printf '%s' "$BEFORE" | grep -Eq '^[0-9a-f]{40}$' || [ "$BEFORE" = 0000000000000000000000000000000000000000 ]; then
+            echo "::error::github.event.before ($BEFORE) is not the commit before this push: the version table has no base"
+            exit 1
+          fi
+          git fetch --no-tags --depth=1 origin "$BEFORE"
+          echo "VERSIONS_BASE=$BEFORE" >> "$GITHUB_ENV"
       - run: node --version
       - run: npm test

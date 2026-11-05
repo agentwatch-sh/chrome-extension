@@ -94,9 +94,10 @@ export function trackedFiles(dir) {
   }
 }
 
-// A path of the package must be printable ASCII. The ZIP has no flag bit 11 (UTF-8 names), so a reader
-// such as Python's zipfile reads a name as cp437, which is the same as UTF-8 only for ASCII; the
-// content SHA-256 of release/versions.json then is the same with each reader.
+// A path of the package must be printable ASCII with no backslash. The ZIP has no flag bit 11 (UTF-8
+// names), so a reader such as Python's zipfile reads a name as cp437, which is the same as UTF-8 only
+// for ASCII; the content SHA-256 of release/versions.json then is the same with each reader. Some ZIP
+// readers take a backslash as a folder separator.
 const PRINTABLE_ASCII = /^[\x20-\x7e]+$/;
 
 // Every file that git tracks in the package, and every folder (with a trailing /) on their paths,
@@ -104,8 +105,8 @@ const PRINTABLE_ASCII = /^[\x20-\x7e]+$/;
 // Chrome's own packer (a folder on the path up to the first dotted part stays in: lib/.keep keeps
 // lib/), and so does _metadata/, which Chromium writes into an unpacked folder that it loads. A file
 // named as a key or a CRX is refused, and so are a symlink, a tracked file that is missing, a path
-// that is not printable ASCII, and the key file itself under any name (keyFile: its {dev, ino}, for a
-// hard link).
+// that is not printable ASCII or that has a backslash, and the key file itself under any name
+// (keyFile: its {dev, ino}, for a hard link).
 export function packageFiles(dir, keyFile = null) {
   const out = new Set();
   for (const name of trackedFiles(dir)) {
@@ -125,6 +126,7 @@ export function packageFiles(dir, keyFile = null) {
   }
   for (const name of out) {
     if (!PRINTABLE_ASCII.test(name)) throw new Error(`the path ${JSON.stringify(name)} in ${dir} is not printable ASCII`);
+    if (name.includes("\\")) throw new Error(`the path ${JSON.stringify(name)} in ${dir} has a backslash, which some ZIP readers take as a separator`);
   }
   const names = [...out].sort();
   if (keyFile) refuseKeyFile(dir, names, keyFile);
