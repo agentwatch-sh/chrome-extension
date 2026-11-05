@@ -32,10 +32,11 @@
 //   reload's own navigation is blocked again (no second retry), and when the
 //   reload starts no request (no main-frame onBeforeNavigate of the URL within
 //   RETRY_START_MS, or another error). The retry reloads a GET only: the
-//   method comes from webRequest.onErrorOccurred of the blocked request, and a
-//   request that is not a GET (a form that posts into a new tab), or whose
-//   method the receiver did not see by the reload's time, gets no reload and
-//   sends its notice (Chrome's reload of a blocked POST opens its "Confirm
+//   method comes from webRequest.onErrorOccurred of the blocked request, and it
+//   must be GET when webNavigation's error comes and still at the reload's
+//   time (the same URL). A request that is not a GET (a form that posts into
+//   a new tab), or whose method the receiver has not seen then, gets no
+//   reload and sends its notice (Chrome's reload of a blocked POST opens its "Confirm
 //   Form Resubmission" dialog, which waits for a person). The retry is only
 //   for the popup's first navigation: after its first main-frame commit that
 //   is not about:blank, a block sends its notice at once.
@@ -66,7 +67,7 @@ class Popup {
   navStarted = false; // a main-frame navigation that is not about:blank started
   ended = false; // an end condition of the held tabs.onCreated came
   phase = "open";
-  block = null; // {url, at, msg, send}: the first blocked request
+  block = null; // {url, at, msg, send, method}: the first blocked request (its method when the block came)
   timer = null; // the reload's time, or RETRY_START_MS
 
   constructor(tabId) {
@@ -88,6 +89,11 @@ export class Popups {
 
   get #clock() {
     return this.#r.clock;
+  }
+
+  // The tab has a popup state (tests and the cleanup).
+  has(tabId) {
+    return this.#popups.has(tabId);
   }
 
   #emitCreated(tab, fields) {
@@ -278,11 +284,16 @@ export class Popups {
     this.#methods.set(d.tabId, { url: d.url, method: d.method });
   }
 
-  // The method of the popup's blocked first request, or undefined when the
-  // receiver has not seen it.
-  #methodOf(p) {
-    const m = this.#methods.get(p.tabId);
-    return m && m.url === p.block.url ? m.method : undefined;
+  // The method of the tab's last blocked main-frame request of url, or
+  // undefined when the receiver has not seen it.
+  #methodFor(tabId, url) {
+    const m = this.#methods.get(tabId);
+    return m && m.url === url ? m.method : undefined;
+  }
+
+  // The popup's blocked first request is a GET: when the block came, and now.
+  #isGet(p) {
+    return p.block.method === "GET" && this.#methodFor(p.tabId, p.block.url) === "GET";
   }
 
   // A main-frame error that is not ERR_BLOCKED_BY_CLIENT: the reload started
@@ -308,7 +319,7 @@ export class Popups {
       }
       p.navStarted = true;
       this.#stopQuiet(p.tabId);
-      p.block = { url: details.url, at: this.#clock.now(), msg, send };
+      p.block = { url: details.url, at: this.#clock.now(), msg, send, method: this.#methodFor(p.tabId, details.url) };
       p.phase = "wait";
       if (p.ruleEnd !== null) this.#decide(p);
       return true;
@@ -331,8 +342,8 @@ export class Popups {
       map.scopeOf(p.tabId) === p.scope && !map.isOrphan(p.tabId);
     if (!covered) return this.#notice(p);
     // A blocked request that is not a GET (a form's POST) gets no reload.
-    const method = this.#methodOf(p);
-    if (method !== undefined && method !== "GET") return this.#notice(p);
+    const method = this.#methodFor(p.tabId, p.block.url);
+    if ((p.block.method !== undefined && p.block.method !== "GET") || (method !== undefined && method !== "GET")) return this.#notice(p);
     p.phase = "planned";
     const wait = p.block.at + RETRY_AFTER_MS - this.#clock.now();
     if (wait <= 0) this.#reload(p);
@@ -345,7 +356,7 @@ export class Popups {
     const map = this.#r.map;
     // The tab left its scope meanwhile (the sweep): no retry. A GET only; a
     // method that the receiver has not seen by now fails closed too.
-    if (map.scopeOf(p.tabId) !== p.scope || map.isOrphan(p.tabId) || this.#methodOf(p) !== "GET") return this.#notice(p);
+    if (map.scopeOf(p.tabId) !== p.scope || map.isOrphan(p.tabId) || !this.#isGet(p)) return this.#notice(p);
     p.phase = "reloaded";
     p.timer = this.#clock.setTimer(() => {
       p.timer = null;

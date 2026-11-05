@@ -1382,9 +1382,13 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
   `Cache-Control` from the retried request did not remove it (20 of 20, ab-lead's reviewer).
 - The retry reloads a GET only (ab-lead, PR #21 question 1). The receiver reads the method of the
   blocked request from `webRequest.onErrorOccurred` (permission `webRequest`; the receiver only
-  reads it), and a request that is not a GET, or whose method (of the same URL) the receiver has
-  not seen by the reload's time, gets no reload. So a form that posts into a new tab fails closed,
-  with no dialog, and its `blocked` notice goes at the decision. The reason: Chrome's `tabs.reload`
+  reads it). The method of the tab's last blocked main-frame request of the same URL must be `GET`
+  both when `webNavigation.onErrorOccurred` comes and at the reload's time (review-21 note 3); a
+  request that is not a GET, or whose method the receiver has not seen then, gets no reload. So a
+  form that posts into a new tab fails closed, with no dialog, and its `blocked` notice goes at the
+  decision. When Chrome withholds the permission (no `chrome.webRequest`), the bridge still starts
+  and logs one line, every method is unknown, and no popup gets a retry (fail closed; review-21
+  note 5). The reason: Chrome's `tabs.reload`
   of a blocked POST opens its "Confirm Form Resubmission" dialog in the popup, which waits for a
   person (measured on Chromium 156, the eager attach on and off: no request goes before an answer;
   with "Continue" the POST went to the site once and the page loaded, 2 of 2; with "Cancel" the

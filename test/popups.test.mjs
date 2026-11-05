@@ -8,7 +8,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { Bridge } from "../agent/bridge.js";
 import { HOLD_MAX_MS } from "../agent/hold.js";
+import { watchBlocked } from "../agent/link.js";
+import { receiver } from "../agent/receiver.js";
+import { makeFakeChrome } from "./fake-chrome.mjs";
 import { NEW_TAB_WAIT_MS, RETRY_AFTER_MS, RETRY_START_MS, RULE_QUIET_MS } from "../agent/popups.js";
 import { TOMBSTONE_MS } from "../agent/tabmap.js";
 import { flush, startReceiver } from "./receiver-harness.mjs";
@@ -30,8 +34,8 @@ const paused = (requestId, tabId = 9, url = URL_A) => ({ requestId, request: { u
 
 // The receiver with the vector's set_scopes (ab-lead has list md: a.example; md-gone has none) and a
 // fixed clock. Tab 7 has scope ab-lead (from the copy), tab 3 has no scope.
-async function popupSetup({ eager = false, tabs = [blank(7), blank(3)], copy = { "tab:7": B.scope }, scopes = B.setScopes, targets = [] } = {}) {
-  const s = await startReceiver({ tabs, copy, scopes, targets });
+async function popupSetup({ eager = false, tabs = [blank(7), blank(3)], copy = { "tab:7": B.scope }, scopes = B.setScopes, targets = [], chromeEdit } = {}) {
+  const s = await startReceiver({ tabs, copy, scopes, targets, chromeEdit });
   let now = 1000;
   s.r.clock.now = () => now;
   s.advance = (ms) => {
@@ -132,6 +136,7 @@ test("a popup that closed before its handler ran gets no entry (no stale entry)"
   assert.equal(s.r.map.has(9), false);
   assert.equal(Object.hasOwn(s.f.storage_.session, "tab:9"), false);
   assert.equal(s.r.map.isOrphan(9), false);
+  assert.equal(s.r.popups.has(9), false, "no popup state for a tab that closed");
   assert.deepEqual(names(s, before), ["webNavigation.onCreatedNavigationTarget:9"]);
 });
 
@@ -594,12 +599,204 @@ test("the method fails closed: a blocked request whose method the receiver did n
   await s.fire(RETRY_AFTER_MS);
   assert.deepEqual(reloads(s), []);
   assert.deepEqual(s.notices().at(-1), { t: "blocked", tab: 11, host: "a.example" });
-  // A webRequest event that is not a block, or of a frame, changes nothing.
+  // After a GET block, a webRequest event that is not a block, or of a frame, changes nothing: the GET keeps its reload.
   openPopup(s, { id: 12 });
   await flush();
+  block(s, 12, URL_A, "GET");
   s.f.chrome.webRequest.onErrorOccurred.fire({ tabId: 12, frameId: 0, type: "main_frame", url: URL_A, method: "POST", error: "net::ERR_ABORTED" });
   s.f.chrome.webRequest.onErrorOccurred.fire({ tabId: 12, frameId: 3, type: "sub_frame", url: URL_A, method: "POST", error: BLOCKED });
-  block(s, 12, URL_A, "GET");
   await s.fire(RETRY_AFTER_MS);
   assert.deepEqual(reloads(s), [[12]]);
+  // A method that is neither GET nor POST gets no reload either.
+  openPopup(s, { id: 13 });
+  await flush();
+  block(s, 13, URL_A, "PUT");
+  assert.deepEqual(s.notices().at(-1), { t: "blocked", tab: 13, host: "a.example" }, "at the decision, not at the reload's time");
+  await s.fire(RETRY_AFTER_MS);
+  assert.deepEqual(reloads(s), [[12]]);
+  assert.deepEqual(s.notices().at(-1), { t: "blocked", tab: 13, host: "a.example" });
+});
+
+// ---- review-21's notes: the paths that no test reached ----
+
+test("the navigation-target handler waits for the restore: the popup takes its scope from the restored map; meanwhile its tabs.onCreated waits for that scope, and a block sends its notice at once (no scope known: no retry)", async () => {
+  const f = makeFakeChrome();
+  f.manifest = { version: "0.3.1" };
+  f.setTabs([blank(7), blank(3)]);
+  let give;
+  f.impl["storage.session.get"] = () => new Promise((r) => (give = r));
+  const setTimer = () => ({});
+  const clearTimer = () => {};
+  const sent = [];
+  const link = { eventsOpen: () => true, sendEvent: (ev) => sent.push(ev) > 0 };
+  void new Bridge(f.chrome, link, { setTimer, clearTimer });
+  const r = receiver(f.chrome);
+  watchBlocked(f.chrome, (m) => sent.push(m), (d, m, send) => r.popups.screen(d, m, send));
+  const started = r.startup();
+  f.tabs_.push({ id: 9, windowId: 1, url: "" });
+  // The navigation target first (the eager attach is off), then Chrome's tabs.onCreated.
+  f.chrome.webNavigation.onCreatedNavigationTarget.fire({ ...NAV_TARGET.chrome[1][0], sourceTabId: 7, tabId: 9 });
+  f.chrome.tabs.onCreated.fire({ id: 9, windowId: 1, url: "" });
+  await flush();
+  assert.equal(r.map.has(9), false, "the handler waits for the restore");
+  assert.deepEqual(sent, [], "no bridge.tabScope, no navigation target and no tabs.onCreated before the popup's scope");
+  f.chrome.webNavigation.onErrorOccurred.fire({ tabId: 9, frameId: 0, url: URL_A, error: BLOCKED });
+  assert.deepEqual(sent.filter((m) => m.t === "blocked"), [{ t: "blocked", tab: 9, host: "a.example" }], "no retry for a popup whose scope is not known yet");
+  give({ "tab:7": B.scope });
+  await started;
+  await flush();
+  assert.equal(r.map.scopeOf(9), B.scope, "the opener's scope from the restored copy");
+  assert.deepEqual(sent.filter((m) => m.t === "ev" && m.ev !== "webNavigation.onErrorOccurred").map((m) => m.ev),
+    ["bridge.tabScope", "webNavigation.onCreatedNavigationTarget", "tabs.onCreated"]);
+  assert.deepEqual(f.callsTo("tabs.reload"), []);
+});
+
+test("the reload's own navigation is the one of the blocked URL: another URL's onBeforeNavigate after the reload does not count, and RETRY_START_MS sends the notice", async () => {
+  const s = await popupSetup();
+  openPopup(s);
+  await flush();
+  block(s, 9);
+  await s.fire(RETRY_AFTER_MS);
+  assert.deepEqual(reloads(s), [[9]]);
+  nav(s, "onBeforeNavigate", 9, "https://a.example/elsewhere");
+  await s.fire(RETRY_START_MS);
+  assert.deepEqual(s.notices(), [{ t: "blocked", tab: 9, host: "a.example" }]);
+});
+
+test("the hold: an end condition that came during the eager attach ends the event's hold as soon as it begins (a decision to send blocked)", async () => {
+  const s = await popupSetup({ eager: true });
+  let attached;
+  s.f.impl["debugger.attach"] = () => new Promise((r) => (attached = r));
+  const before = s.evs().length;
+  openPopup(s);
+  await flush();
+  block(s, 9, "https://b.example/x"); // a host off the list: the rule has ended, so the decision comes at once
+  await flush();
+  assert.deepEqual(s.notices(), [{ t: "blocked", tab: 9, host: "b.example" }]);
+  assert.equal(created(s, 9, before).length, 0, "the eager attach still runs");
+  attached();
+  await flush();
+  assert.deepEqual(created(s, 9, before).map((e) => e.held), [true], "it goes at once, with no timer");
+});
+
+test("the hold: RULE_QUIET_MS counts from the rule's end, also when the event's hold begins later; a failed rule update arms no timer", async () => {
+  const s = await popupSetup({ eager: true });
+  let attached;
+  s.f.impl["debugger.attach"] = () => new Promise((r) => (attached = r));
+  openPopup(s, { url: "about:blank" });
+  await flush(); // the rule is in force now
+  s.advance(30);
+  attached();
+  await flush();
+  assert.equal(s.pending(RULE_QUIET_MS - 30).length, 1, "20 ms are left of the 50");
+  assert.equal(s.pending(RULE_QUIET_MS).length, 0);
+  delete s.f.impl["debugger.attach"];
+  const fail = lateRules(s);
+  const { before } = await heldPopup(s, { id: 10, url: "about:blank" });
+  await fail(true);
+  assert.equal(s.pending(RULE_QUIET_MS).length, 0, "no rule in force: no timer");
+  assert.equal(created(s, 10, before).length, 0);
+  await s.fire(HOLD_MAX_MS);
+  assert.equal(created(s, 10, before).length, 1, "HOLD_MAX_MS ends it");
+});
+
+test("the hold: a main-frame navigation that started before the navigation target stops RULE_QUIET_MS too", async () => {
+  const s = await popupSetup({ eager: true });
+  const before = s.evs().length;
+  openPopup(s, { navTarget: false });
+  nav(s, "onBeforeNavigate", 9, URL_A);
+  navTargetOf(s, 9, 7);
+  await flush();
+  assert.ok(s.r.att.isBridgeTab(9));
+  assert.equal(s.pending(RULE_QUIET_MS).length, 0);
+  assert.equal(created(s, 9, before).length, 0, "still held");
+});
+
+test("a replaced popup's state goes: its held tabs.onCreated never comes, and its planned reload neither runs nor sends a notice", async () => {
+  const s = await popupSetup({ eager: true });
+  const { before } = await heldPopup(s);
+  nav(s, "onBeforeNavigate", 9, URL_A);
+  block(s, 9);
+  await flush();
+  s.f.tabs_ = s.f.tabs_.filter((t) => t.id !== 9);
+  s.f.tabs_.push({ id: 11, windowId: 1, url: URL_A });
+  s.f.chrome.tabs.onReplaced.fire(11, 9);
+  await s.fire(RETRY_AFTER_MS);
+  assert.deepEqual(reloads(s), []);
+  assert.deepEqual(s.notices(), []);
+  await s.fire(HOLD_MAX_MS);
+  assert.equal(created(s, 9, before).length, 0);
+  assert.equal(s.r.popups.has(9), false);
+});
+
+test("a popup that left its scope before its block gets its notice at the decision, with no reload", async () => {
+  const s = await popupSetup();
+  openPopup(s, { id: 10 });
+  await flush();
+  s.f.impl["debugger.getTargets"] = async () => [];
+  s.f.impl["tabs.remove"] = async () => {
+    throw new Error("held");
+  };
+  await s.set({ lists: B.setScopes.lists, scopes: { "md-gone": null }, default: null });
+  delete s.f.impl["debugger.getTargets"];
+  delete s.f.impl["tabs.remove"];
+  assert.equal(s.r.map.isOrphan(10), true);
+  block(s, 10);
+  assert.deepEqual(s.notices(), [{ t: "blocked", tab: 10, host: "a.example" }], "at once");
+  await s.fire(RETRY_AFTER_MS);
+  assert.deepEqual(reloads(s), []);
+});
+
+// review-21 note 3: the method of the block itself counts, not only the tab's last one.
+test("the method when the block comes counts too: a blocked POST whose URL a later GET event of the tab names gets no reload", async () => {
+  const s = await popupSetup();
+  const late = lateRules(s);
+  openPopup(s);
+  await flush();
+  block(s, 9, URL_A, "POST");
+  await flush();
+  requestError(s, 9, URL_A, "GET"); // before the late rule's end, when the decision comes
+  s.advance(RETRY_AFTER_MS);
+  await late();
+  await s.fire(RETRY_AFTER_MS);
+  assert.deepEqual(reloads(s), []);
+  assert.deepEqual(s.notices(), [{ t: "blocked", tab: 9, host: "a.example" }]);
+  // No method when the block came (its webRequest event came after webNavigation's error), a GET later: no reload.
+  openPopup(s, { id: 11 });
+  await flush();
+  block(s, 11, URL_A, null);
+  requestError(s, 11, URL_A, "GET");
+  await s.fire(RETRY_AFTER_MS);
+  assert.deepEqual(reloads(s), []);
+  assert.deepEqual(s.notices().at(-1), { t: "blocked", tab: 11, host: "a.example" });
+  // A GET block, then a POST event of the same URL before the reload: no reload either.
+  openPopup(s, { id: 10 });
+  await flush();
+  block(s, 10, URL_A, "GET");
+  requestError(s, 10, URL_A, "POST");
+  await s.fire(RETRY_AFTER_MS);
+  assert.deepEqual(reloads(s), []);
+  assert.deepEqual(s.notices().at(-1), { t: "blocked", tab: 10, host: "a.example" });
+});
+
+// review-21 note 5: Chrome can withhold the webRequest permission.
+test("with no chrome.webRequest the bridge still starts, logs one line, and the retry fails closed (no reload, the notice)", async () => {
+  const warned = [];
+  const warn = console.warn;
+  console.warn = (...a) => warned.push(a.join(" "));
+  let s;
+  try {
+    s = await popupSetup({ chromeEdit: (f) => delete f.chrome.webRequest });
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(s.resOf("open")[0].ok, true, "the bridge answers");
+  assert.deepEqual(warned.filter((w) => /webRequest/.test(w)).length, 1);
+  assert.ok(!warned.some((w) => /https?:|a\.example/.test(w)), "the log names no URL and no host");
+  openPopup(s);
+  await flush();
+  block(s, 9, URL_A, null);
+  await s.fire(RETRY_AFTER_MS);
+  assert.deepEqual(reloads(s), []);
+  assert.deepEqual(s.notices(), [{ t: "blocked", tab: 9, host: "a.example" }]);
 });

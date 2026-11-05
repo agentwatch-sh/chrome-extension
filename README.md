@@ -281,6 +281,7 @@ and no prompt showed.
 | `tabs` | to open the restore tab and to close the tabs that a send or a list change makes stale |
 | `storage` | to keep the copy of the tab-to-scope map in `chrome.storage.session` (only for this browser run), so a restarted service worker knows each tab's scope |
 | `webNavigation` | to know when the restore page has loaded, and to report a blocked navigation |
+| `webRequest` | to read the method of a popup's blocked first request: the retry reloads a GET only, so a form that posts into a new tab fails closed with no "Confirm Form Resubmission" dialog (read only; Chrome shows no install warning for it) |
 | `declarativeNetRequest` | the allowlist block, the frame rule and the navigation header |
 | `nativeMessaging` | the link to the agentwatch daemon |
 | `debugger` | to serve the restore page from the extension (the site never sees that request) and to bypass the site's service worker during the import; the bridge's CDP commands |

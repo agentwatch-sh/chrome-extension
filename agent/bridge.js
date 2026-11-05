@@ -328,8 +328,15 @@ export class Bridge {
     // tabs.onCreated (popups.js). No event of them goes to the relay.
     c.webNavigation.onBeforeNavigate.addListener((d) => this.#r.popups.beforeNavigate(d));
     c.webNavigation.onCommitted.addListener((d) => this.#r.popups.committed(d));
-    // The method of a blocked main-frame request: the retry reloads a GET only (popups.js).
-    c.webRequest.onErrorOccurred.addListener((d) => this.#r.popups.requestError(d), { urls: ["<all_urls>"], types: ["main_frame"] });
+    // The method of a blocked main-frame request: the retry reloads a GET only
+    // (popups.js). With no chrome.webRequest (Chrome withheld the permission)
+    // the bridge still starts, every method is unknown, and no popup gets a
+    // retry (fail closed).
+    if (c.webRequest && c.webRequest.onErrorOccurred) {
+      c.webRequest.onErrorOccurred.addListener((d) => this.#r.popups.requestError(d), { urls: ["<all_urls>"], types: ["main_frame"] });
+    } else {
+      console.warn("agentwatch receiver: no chrome.webRequest: a popup's blocked first request gets no retry");
+    }
     c.downloads.onCreated.addListener((item) => this.#emit("downloads.onCreated", { item }));
     c.downloads.onChanged.addListener((delta) => this.#emit("downloads.onChanged", { delta }));
   }

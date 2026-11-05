@@ -1457,7 +1457,10 @@ test("review-20's decisions are the contract: the closing rule at a set_scopes t
 test("part 1b's decisions are the contract (ab-v16.32, PR #21 questions 1 to 4): the retry reloads a GET only, the waits of a held or waiting tabs.onCreated, the retry of the first navigation, the four names", () => {
   const checks = [
     // Q1: no reload for a request that is not a GET, so a form's POST fails closed with no dialog.
-    "The retry reloads a GET only (ab-lead, PR #21 question 1). The receiver reads the method of the blocked request from `webRequest.onErrorOccurred` (permission `webRequest`; the receiver only reads it), and a request that is not a GET, or whose method (of the same URL) the receiver has not seen by the reload's time, gets no reload.",
+    "The retry reloads a GET only (ab-lead, PR #21 question 1). The receiver reads the method of the blocked request from `webRequest.onErrorOccurred` (permission `webRequest`; the receiver only reads it).",
+    // review-21 notes 3 and 5: the method when the block comes, and a withheld permission.
+    "The method of the tab's last blocked main-frame request of the same URL must be `GET` both when `webNavigation.onErrorOccurred` comes and at the reload's time (review-21 note 3); a request that is not a GET, or whose method the receiver has not seen then, gets no reload.",
+    "When Chrome withholds the permission (no `chrome.webRequest`), the bridge still starts and logs one line, every method is unknown, and no popup gets a retry (fail closed; review-21 note 5).",
     "So a form that posts into a new tab fails closed, with no dialog, and its `blocked` notice goes at the decision.",
     "Chrome's `tabs.reload` of a blocked POST opens its \"Confirm Form Resubmission\" dialog in the popup, which waits for a person",
     "Chrome shows no install warning for `webRequest`",

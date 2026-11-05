@@ -16,8 +16,10 @@ export const flush = async (n = 8) => {
 };
 
 // tabs: the open tabs; copy: chrome.storage.session; scopes: a set_scopes to apply after the link up.
-export async function startReceiver({ tabs = [], copy = null, targets = [], scopes = null, beforeStart = () => {} } = {}) {
+// chromeEdit(f): changes the fake chrome before the receiver is built (for example a withheld permission).
+export async function startReceiver({ tabs = [], copy = null, targets = [], scopes = null, beforeStart = () => {}, chromeEdit = () => {} } = {}) {
   const f = makeFakeChrome();
+  chromeEdit(f);
   f.manifest = { version: "0.3.0" };
   f.setTabs(structuredClone(tabs));
   f.targets_ = structuredClone(targets);
