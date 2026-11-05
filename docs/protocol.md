@@ -352,7 +352,9 @@ above. The entry rules (normalization, refusal) stay.
 - The closing rule: on each `set_scopes` the receiver closes every tab whose `http:`/`https:` host its
   list does not cover; for a tab of no scope, the union of the lists counts (so an operator's tab and
   the page of a finished import stay while a list covers them). It never closes the restore tab of a
-  running import. If that would close the last tab of a window, it first opens `about:blank` there.
+  running import. A window closes with its last tab, except the browser's last window: there the
+  receiver first opens `about:blank`, so that Chrome does not end. (With one window per page,
+  agent-browser PR #43, the old rule would leave an `about:blank` window for each closed page.)
 - The guard (the operator's choice 2 of the design can replace it with a block of service workers): a
   site's service worker answers a navigation before DNR sees it, also in a tab of a scope whose list
   lacks the site. Measured: a scope-B tab loaded a scope-A site's worker page, 20 of 20; a worker that
@@ -799,7 +801,10 @@ daemon's `allowlist` line above. The rest of C10 stays.
 - The receiver keeps a map from tab to scope. It sets a tab's scope in these cases only:
   - `tabs.create` with `[createProperties, scope]` and `windows.create` with `[createData, scope]`:
     the second arg is required, of the new kind `scope` (a string that matches C11's scope pattern).
-    The `url` of `newTab` and `newWindow` is `about:blank` only (it makes no request). The receiver
+    The `url` of `newTab` and `newWindow` is `about:blank` only (it makes no request). If the build
+    of one window per page (agent-browser PR #43) moves a popup into a window of its own
+    (`windows.create` with a `tabId`), that move takes no `url`, its scope arg must be the moved
+    tab's own scope (else `bad args`), and the tab keeps its scope and rules. The receiver
     creates the tab, sets its scope, and answers when the tab's scope rule (C5's target) is in force.
     When the rule update fails, the receiver closes the new tab and the op answers with the error
     (C5's target: a failed update fails closed).
