@@ -189,7 +189,7 @@
     {"t": "link", "up": true, "version": "0.2.0"},
     {"t": "link", "up": false},
     {"t": "allowlist", "lists": {"md": ["a.example"]}, "scopes": {"ab-lead": "md"}, "default": null},
-    {"t": "allowlist", "lists": {"md": ["a.example"]}, "scopes": {"ab-lead": "md", "md-worker": "md"}, "default": null, "operator": "*", "keys": {"ab-lead": "a8ae6e6ee929abea3afcfc5258c8ccd6f85273e0d4626d26c7279f3250f77c8e", "md-worker": "7b9d07f2404b102b3c62fede026097c5ab81668f18414abd8ea560cecb008006"}},
+    {"t": "allowlist", "lists": {"md": ["a.example"]}, "scopes": {"ab-lead": "md", "md-worker": "md"}, "default": null, "operator": "*", "roots": {"ab-lead": [{"pid": 3100, "start": 6000}], "md-worker": [{"pid": 3200, "start": 6200}]}},
     {"t": "end_scope", "scope": "ab-lead"}
   ],
   "windowRuleNote": "C10, removals and the last window (board ab-v16.41): one item of the receiver's removal queue. open: the tab ids of its tabs.query; pending: the tabs with a pending close (a close is pending from the moment its item starts it, for the receiver's close from the moment it joins the tab's chain, for a client's Page.close from its send, until the tab's tabs.onRemoved, or until it fails and the tab stays, after the fallback too and, when the receiver sent a Target.closeTarget command, only after that command also answered; a late answer counts as any answer); closes: the tabs that the item closes. guard: the receiver first opens an about:blank tab (not active, in no scope) in the window of the item's last tab, because no tab stays open other than the item's tabs and the pending ones.",
