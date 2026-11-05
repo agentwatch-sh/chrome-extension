@@ -209,7 +209,7 @@ There is no backward compatibility: agentwatch pins both repositories and moves 
     per-repo allowlists. Update it."
   - A new receiver and an old daemon: the receiver answers `set_allowlist` with
     `{"t":"res","id":"<id>","ok":false,"error":"set_allowlist is gone: send set_scopes"}` and applies
-    nothing, so no scope rule exists and every tab is blocked (it removed the old dynamic rules 2
+    nothing, so no scope rule exists and every tab except an import's restore tab is blocked (it removed the old dynamic rules 2
     and 4 at its start). An old relay's `tabs.create` without the scope arg gets `bad args`.
 - `set_allowlist` goes. In its place, on channel `main`:
   `{"t":"req","id":"<id>","op":"set_scopes","lists":{"<list>":["a.example"]},"scopes":{"<scope>":"<list>"},"default":"<list>"}` ->
@@ -239,8 +239,10 @@ There is no backward compatibility: agentwatch pins both repositories and moves 
     `scopes` in its next `set_scopes` (agentwatch stage 4, B5). So `scopes` holds only the live
     sessions, and the receiver's map cannot grow without bound. With `default` `null` (the design's
     choice 5 a) a dropped scope has no list, so its tabs fail closed. Only with a `default` list does
-    the daemon first send the ended scope as `null`, and drop it when `end_scope` has removed the
-    scope's tabs: so the ended scope never falls back to the `default` list.
+    the daemon first send the ended scope as `null`, so that it never falls back to the `default`
+    list. `end_scope` has no answer, so the daemon cannot see when the tabs are gone: it drops the
+    `null` entry 60 s after `end_scope` (the relay removes the tabs at once), or at the next `link`
+    up.
   - With choice 3 of the design (the operator's own tabs), `set_scopes` has one more field,
     `"operator"`: `"*"` (the marked tabs may open any site), a list name (they have that list), or
     `null` (no site; also when the field is absent). C10's target gives the mark. For "every repo's
@@ -360,7 +362,8 @@ above. The entry rules (normalization, refusal) stay.
     loses a scope replaces only the two rules of its list (of both lists when it changes lists). A
     tab that gets or loses the mark replaces rule 8 (with `"*"`) or its list's two rules. At each
     disconnect and each new daemon connection the receiver removes the scope rules (C10's target)
-    and keeps rule 8, because the mark stays; at its worker's start every session rule goes.
+    and keeps the marks, the last `operator` value and rule 8, because the operator's own tabs are no
+    connection's; at its worker's start every session rule goes (rules 6, 7 and 8 too).
   - A failed `updateSessionRules` (the rule limit, a Chrome error) fails closed: the receiver removes
     every scope rule and rule 8 with a remove-only call and keeps the map and the marks, so the tabs of every scope are
     blocked until the next update that succeeds; that next update is a full replace from the map. A
@@ -384,9 +387,10 @@ above. The entry rules (normalization, refusal) stay.
   entry, else the `default` list), and the new list lacks an entry of the old one. A new scope, a
   scope that leaves the map, and a scope whose new list is none (an ended session's `null`, a list
   that is gone) do not remove the workers: their tabs are blocked and close, so no tab of them can
-  reach a worker. The entries count, not the list names; "the last" is the last `set_scopes` that
-  applied in full. A failed removal fails the call (`ok: false`) after
-  the tabs closed; the next call removes again.
+  reach a worker. The `operator` value counts as one more scope's list: a change from `"*"` to a
+  list, or a list that loses an entry, removes the workers too. The entries count, not the list
+  names; "the last" is the last `set_scopes` that applied in full. A failed removal fails the call
+  (`ok: false`) after the tabs closed; the next call removes again.
 - The closing rule: on each `set_scopes` the receiver closes every tab whose `http:`/`https:` host its
   list does not cover; for a marked tab, its `operator` value counts (with `"*"` it never closes;
   with a list name, that list; with `null` no list, so its `http:`/`https:` page closes); for a tab of no scope, the union of the lists counts (so an
@@ -870,7 +874,8 @@ daemon's `allowlist` line above. The rest of C10 stays.
     build, the operator's tabs fail closed.
   - A tab leaves the map when it closes. At its worker's start and at each disconnect and each new
     daemon connection (the cleanup of "What stops a handler"), the receiver empties the map and
-    removes every scope rule; it keeps the marks and rule 8 (C5's target).
+    removes every scope rule; it keeps the marks, the last `operator` value and rule 8 (C5's
+    target).
   - No stale entry: the receiver writes a scope only for a tab that exists, and drops a write of an
     op or an event that started before the last reset (the epoch check of `attach.js`).
 - The new event `bridge.tabScope`, fields `"tabId"`, `"scope"`: sent when the receiver sets a scope
@@ -935,7 +940,9 @@ daemon's `allowlist` line above. The rest of C10 stays.
   events of the popup (for example `tabs.onUpdated`) go to the relay as they come, and the relay
   keeps `bridge.tabScope` and drops the other events of a tab that it does not know yet. So the
   held `tabs.onCreated` carries the tab's state at its release (the receiver reads the tab again
-  with `tabs.get` then). So a client attaches to a popup
+  with `tabs.get` then). A popup that closes while its event is held gets no `tabs.onCreated`; its
+  `tabs.onRemoved` goes as usual, and the relay drops the `bridge.tabScope` that it kept for it. So
+  a client attaches to a popup
   whose real document is still to come, and does not see Chrome's error page as the popup's page
   through CDP (the error page still shows in the window for 60 to 100 ms).
 - `contentDetails`: `<host>` must be covered by a list of the last applied `set_scopes` (any list).
@@ -944,7 +951,9 @@ daemon's `allowlist` line above. The rest of C10 stays.
 - The daemon's line `{"t":"allowlist","domains":[...]}` becomes
   `{"t":"allowlist","lists":{"<list>":["a.example"]},"scopes":{"<scope>":"<list>"},"default":"<list>"}`
   (with `"default":null` when there is none): the object of the `set_scopes` that the receiver
-  confirmed on the current connection. It comes after each such answer.
+  confirmed on the current connection. It comes after each such answer. With the design's choice 1
+  b it also carries `"keys":{"<scope>":"<sha-256 hex of the token>"}` (C11's target); the receiver
+  never sees the keys.
 
 ### C11. The endpoint (agent-browser's relay)
 
@@ -1216,8 +1225,9 @@ settings and the allowlist refusals above. The rest of C11 stays.
   vector checks both). A scope's list: the list that its `scopes` entry names, when it has an entry
   (no fall-back when that list is absent), else the `default` list.
 - Readiness per scope: the relay admits a connection of a scope while the link is up, `bridge.info`
-  answered with `bridge` 1 or more, and the last `allowlist` line gives the scope a list. Else 503
-  with the text above, or, when only the list is missing:
+  answered with `bridge` 1 or more, an `allowlist` line came after the link came up (today's rule),
+  and that line gives the scope a list. Else 503 with the text above, or, when only the list is
+  missing:
   503 `The agent browser is not ready: the allowlist has no list for this scope.` A scope whose
   list is empty is admitted; it can open `about:blank` only.
 - At each `allowlist` line, the relay closes every connection of a scope that has no list any more,
@@ -1255,10 +1265,26 @@ settings and the allowlist refusals above. The rest of C11 stays.
   "key"): any process of the daemon's OS user can connect with any scope and get that scope's list.
   With a token, `default` is `null`: a scope that `scopes` does not name has no token. The token
   lives only in the session's environment: never in an argv, never in the output of `agentwatch
-  browser endpoint` or `env`, never in a log, and never in a URL that a tool gets as an argument
-  (the client reads it from its environment and adds it to the URL itself). The same OS user can
-  read `/proc/<pid>/environ`, so the token guards against mistakes and against another session's
-  prompt injection, not against a hostile process of that user. A connection of a scope with no
-  valid token gets 403 `The agent browser needs this session's key. A session that started before
-  the key existed gets one when it starts again.` A session that is live before the deploy has no
-  token until its restart, so it gets that refusal (fail closed).
+  browser endpoint` or `agentwatch browser env`, never in a log, and never in a URL that a tool gets
+  as an argument (the client reads it from its environment and adds it to the URL itself). The same
+  OS user can read `/proc/<pid>/environ`, so the token guards against mistakes and against another
+  session's prompt injection, not against a hostile process of that user.
+  - The URL form: the token goes in the query, `ws+unix://<socket path>:/devtools/browser/<scope>?key=<token>`,
+    or in an upgrade header `X-Agentwatch-Key: <token>` for a client that can send one. Never in
+    the path: playwright-core 1.61.1 and 1.63.0 put the full path of a failed `connectOverCDP` into
+    the error (six times for a 503), and the Playwright MCP gives that error to the agent, so it
+    goes into a transcript; a `?key=` query reached the relay and Playwright removed it from the
+    error (measured by ab-lead's reviewer, review-42e). A client that prints the URL itself removes
+    the `key` query first: agent-browser's own errors and logs (its `cdpUrl` `UsageError` prints the
+    full URL today), and agentwatch's logs.
+  - The daemon's `allowlist` line carries a hash of each token: `"keys":{"<scope>":"<sha-256 hex>"}`.
+  - The order of the checks before the upgrade: a request with an `Origin` header gets its 403; a
+    path or scope that does not match gets the 404; a request with no token gets 403 `The agent
+    browser needs this session's key. A session that started before the key existed gets one when
+    it starts again.` at once, also while the relay is not ready; a request with a token while no
+    `allowlist` line came yet gets the 503; a token whose hash does not match the scope's gets the
+    same 403. So a session that is live before the deploy (it has no token until its restart) gets
+    the 403, fail closed.
+  - Over a daemon restart: the daemon keeps each live session's token in its own 0600 state (the
+    session's environment still holds it) and sends the hashes again in its next `allowlist` line.
+    A lost state means that those sessions get the 403 until they start again.
