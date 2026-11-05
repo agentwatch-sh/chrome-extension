@@ -1109,19 +1109,29 @@ vectors: `test/vectors/endpoint.json`.
   `AGENTWATCH_SESSION_ID`; C4) does nothing. agentwatch writes no `end_scope` for a name that is the
   launch scope of another live session: a rename into a former name can make one session's alias
   another session's scope.
-- The relay never closes the browser's last window. Before each `tabs.remove` (`end_scope`,
-  `Target.closeTarget`) it sends `tabs.query` with `{}`. When the tab is the browser's only tab, it
-  first opens an `about:blank` window that is not focused and in no scope, as C5's closing rule
-  opens `about:blank` before it closes the browser's last window. The relay does one such query and
-  removal at a time, so two removals cannot each find the other's tab and together close the last
-  window. When the query or the new window fails, the relay does not remove the tab: `end_scope`
-  leaves it open, and `Target.closeTarget` gives the client the error. Measured (board ab-v16.39,
-  Chromium 156): an `end_scope` that removed the browser's only tab ended Chromium (exit 0).
-  - Today's relay (before part 2, so with main `27543ce`'s ops) opens the window with
+- The relay never closes the browser's last window. A tab closes by the relay's `tabs.remove`
+  (`end_scope`, `Target.closeTarget`), or by a client's `Page.close` on a page session (Playwright's
+  `page.close({ runBeforeUnload: true })`), which the relay sends to Chrome. Before each of them the
+  relay sends `tabs.query` with `{}`. When the tab is the browser's only tab, it first opens an
+  `about:blank` window that is not focused and in no scope, as C5's closing rule opens `about:blank`
+  before it closes the browser's last window. The relay does one such query and close at a time, so
+  two closes cannot each find the other's tab and together close the last window. `Page.close`
+  answers before its tab closes, so the next query waits for the tab's `tabs.onRemoved`, at most
+  2 s (a `beforeunload` handler can keep the tab open); after an error of `Page.close` it does not
+  wait. When the query or the new window fails, the relay does not close the tab: `end_scope` leaves
+  it open, and `Target.closeTarget` and `Page.close` give the client the error. A page's own
+  `window.close()` is outside the relay: Chrome closes that tab itself.
+  - Measured (Chromium 156): an `end_scope` that removed the browser's only tab ended Chromium,
+    exit 0 (board ab-v16.39). Two removals at once of the browser's only two tabs (two scopes end
+    together) each read two tabs, opened no window, and ended Chromium (review-48 check X2b; live
+    again in review-51, with the relay's queue removed). A client's `Page.close` of the only tab
+    ended Chromium too (review-51).
+  - Today's relay (before part 2, so with the ops of agent package 0.2.0) opens the window with
     `windows.create` and `[{"url":"about:blank","focused":false}]`.
   - In the per-scope build `windows.create` needs a scope (C10), which would put the window into
     one. So there the receiver's `tabs.remove` does this, and this bullet goes (the orphan-tabs
-    design, board ab-v16.39, sections 7 and 13).
+    design, board ab-v16.39, sections 7 and 13). A client's `Page.close` does not use `tabs.remove`:
+    the per-scope build still needs a rule for it (open).
 - A link drop (C10 `link` down): every connection closes with
   1011, `The agent browser's link went down`. The model starts again at the next `link` up.
 - The relay stops: every connection closes with 1001, `The agent browser stopped`.
