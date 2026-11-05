@@ -342,11 +342,13 @@ above. The entry rules (normalization, refusal) stay.
   refused with "Session rule count exceeded."). A rule took 100,000 entries and 10,000 tab ids. At two
   rules per list, about 2,490 lists can be in use at once.
 - The worker removal: the receiver calls `browsingData.remove({}, {serviceWorkers: true})` after the
-  rule update and before the tabs close when the list of a scope that is in the last and the new
-  `scopes`, or the `default` list, lost an entry, and at the first `set_scopes` after its worker
-  starts. "Lost an entry" compares the entries of the lists, not their names; "the last" is the last
-  `set_scopes` that applied in full. A failed removal fails the call (`ok: false`) after the tabs closed; the next call removes
-  again.
+  rule update and before the tabs close when a scope that has a list in the last and in the new
+  `set_scopes` (its `scopes` entry, else the `default` list) lost an entry, and at the first
+  `set_scopes` after its worker starts. A scope whose new list is none (an ended session's `null`, a
+  list that is gone) does not remove the workers: its tabs are blocked and close, so no tab of it
+  can reach a worker. "Lost an entry" compares the entries of the lists, not their names; "the last"
+  is the last `set_scopes` that applied in full. A failed removal fails the call (`ok: false`) after
+  the tabs closed; the next call removes again.
 - The closing rule: on each `set_scopes` the receiver closes every tab whose `http:`/`https:` host its
   list does not cover; for a tab of no scope, the union of the lists counts (so an operator's tab and
   the page of a finished import stay while a list covers them). It never closes the restore tab of a
@@ -366,10 +368,13 @@ above. The entry rules (normalization, refusal) stay.
   navigation was stopped before its commit 10 of 10; a page that commits runs its scripts until the
   receiver acts (measured: `tabs.update` answered 50 to 75 ms after the navigation started). The
   relay refuses a client's `Page.navigate` and `Target.createTarget` off the list itself (C11's
-  target).
+  target). The guard stops the page, not the request of a worker that passes the navigation on: with
+  both receiver layers on, no page of such a worker committed in a scope-B tab (0 of 10), but its
+  request reached the site in 10 of 10, with the site's cookies, and the site's answer came back to
+  the worker (ab-lead's reviewer).
 - `blocked` (C4's target) names the tab's scope. One navigation sends at most one `blocked` (the
   guard and `onErrorOccurred` can both see it). C10's retry decides the notice of a popup's first
-  request.
+  request; a retried request that is blocked again sends `blocked` (there is no second retry).
 - The back/forward-cache limit above stays. The guard's `onCommitted` check also covers a page that
   Chrome restores from the cache and reports there (not measured).
 
@@ -817,8 +822,16 @@ daemon's `allowlist` line above. The rest of C10 stays.
     op or an event that started before the last reset (the epoch check of `attach.js`).
 - The new event `bridge.tabScope`, fields `"tabId"`, `"scope"`: sent when the receiver sets a scope
   itself (a popup, a replaced tab), as soon as it is in the map. Not for a tab of `tabs.create` or
-  `windows.create`: the relay named that scope. It can come before or after the tab's
-  `tabs.onCreated`.
+  `windows.create`: the relay named that scope. For a popup it comes before the popup's
+  `tabs.onCreated`: `webNavigation.onCreatedNavigationTarget` comes 0 to 1 ms after Chrome creates
+  the tab, before the eager attach ends; while the eager attach is off, the receiver sends a new
+  tab's `tabs.onCreated` after that event, or after 50 ms when none comes (a tab that no page
+  opened). The row for C10's event table, with the build:
+
+  | Event | Fields | When (target) |
+  | --- | --- | --- |
+  | `bridge.tabScope` | `"tabId"`, `"scope"` | When the receiver gives a tab a scope itself: a popup (its opener's), a replaced tab (its old one). Before the popup's `tabs.onCreated`. |
+
 - The retry. A popup's first request often starts before its rule is in force (measured: a `noopener`
   popup, a `target=_blank` link and a form with a target in every trial; a popup with an opener in a
   few). DNR blocks it (C5's target). The trigger: the tab's first main-frame
@@ -827,14 +840,27 @@ daemon's `allowlist` line above. The rest of C10 stays.
   when its rule was late). The receiver then calls `tabs.reload` on the tab once, at the later of
   the end of that update and the error event plus 50 ms (the error page has committed). Measured:
   the site got one GET; the page saw `history.length` 1, the same `window.opener` as with no block,
-  and its `document.referrer`; the request had the same `Sec-Fetch-*` headers and `Referer` as a
-  popup with no retry, and `Cache-Control: max-age=0` more (as any reload). A POST is not sent
-  again: a form that posts into a new tab fails closed. The `blocked` notice of the first request
-  waits for this decision: none for a retried request; one when the list does not cover the host,
-  or when the tab gets no scope.
+  and its `document.referrer`. What the site sees of the retried request differs by the kind of
+  popup: for a `target=_blank` link and a `noopener` `window.open`, the same `Sec-Fetch-*` headers
+  and `Referer` as with no retry, and `Cache-Control: max-age=0` more (as any reload); for the
+  sign-in pattern (`window.open("")`, then the opener sets `location`), which sends no
+  `Sec-Fetch-User` with no retry, also `Sec-Fetch-User: ?1`. A one-shot session rule that removes
+  `Cache-Control` from the retried request did not remove it (20 of 20, ab-lead's reviewer). A POST
+  is not sent again: a form that posts into a new tab fails closed. The `blocked` notice of the
+  first request waits for this decision: none for a retried request; one when the list does not
+  cover the host, or when the tab gets no scope; and one when the retried request is blocked again
+  (no second retry).
+- How often a popup with an opener needs the retry (it depends on load): in the probe 1 of 60 with
+  no hold and 2 of 60 with the hold; in ab-lead's reviewer's runs 3 to 4 of 20 with the hold, 2 of
+  10 for the sign-in pattern, and 8 of 10 with one window per page (agent-browser PR #43) behind
+  another window. The time of one assignment grows with the tabs open under the rules (the
+  reviewer: median 9 ms with none, 13 ms with 50, 25 ms with 100).
 - The hold stays. The retry's request is a document request of the tab, so the hold keeps it until
   the release, while the hold is still on (`HOLD_MAX_MS`; the retry comes about 70 ms after the
-  block).
+  block). While the eager attach is on, the receiver also holds a popup's `tabs.onCreated` event
+  until the popup's first request is allowed, or the retry's request is in the hold: so a client
+  attaches to a popup whose real document is still to come, and never sees Chrome's error page as
+  the popup's page.
 - `contentDetails`: `<host>` must be covered by a list of the last applied `set_scopes` (any list).
 - No op changes a list or a rule's entries. `tabs.create` and `windows.create` put the new tab under
   its scope's rules.
