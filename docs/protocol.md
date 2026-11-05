@@ -1147,8 +1147,9 @@ hold it; the last bullet gives the numbers and what the relay does about it.
     carries the `"operator":` field when `set_scopes` has one (the relay ignores it), and with the
     peer check `"roots":{"<scope>":[{"pid":<pane pid>,"start":<pane start>}]}`, each live session's
     roots (C11, the scope's session); the receiver never sees the roots. A root change needs no
-    `set_scopes`: the daemon writes a line with the new roots and the last confirmed object at once
-    (C11, the roots' life). The relay applies C4's rules to the line (C11, the scope's list).
+    `set_scopes`: the daemon writes a line with the new roots and the last confirmed object at once,
+    after the pane's scope wait and only after the first `ok` on the current connection (C11, the
+    roots' life). The relay applies C4's rules to the line (C11, the scope's list).
   - `{"t":"end_scope","scope":"<scope>"}`: the agentwatch session of that scope ended. The relay
     closes the scope's connections and removes its tabs (C11). The daemon can also write one for
     each alias of the session; the relay does nothing for a name that is no scope.
@@ -2098,10 +2099,12 @@ cgroup in ab-6gs.
   3. It starts a child process (`process.execPath` with a few lines of script) that connects to that
      socket and stays until the relay has read the connection.
   4. It reads the peer of the accepted socket and compares it with the child's facts: the pid (the
-     child's pid), the uid (the relay's), and, when `SO_PEERPIDFD` gives a pidfd, the pid that the
-     pidfd names (the `Pid:` line of `/proc/self/fdinfo/<pidfd>`). A connection from the relay to
-     itself would not do: a reader of the wrong fd (the listening socket's) gives the relay's own
-     pid too (measured).
+     child's pid), the uid (the relay's), the peer's parent (the relay's own pid) and its start time
+     (field 22 of `/proc/<pid>/stat`, or `proc_pidinfo` on the Mac: it must be readable), and, when
+     `SO_PEERPIDFD` gives a pidfd, the pid that the pidfd names (the `Pid:` line of
+     `/proc/self/fdinfo/<pidfd>`) and a `poll` of that pidfd, which must return 0 (the child lives;
+     review-19 note 5). A connection from the relay to itself would not do: a reader of the wrong fd
+     (the listening socket's) gives the relay's own pid too (measured).
   5. On Linux the answer of `SO_PEERPIDFD` selects the form of every later read: a pidfd of the
      child selects the **pidfd form**; `ENOPROTOOPT` (a kernel before 6.5) selects the **stat
      form**, which is not a failure; any other error fails the test. The Mac has one form.
@@ -2132,21 +2135,24 @@ cgroup in ab-6gs.
     `SO_PEERPIDFD` is the peer's 403, whatever its code: a peer that exited and was reaped gives
     `EINVAL` on Linux 6.12, and the relay does not rely on the code.
 - The session check (step 6), for a connection of scope S, in this order:
-  1. The peer is alive. Pidfd form: libc `poll` of the pidfd (`POLLIN`, a 0 ms timeout) does not
-     report it readable, the `Pid:` line of its `fdinfo` is the peer's pid (`-1` means that it was
-     reaped), and the peer's `/proc/<pid>/stat` can be read and its state (field 3) is not `Z`.
+  1. The peer is alive. Pidfd form: libc `poll` of the pidfd (`POLLIN`, a 0 ms timeout) returns 0
+     (not readable; 1, readable, means that the peer has exited, and -1, an error, counts as not
+     alive too), the `Pid:` line of its `fdinfo` is the peer's pid (`-1` means that it was reaped),
+     and the peer's `/proc/<pid>/stat` can be read and its state (field 3) is not `Z`.
      Each of the three counts alone: a process can show the state `Z` before its pidfd polls
      readable (a Node peer whose other threads still run), and a pidfd can poll readable while the
      state still shows `R` (both measured, review-54b note 2). Stat form and the Mac: the pid is
      still there, its start time is the one of the accept, and its state is not `Z` (on the Mac
      `pbi_status` is not `SZOMB`).
   2. The walk, from the peer itself (hop 0) to its parent, and on. It stops at the first process
-     that matches a root of the line, of any scope (also a root that does not count, below); at
-     pid 1; at a pid that has gone, or whose parent is 0; or after 32 hops (a root at most 32
-     parents above the peer counts). When it stops at a root of S that counts, the relay admits the
-     connection. When it stops at any other root, the relay refuses it, whatever the cgroup says:
-     so a process whose own walk reaches its own session's root never counts as another session,
-     also when it joined another session's cgroup.
+     that matches a root of the line, of any scope (also a root that does not count, below);
+     at pid 1; at a pid that has gone, or whose parent is 0; at a parent whose start time is later
+     than its child's (the parent's pid came back during the walk, so it is not the child's parent;
+     the same start time is a fork in the same clock tick, and the walk goes on; review-19 note 7);
+     or after 32 hops (a root at most 32 parents above the peer counts). When it stops at a root of
+     S that counts, the relay admits the connection. When it stops at any other root, the relay
+     refuses it, whatever the cgroup says: so a process whose own walk reaches its own session's
+     root never counts as another session, also when it joined another session's cgroup.
   3. On Linux only, and only when the walk stopped at no root: the peer's cgroup. The relay admits
      the connection when the peer's cgroup is the cgroup of a root of S whose cgroup counts, or a
      cgroup under it (`<root cgroup>/...`: a path under it, not a longer name with the same
@@ -2176,8 +2182,11 @@ cgroup in ab-6gs.
     relay that disagree fail closed, with a clear text. The shared vector: `lines` in
     `test/vectors/scopes.json`.
 - The defensive root rules. At each line the relay reads the `stat` and the cgroup of every root
-  that applies, and from them it decides which roots count, so that a wrong line never admits a
-  wrong session:
+  that applies, and from them it decides which roots count, so that the usual mistakes of a line (a
+  pid of the tmux server, a pane that two scopes name, a pane with no scope of its own) admit no
+  wrong session. They cannot catch every wrong line: a line that names another session's pane as a
+  scope's root admits that session's processes to the scope, so the daemon must send each
+  session's own pane (review-19 note 3):
   - A root counts only while it lives: the process with its pid has its start time.
   - A `(pid, start)` that two scopes name counts for neither scope.
   - A root that is an ancestor of another root (the walk from the other root reaches it) does not
@@ -2196,12 +2205,12 @@ cgroup in ab-6gs.
   - The daemon sends the roots of every live session in each `allowlist` line, from the session's
     first line on: its pane's pid (`tmux list-panes -F '#{pane_pid}'`) and that process's start
     time.
-  - At a launch, the daemon reads the new pane's pid and start (after `tmux new-session`, before
-    the launch line) before the scope enters its map, so the first line that names the scope
-    carries its root. Else, in the moment between, a just-launched session would get the session's
-    403 (step 6) in place of the no-list 503 (step 5) that tells it to connect again. For such a
-    window the session's 403 ends with `If this session started or restarted just now, connect
-    again in a few seconds.`
+  - At a launch, the daemon reads the new pane's pid and start (after `tmux new-session`, before the
+    launch line) and does the pane's scope wait (below) before the scope enters its map, so the
+    first line that names the scope carries its root, with the root's own scope cgroup. Else, in the
+    moment between, a just-launched session would get the session's 403 (step 6) in place of the
+    no-list 503 (step 5) that tells it to connect again. For such a window the session's 403 ends
+    with `If this session started or restarted just now, connect again in a few seconds.`
   - The daemon starts the pane's shell first, and types the agent's launch line into it only after
     the pane is in its own scope. tmux moves a new pane's process into the pane's scope after its
     fork, and a process that the pane forks before that move stays in the tmux server's cgroup for
@@ -2214,21 +2223,31 @@ cgroup in ab-6gs.
     the time limit passes, the daemon types the launch line, and the Browser page names the
     session: its root counts for the walk only. agentwatch's launch does this today
     (`new-session -d` with the default shell, then the launch line), so this is a rule to keep.
-  - When a root changes (a respawned pane: a restart, an account swap, a resume), the daemon
-    writes a line with the new root at once, with the last confirmed object, before the agent
-    starts in the new pane, and it does not wait for a `set_scopes` round trip: the receiver does
-    not use the roots. `tmux respawn-pane -k` gives the pane a new process and a new scope, so the
-    old pane's jobs (in the old scope, under no live root) are refused, also by their cgroup, and
-    the relay closes the connections of the old root (1008, when a connection ends).
+    The daemon does this wait before it sends the first line that carries a new root, at a launch
+    and at a respawn, or it sends that line again after the wait (review-19 note 1): tmux 3.5a moves
+    the pane's process into its scope after the fork, and the relay reads a root's cgroup at each
+    line, so a line from before the move gives the root its parent's cgroup (the tmux server's), and
+    the root's cgroup does not count until the next line.
+  - When a root changes (a respawned pane: a restart, an account swap, a resume), the daemon writes
+    a line with the new root as soon as the new pane is in its own scope (the scope wait above),
+    with the last confirmed object, before the agent starts in the new pane, and it does not wait
+    for a `set_scopes` round trip: the receiver does not use the roots. Such a line comes only after
+    the first `ok` on the current connection (review-19 note 6): the relay drops its line at each
+    link change, and a line carries only an object that the receiver confirmed on the current
+    connection (C10). Before that `ok`, the new root goes into the line that follows it.
+    `tmux respawn-pane -k` gives the pane a new process and a new scope, so the old pane's jobs (in
+    the old scope, under no live root) are refused, also by their cgroup, and the relay closes the
+    connections of the old root (1008, when a connection ends).
   - At a session's end the daemon drops the scope's roots in the line that drops the scope (with
-    5 b: that names it `null`; C4). Already before that line the pane has ended, so its root
-    matches no process and its cgroup counts for no connection. A process of the ended session
-    that still runs (a `nohup` job, a double-forked job, a command through a server that the session
-    left running, such as a nested tmux server) then connects to no scope: for its own scope it gets
-    the session's 403 until that line and the no-list 503 (step 5) after it, and for any other scope
-    the session's 403. Its open connections closed at the `end_scope` (1000) or close at that line
-    (1008). A later session of the same name has another pane, so another root (the operator's
-    ab-6gs answer).
+    5 b: that names it `null`; C4). Already before that line the pane has ended, so its root matches
+    no process and its cgroup counts for no connection. A process of the ended session that still
+    runs (a `nohup` job, a double-forked job, a command through a server that the session left
+    running, such as a nested tmux server) then connects to no scope: for its own scope it gets the
+    session's 403 until that line, and after it the no-list 503 (step 5) with 5 a or the session's
+    403 with 5 b (the line names the scope `null` and gives it no root: step 6 comes before step 7;
+    review-19 note 2); for any other scope it gets the session's 403. Its open connections closed at
+    the `end_scope` (1000) or close at that line (1008). A later session of the same name has
+    another pane, so another root (the operator's ab-6gs answer).
   - A session that agentwatch only stops (its agent ends, its pane stays) keeps its pane and its
     root until agentwatch ends the session: its jobs can still connect until then.
   - Over a daemon restart the daemon reads the pane of each live session again and sends its roots

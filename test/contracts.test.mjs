@@ -840,7 +840,7 @@ test("the peer check replaces the key (board ab-v16.50): no key text is left, an
   assert.ok(!says(C4, '"roots"'), "C4: no roots field in set_scopes");
   // C10: the start flag and the line.
   for (const s of ["with `--peer-check` when the peer check is on (C11, the scope's session)",
-    "A root change needs no `set_scopes`: the daemon writes a line with the new roots and the last confirmed object at once"]) {
+    "A root change needs no `set_scopes`: the daemon writes a line with the new roots and the last confirmed object at once, after the pane's scope wait and only after the first `ok` on the current connection"]) {
     assert.ok(says(C10, s), `C10 says: ${s}`);
   }
 });
@@ -860,7 +860,7 @@ test("C11's socket, URL, answers and closes follow the peer check", () => {
     "5. With the peer check, a scope that the last `allowlist` line does not name: the no-list 503. A just-launched session connects again",
     "the peer is alive, and the walk from it reaches a root of the scope that counts; a walk that stops at any other root refuses",
     "Only when the walk reaches no root, on Linux, may the peer's cgroup count: it must be in the pane's scope of a root of the scope. Else the session's 403",
-    "With the peer check, that is a named scope whose entry is `null`", "without the peer check, also a scope that the line does not name while `default` gives no list",
+    "With the peer check, that is a named scope whose entry is `null` (also an entry that applies as `null`, C4) or names a list that is not in `lists`", "without the peer check, also a scope that the line does not name while `default` gives no list",
     "With the peer check too, the relay never asks the daemon during an upgrade: it reads the peer at the accept, and step 6 runs in its event loop",
     "A session that is live at the deploy of the peer check gets its root in the daemon's first line after it"]) {
     assert.ok(says(before, s), `C11 says: ${s}`);
@@ -886,7 +886,8 @@ test("C11's scope's session holds the design's rules: the self-test, the peer re
   has(["a dynamic `import(\"node:ffi\")`, never a static import", "`ERR_UNKNOWN_BUILTIN_MODULE`", "A relay without `--peer-check` never loads `node:ffi`",
     "It makes a folder of mode 0700 with `mkdtemp` next to the endpoint socket", "The socket's path is at most 103 bytes, as the endpoint's; a longer path fails the test",
     "It starts a child process (`process.execPath` with a few lines of script) that connects to that socket and stays until the relay has read the connection",
-    "the pid (the child's pid), the uid (the relay's), and, when `SO_PEERPIDFD` gives a pidfd, the pid that the pidfd names", "A connection from the relay to itself would not do",
+    "the pid (the child's pid), the uid (the relay's), the peer's parent (the relay's own pid) and its start time (field 22 of `/proc/<pid>/stat`, or `proc_pidinfo` on the Mac: it must be readable)",
+    "and, when `SO_PEERPIDFD` gives a pidfd, the pid that the pidfd names (the `Pid:` line of `/proc/self/fdinfo/<pidfd>`) and a `poll` of that pidfd, which must return 0 (the child lives; review-19 note 5)", "A connection from the relay to itself would not do",
     "a pidfd of the child selects the **pidfd form**; `ENOPROTOOPT` (a kernel before 6.5) selects the **stat form**, which is not a failure; any other error fails the test",
     "The whole test has a time limit, `SELF_TEST_MS = 5000`", "In every path (a pass, a failure, the time limit) the relay stops the child and removes the folder",
     "`relay: the peer check runs (<form>)`, with `<form>` one of `pidfd`, `stat` and `mac`, or `relay: the peer check cannot run: <reason>`",
@@ -898,11 +899,11 @@ test("C11's scope's session holds the design's rules: the self-test, the peer re
     "The peer's 403 (step 3) is the one answer for every read that fails at the accept (review-54b note 1)",
     "In the pidfd form any error of `SO_PEERPIDFD` is the peer's 403, whatever its code"]);
   // The session check (step 6; review-54b note 2).
-  has(["libc `poll` of the pidfd (`POLLIN`, a 0 ms timeout) does not report it readable, the `Pid:` line of its `fdinfo` is the peer's pid (`-1` means that it was reaped), and the peer's `/proc/<pid>/stat` can be read and its state (field 3) is not `Z`",
+  has(["libc `poll` of the pidfd (`POLLIN`, a 0 ms timeout) returns 0 (not readable; 1, readable, means that the peer has exited, and -1, an error, counts as not alive too), the `Pid:` line of its `fdinfo` is the peer's pid (`-1` means that it was reaped), and the peer's `/proc/<pid>/stat` can be read and its state (field 3) is not `Z`",
     "Each of the three counts alone: a process can show the state `Z` before its pidfd polls readable", "and a pidfd can poll readable while the state still shows `R` (both measured, review-54b note 2)",
     "Stat form and the Mac: the pid is still there, its start time is the one of the accept, and its state is not `Z` (on the Mac `pbi_status` is not `SZOMB`)",
     "The walk, from the peer itself (hop 0) to its parent, and on. It stops at the first process that matches a root of the line, of any scope (also a root that does not count, below)",
-    "at pid 1; at a pid that has gone, or whose parent is 0; or after 32 hops (a root at most 32 parents above the peer counts)",
+    "at pid 1; at a pid that has gone, or whose parent is 0; at a parent whose start time is later than its child's (the parent's pid came back during the walk, so it is not the child's parent; the same start time is a fork in the same clock tick, and the walk goes on; review-19 note 7); or after 32 hops (a root at most 32 parents above the peer counts)",
     "When it stops at any other root, the relay refuses it, whatever the cgroup says", "a process whose own walk reaches its own session's root never counts as another session",
     "On Linux only, and only when the walk stopped at no root: the peer's cgroup", "the peer's cgroup is the cgroup of a root of S whose cgroup counts, or a cgroup under it (`<root cgroup>/...`: a path under it, not a longer name with the same start)",
     "The Mac has no cgroups: the walk alone decides there", "Before it admits, the relay checks item 1 again", "it then closes the pidfd with libc `close`, as in every other path"]);
@@ -913,21 +914,31 @@ test("C11's scope's session holds the design's rules: the self-test, the peer re
     "A scope with no root that applies admits no connection (step 6)", "A relay with `--peer-check` that gets a line with no `roots` field applies the lists, and no scope has a root",
     "A relay started without `--peer-check` that gets a line with a `roots` field (any value) applies no list of that line, as if no line had come: it closes the open connections (1008, no list any more)"]);
   // The defensive root rules.
-  has(["A root counts only while it lives", "A `(pid, start)` that two scopes name counts for neither scope", "A root that is an ancestor of another root (the walk from the other root reaches it) does not count, for the walk or the cgroup",
+  has(["so that the usual mistakes of a line (a pid of the tmux server, a pane that two scopes name, a pane with no scope of its own) admit no wrong session",
+    "They cannot catch every wrong line: a line that names another session's pane as a scope's root admits that session's processes to the scope, so the daemon must send each session's own pane (review-19 note 3)",
+    "a parent that the relay cannot read counts as the same cgroup", "A root of a scope that `scopes` does not name still counts for the defensive root rules",
+    "Its open connections closed at the `end_scope` (1000) or close at that line (1008)",
+    "When the import, the `dlopen`, a symbol, the listen, the child, the read, a compare or the time limit fails, the relay admits no connection",
+    "The design's W2 (the relay asks the daemon over Node's IPC channel) is a later build, only if this test fails on a box that agentwatch runs",
+    "a `getsockopt` that fails, no pid (0), a uid other than the relay's, and in the stat form and on the Mac a start time that the relay cannot read",
+    "A root counts only while it lives", "A `(pid, start)` that two scopes name counts for neither scope", "A root that is an ancestor of another root (the walk from the other root reaches it) does not count, for the walk or the cgroup",
     "A root's cgroup counts only when its pane has a scope of its own: the cgroup is not the cgroup of the root's parent", "no live root of another scope has the same cgroup, and no other live root's cgroup is under it (a nested scope)",
     "A root whose cgroup does not count still counts for the walk", "At a check the relay reads again only the scope's own roots (one `stat` and one cgroup read each)",
     "its cgroup only while it is the cgroup of the line's read"]);
   // The roots' life (design 9.2 and 10; review-54b notes 5 and 6; ab-6gs).
   has(["The daemon sends the roots of every live session in each `allowlist` line, from the session's first line on",
-    "At a launch, the daemon reads the new pane's pid and start (after `tmux new-session`, before the launch line) before the scope enters its map",
+    "At a launch, the daemon reads the new pane's pid and start (after `tmux new-session`, before the launch line) and does the pane's scope wait (below) before the scope enters its map, so the first line that names the scope carries its root, with the root's own scope cgroup",
+    "The daemon does this wait before it sends the first line that carries a new root, at a launch and at a respawn, or it sends that line again after the wait (review-19 note 1)",
+    "so a line from before the move gives the root its parent's cgroup (the tmux server's), and the root's cgroup does not count until the next line",
     "the session's 403 ends with `If this session started or restarted just now, connect again in a few seconds.`",
     "The daemon starts the pane's shell first, and types the agent's launch line into it only after the pane is in its own scope",
     "a process that the pane forks before that move stays in the tmux server's cgroup for its life", "with a time limit (agentwatch picks it; a few seconds)",
     "It does not wait on the Mac (no cgroups), nor on a box where the tmux server cannot reach the user's D-Bus", "When the time limit passes, the daemon types the launch line",
-    "When a root changes (a respawned pane: a restart, an account swap, a resume), the daemon writes a line with the new root at once, with the last confirmed object, before the agent starts in the new pane",
+    "When a root changes (a respawned pane: a restart, an account swap, a resume), the daemon writes a line with the new root as soon as the new pane is in its own scope (the scope wait above), with the last confirmed object, before the agent starts in the new pane",
+    "Such a line comes only after the first `ok` on the current connection (review-19 note 6)", "Before that `ok`, the new root goes into the line that follows it",
     "`tmux respawn-pane -k` gives the pane a new process and a new scope, so the old pane's jobs (in the old scope, under no live root) are refused, also by their cgroup",
     "At a session's end the daemon drops the scope's roots in the line that drops the scope", "Already before that line the pane has ended, so its root matches no process and its cgroup counts for no connection",
-    "for its own scope it gets the session's 403 until that line and the no-list 503 (step 5) after it, and for any other scope the session's 403",
+    "for its own scope it gets the session's 403 until that line, and after it the no-list 503 (step 5) with 5 a or the session's 403 with 5 b (the line names the scope `null` and gives it no root: step 6 comes before step 7; review-19 note 2); for any other scope it gets the session's 403",
     "A session that agentwatch only stops (its agent ends, its pane stays) keeps its pane and its root until agentwatch ends the session",
     "Over a daemon restart the daemon reads the pane of each live session again and sends its roots in its next line"]);
   // What others get, the jobs, the limit, age-4ks.
@@ -938,6 +949,7 @@ test("C11's scope's session holds the design's rules: the self-test, the peer re
     "the check binds a connection to the session whose process connected", "The operator's answer age-4ks (\"env: no\", 2026-11-04) stands",
     "each case gives the peer and a fake process table, so both sides test with a fake peer reader"]);
   assert.ok(!says(ses, "for a moment") && !says(C4, "for a moment"), "review-54b note 6: no 'for a moment' in the rules of the move");
+  assert.ok(!says(ses, "so that a wrong line never admits a wrong session"), "review-19 note 3: the old claim is gone");
 });
 
 test("review-18's notes (board ab-v16.50): the file of ended scopes, the freed names, note 9's wording, and literal checks", () => {
@@ -1021,13 +1033,16 @@ function worldOf(c) {
 const MAX_HOPS = 32;
 const key = (pid, start) => `${pid}:${start}`;
 // The walk from pid (hop 0) through its parents: the first process that matches a root of `named`
-// (by pid and start), or null when it reaches pid 1, a pid that has gone, a parent 0, or 32 hops.
+// (by pid and start), or null when it reaches pid 1, a pid that has gone, a parent 0, a parent whose
+// start time is later than its child's (its pid came back), or 32 hops.
 function walk(w, pid, named) {
+  let child = null;
   for (let hop = 0; hop <= MAX_HOPS; hop++) {
     const s = w.get(pid);
-    if (!s) return null;
+    if (!s || (child !== null && s.start > child.start)) return null;
     if (named.has(key(pid, s.start))) return key(pid, s.start);
     if (pid === 1 || s.ppid === 0) return null;
+    child = s;
     pid = s.ppid;
   }
   return null;
@@ -1078,7 +1093,7 @@ function sessionCheck(c, a, scope) {
   const alive = () => {
     const s = w.get(p.pid);
     if (!s || s.state === "Z") return false;
-    if (form === "pidfd") return !p.pidfd.readable && p.pidfd.fdinfoPid === p.pid;
+    if (form === "pidfd") return p.pidfd.poll === 0 && p.pidfd.fdinfoPid === p.pid; // 1: readable (exited); -1: an error
     return s.start === p.start; // the stat form and the Mac: the start of the accept
   };
   if (!alive()) return null;
@@ -1148,6 +1163,11 @@ test("the session check: each world is a process table, and each rule of C11 has
     const pids = endpoint.procs.filter((p) => p.world === world).map((p) => p.pid);
     assert.equal(new Set(pids).size, pids.length, `${world}: each pid once`);
   }
+  for (const c of endpoint.upgradeChecks) {
+    for (const k of Object.keys(c)) assert.ok(["note", "peerCheck", "relay", "request", "peer", "world", "procs", "answer"].includes(k), `${c.note}: a known field ${k}`);
+    for (const k of Object.keys(c.relay)) assert.ok(["link", "bridge", "line", "selfTest"].includes(k), `${c.note}: a known relay field ${k}`);
+    for (const k of Object.keys(c.peer ?? {})) assert.ok(["read", "pid", "uid", "pidfd", "start"].includes(k), `${c.note}: a known peer field ${k}`);
+  }
   const checked = endpoint.upgradeChecks.filter((c) => c.peerCheck);
   for (const c of checked) {
     assert.ok(["pidfd", "stat", "mac", "failed"].includes(c.relay.selfTest), `${c.note}: the self-test's result`);
@@ -1170,8 +1190,11 @@ test("the session check: each world is a process table, and each rule of C11 has
   assert.ok(by("cannotRead", (c) => !c.relay.link) && by("cannotRead", (c) => !c.peer.read), "the self-test's 503 also while not ready, before the peer's 403");
   assert.ok(by("fromPage", (c) => !c.peer.read) && by("notFound", (c) => !c.peer.read) && by("notFound", (c) => c.relay.selfTest === "failed"), "Origin and the 404 come before the peer read");
   // The alive checks (review-54b note 2: each counts alone).
-  assert.ok(by("session", (c, w) => c.relay.selfTest === "pidfd" && proc(c, w)?.state === "Z" && !c.peer.pidfd.readable && c.peer.pidfd.fdinfoPid === c.peer.pid), "Z before the pidfd polls readable");
-  assert.ok(by("session", (c, w) => c.relay.selfTest === "pidfd" && c.peer.pidfd.readable && proc(c, w)?.state !== "Z"), "a readable pidfd while the state is not Z");
+  assert.ok(by("session", (c, w) => c.relay.selfTest === "pidfd" && proc(c, w)?.state === "Z" && c.peer.pidfd.poll === 0 && c.peer.pidfd.fdinfoPid === c.peer.pid), "Z before the pidfd polls readable");
+  assert.ok(by("session", (c, w) => c.relay.selfTest === "pidfd" && c.peer.pidfd.poll === 1 && proc(c, w)?.state !== "Z"), "a readable pidfd while the state is not Z");
+  assert.ok(by("session", (c, w) => c.relay.selfTest === "pidfd" && c.peer.pidfd.poll === -1 && c.peer.pidfd.fdinfoPid === c.peer.pid && proc(c, w)?.state !== "Z"), "a poll that returns -1 (review-19 note 5)");
+  assert.ok(by("session", (c, w) => c.relay.selfTest === "pidfd" && c.peer.pidfd.poll === 0 && ![-1, c.peer.pid].includes(c.peer.pidfd.fdinfoPid) && proc(c, w)?.state !== "Z"), "an fdinfo pid that is not -1 and not the peer's (review-19 V10)");
+  for (const c of checked.filter((x) => x.relay.selfTest === "pidfd" && isObj(x.peer.pidfd))) assert.ok([0, 1, -1].includes(c.peer.pidfd.poll) && Number.isInteger(c.peer.pidfd.fdinfoPid), `${c.note}: poll and fdinfoPid`);
   assert.ok(by("session", (c, w) => c.relay.selfTest === "pidfd" && c.peer.pidfd.fdinfoPid === -1 && proc(c, w)?.state !== "Z"), "an fdinfo pid of -1");
   for (const form of ["stat", "mac"]) {
     assert.ok(by("session", (c, w) => c.relay.selfTest === form && proc(c, w) && proc(c, w).start !== c.peer.start), `${form}: a start that changed`);
@@ -1195,6 +1218,18 @@ test("the session check: each world is a process table, and each rule of C11 has
     assert.ok(by(answer, (c) => c.relay.line === line), `${what} (${line})`);
   }
   assert.ok(by("session", (c) => (c.procs ?? []).some((p) => p.pid === 3200 && p.cgroup?.endsWith("tmux-spawn-1a2b.scope"))), "a cgroup that a root of another scope shares");
+  // review-19 B1, B2: a shared root from both scopes; an ancestor root's cgroup, for a peer whose walk does not pass it; a walk
+  // that stops at a root that does not count, for a peer in the cgroup of a root of the scope that counts.
+  const shared = applyLine(endpoint.lines.peerSharedRoot, true).roots;
+  const sharedRoot = shared["md-lead"].find((r) => shared["md-worker"].some((o) => o.pid === r.pid && o.start === r.start));
+  for (const sc of ["md-lead", "md-worker"]) assert.ok(by("session", (c, w) => c.relay.line === "peerSharedRoot" && scopeOf(c) === sc && chainTo(c, w, sharedRoot.pid) >= 0), `a shared root, from ${sc}`);
+  const server = applyLine(endpoint.lines.peerServerRoot, true).roots["md-worker"][0];
+  assert.ok(by("session", (c, w) => c.relay.line === "peerServerRoot" && chainTo(c, w, server.pid) < 0 && proc(c, w)?.cgroup === w.get(server.pid).cgroup), "an ancestor root's cgroup admits no one (F2)");
+  assert.ok(by("session", (c, w) => c.relay.line === "peerSharedRoot" && scopeOf(c) === "md-worker" && chainTo(c, w, sharedRoot.pid) >= 0 && shared["md-worker"].some((r) => r.pid !== sharedRoot.pid && proc(c, w)?.cgroup === w.get(r.pid).cgroup)), "the walk stops at a root that does not count, whatever the cgroup (F3)");
+  assert.ok(by("session", (c) => c.relay.line === "peerUnnamedShares" && Object.keys(applyLine(endpoint.lines.peerUnnamedShares, true).roots).some((sc) => !Object.hasOwn(endpoint.lines.peerUnnamedShares.scopes, sc))), "a root of a scope that scopes does not name counts for the defensive rules (V21)");
+  assert.ok(by("session", (c, w) => c.relay.line === "peer" && (c.procs ?? []).some((p) => p.pid === 3100 && !p.gone && p.start === 6000 && !w.has(p.ppid)) && proc(c, w)?.ppid === 1144), "a root whose parent the relay cannot read: no cgroup (V19)");
+  assert.ok(by("session", (c, w) => (c.procs ?? []).some((p) => p.pid === proc(c, w)?.ppid && p.start > proc(c, w).start)) && by(101, (c, w) => (c.procs ?? []).some((p) => p.pid === proc(c, w)?.ppid && p.start === proc(c, w).start)), "a parent later than its child stops the walk; the same start does not (note 7)");
+  assert.ok(by("session", (c) => c.relay.line === "peerLeadNull" && (c.procs ?? []).some((p) => p.pid === 3100 && p.gone)), "the ended session with 5 b: the session's 403 after the line (note 2)");
   assert.ok(by("session", (c) => (c.procs ?? []).some((p) => p.pid === 3100 && !p.gone && p.start !== 6000)), "a root pid with another start");
   assert.ok(by("session", (c) => c.peer.pid === 3203 && c.request.path.endsWith("/md-lead")) && by(101, (c) => c.peer.pid === 3203 && c.request.path.endsWith("/md-worker")), "the walk decides over a joined cgroup");
   assert.ok(by(101, (c) => c.peer.pid === 3302 && c.request.path.endsWith("/md-lead")), "the cost: the server path counts as the server's session (review-54)");
