@@ -2135,11 +2135,11 @@ cgroup in ab-6gs.
   1. The peer is alive. Pidfd form: libc `poll` of the pidfd (`POLLIN`, a 0 ms timeout) does not
      report it readable, the `Pid:` line of its `fdinfo` is the peer's pid (`-1` means that it was
      reaped), and the peer's `/proc/<pid>/stat` can be read and its state (field 3) is not `Z`.
-     Each of the three counts alone: a process can show the state `Z` before its pidfd polls readable (a Node peer
-     whose other threads still run), and a pidfd can poll readable while the state still shows `R`
-     (both measured, review-54b note 2). Stat form and the Mac: the pid is still there, its start
-     time is the one of the accept, and its state is not `Z` (on the Mac `pbi_status` is not
-     `SZOMB`).
+     Each of the three counts alone: a process can show the state `Z` before its pidfd polls
+     readable (a Node peer whose other threads still run), and a pidfd can poll readable while the
+     state still shows `R` (both measured, review-54b note 2). Stat form and the Mac: the pid is
+     still there, its start time is the one of the accept, and its state is not `Z` (on the Mac
+     `pbi_status` is not `SZOMB`).
   2. The walk, from the peer itself (hop 0) to its parent, and on. It stops at the first process
      that matches a root of the line, of any scope (also a root that does not count, below); at
      pid 1; at a pid that has gone, or whose parent is 0; or after 32 hops (a root at most 32
