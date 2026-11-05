@@ -721,7 +721,7 @@ test("review-17f's notes (board ab-v16.48): the daemon's file and gate, the orph
     "No `set_scopes` names a scope while its name is in the file, also when a new live session has that name",
     "an old X ends, a new X launches, and the daemon stops before the `ok` in time of the split's first `set_scopes`", "The **restart gate**",
     "after a daemon start no launch's scope and no name of the file enters a `set_scopes` until the first `set_scopes` of rule 1 is answered `ok` in time",
-    "A lost write:", "So the daemon writes the name first: before its `end_scope`, before its next `set_scopes`, and before a launch can take the name",
+    "The failure modes of the file, and their fixes:", "A lost write:", "So the daemon writes the name first: before its `end_scope`, before its next `set_scopes`, and before a launch can take the name",
     "The write replaces the file in one step (a new file, then a rename), so a stop never leaves half a file",
     "A lost prune:", "the daemon removes a name from the file before any `set_scopes` names it again", "A stop of the box: the file needs no sync to disk",
     "A file that the daemon cannot read or parse at its start", "the daemon counts the name of every live session as a name of the file",
