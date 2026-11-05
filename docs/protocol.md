@@ -201,7 +201,7 @@ There is no backward compatibility: agentwatch pins both repositories and moves 
 
 - The rollout. The receiver's hello names the new form:
   `{"t":"hello","v":2,"version":"<manifest version>","channels":["main","bridge"],"features":["scopes"]}`.
-  Each side meets the other's old form fails closed, by name:
+  When one side meets the other side's old form, it fails closed, in the named way:
   - A new daemon and an old receiver (its latest hello has no `"scopes"` in `features`): the daemon
     sends `set_allowlist` with `"domains":[]` (the old receiver then blocks every site and closes its
     `http:`/`https:` tabs), writes no `allowlist` line to the relay (so the relay admits no
@@ -324,8 +324,10 @@ There is no backward compatibility: agentwatch pins both repositories and moves 
 above. The entry rules (normalization, refusal) stay.
 
 - Each tab has at most one scope (C10's target gives the map), and each scope at most one list
-  (`set_scopes`, C4's target: its `scopes` entry when it has one, else `default`). A **tab's list** is its scope's list. A tab of
-  no scope, and a tab whose scope has no list, has no list.
+  (`set_scopes`, C4's target: its `scopes` entry when it has one, else `default`). A **tab's list** is
+  its scope's list. A marked tab (C10's target, the operator mark) has no scope; its list is its
+  `operator` value: `"*"` (any site), a list, or none (`null`: the tab fails closed, as a tab with no
+  list). Any other tab of no scope, and a tab whose scope has no list, has no list.
 - The rules:
   - Static rules 1 (`block_main_frame`) and 3 (`block_frames`) stay as above.
   - Dynamic rule 5 (the navigation-header rule) stays as above. The receiver writes it at each
@@ -338,9 +340,11 @@ above. The entry rules (normalization, refusal) stay.
   - The **scope rules** are session rules (`updateSessionRules`). For each list L that has at least
     one entry and is the list of at least one open tab: one rule with priority 2,
     `{"type":"allow"}`, `requestDomains` = L, `resourceTypes: ["main_frame"]`, `tabIds` = the tabs
-    whose list is L; and one rule with priority 2, `{"type":"allow"}`, `topDomains` = L,
-    `resourceTypes: ["sub_frame", "object"]`, the same `tabIds`. Their ids are 100 and up, two per
-    list; the receiver picks them. A list with no open tab or no entry has no rule.
+    whose list is L (marked tabs with `"operator":"<L>"` included); and one rule with priority 2,
+    `{"type":"allow"}`, `topDomains` = L, `resourceTypes: ["sub_frame", "object"]`, the same
+    `tabIds`. Their ids are 100 and up, two per list; the receiver picks them. A list with no open
+    tab whose list it is, or with no entry, has no rule; a list that only marked tabs use has its two
+    rules too.
   - The import's rules (C6's target): session rule id 6, priority 2, `{"type":"allow"}`,
     `requestDomains` = [the import's `domain`], `resourceTypes: ["main_frame"]`, `tabIds` = [the
     restore tab]; and session rule id 7, priority 2, `{"type":"allow"}`, `topDomains` = [the same
@@ -352,10 +356,13 @@ above. The entry rules (normalization, refusal) stay.
     while no tab is marked (DNR refuses an empty `tabIds`). With `"operator":"<list>"`, the marked
     tabs join the `tabIds` of that list's two scope rules. With `null`, they have no rule.
   - Each change is one `updateSessionRules` call, and the changes run one after the other, each from
-    the map when it runs. A `set_scopes` replaces every scope rule. A tab that gets or loses a scope
-    replaces only the two rules of its list (of both lists when it changes lists).
+    the map when it runs. A `set_scopes` replaces every scope rule and rule 8. A tab that gets or
+    loses a scope replaces only the two rules of its list (of both lists when it changes lists). A
+    tab that gets or loses the mark replaces rule 8 (with `"*"`) or its list's two rules. At each
+    disconnect and each new daemon connection the receiver removes the scope rules (C10's target)
+    and keeps rule 8, because the mark stays; at its worker's start every session rule goes.
   - A failed `updateSessionRules` (the rule limit, a Chrome error) fails closed: the receiver removes
-    every scope rule with a remove-only call and keeps the map, so the tabs of every scope are
+    every scope rule and rule 8 with a remove-only call and keeps the map and the marks, so the tabs of every scope are
     blocked until the next update that succeeds; that next update is a full replace from the map. A
     failed `set_scopes` answers `ok: false` after the tabs close (the closing rule runs with the new
     lists). If the remove-only call fails too, old rules can stay in force: the guard below still
@@ -382,7 +389,7 @@ above. The entry rules (normalization, refusal) stay.
   the tabs closed; the next call removes again.
 - The closing rule: on each `set_scopes` the receiver closes every tab whose `http:`/`https:` host its
   list does not cover; for a marked tab, its `operator` value counts (with `"*"` it never closes;
-  with a list name, that list); for a tab of no scope, the union of the lists counts (so an
+  with a list name, that list; with `null` no list, so its `http:`/`https:` page closes); for a tab of no scope, the union of the lists counts (so an
   unmarked operator's tab and the page of a finished import stay while a list covers them). It never closes the restore tab of a
   running import. A window closes with its last tab, except the browser's last window: there the
   receiver first opens `about:blank`, so that Chrome does not end. (With one window per page,
@@ -397,7 +404,7 @@ above. The entry rules (normalization, refusal) stay.
   main-frame `webNavigation.onBeforeNavigate` and `webNavigation.onCommitted` of an `http:`/`https:`
   URL, or a `blob:` URL with such an inner origin, whose host the tab's list does not cover (for a
   tab of no scope: the union of the lists; for the restore tab: its `domain`; for a marked tab:
-  nothing with `"*"`, else the named list), the receiver sends the tab to `about:blank` (`tabs.update`) and sends `blocked`. `onCommitted` also catches a redirect from
+  nothing with `"*"`, the named list with a name, every host with `null`), the receiver sends the tab to `about:blank` (`tabs.update`) and sends `blocked`. `onCommitted` also catches a redirect from
   a host of the list to a worker's host (a redirect fires no new `onBeforeNavigate`). A page's own
   navigation was stopped before its commit 10 of 10; a page that commits runs its scripts until the
   receiver acts (measured: `tabs.update` answered 50 to 75 ms after the navigation started). The
@@ -863,7 +870,7 @@ daemon's `allowlist` line above. The rest of C10 stays.
     build, the operator's tabs fail closed.
   - A tab leaves the map when it closes. At its worker's start and at each disconnect and each new
     daemon connection (the cleanup of "What stops a handler"), the receiver empties the map and
-    removes every scope rule.
+    removes every scope rule; it keeps the marks and rule 8 (C5's target).
   - No stale entry: the receiver writes a scope only for a tab that exists, and drops a write of an
     op or an event that started before the last reset (the epoch check of `attach.js`).
 - The new event `bridge.tabScope`, fields `"tabId"`, `"scope"`: sent when the receiver sets a scope
@@ -900,7 +907,9 @@ daemon's `allowlist` line above. The rest of C10 stays.
   `webRequest` and no `declarativeNetRequestFeedback` permission (`onRuleMatchedDebug` works only
   unpacked), so the signal of "no request" comes from `webNavigation`: no main-frame
   `onBeforeNavigate` of the URL within 1 s of the `tabs.reload`, or an `onErrorOccurred` with
-  another error (which one a POST gets is not measured).
+  another error (which one a POST gets is not measured). An `onBeforeNavigate` that comes after the
+  1 s gives a false `blocked` notice; the notice does not stop that navigation. "Blocked again" is a
+  second `ERR_BLOCKED_BY_CLIENT` of the reload's own navigation, not of a later one.
 - How often a popup with an opener needs the retry (it depends on load): in the probe 1 of 60 with
   no hold and 2 of 60 with the hold; in ab-lead's reviewer's runs 3 to 4 of 20 with the hold, 2 of
   10 for the sign-in pattern, and 8 of 10 with one window per page (agent-browser PR #43) behind
@@ -915,11 +924,18 @@ daemon's `allowlist` line above. The rest of C10 stays.
   (a host off the list, a popup of no scope, a retry that is blocked again, a retry that starts no
   request); a main-frame commit with no network request (a `blob:` URL, a worker's page; not an
   `about:blank` that the opener writes into, which makes no new commit and looks like the first
-  step of the sign-in pattern); no main-frame navigation within 50 ms from the moment the popup's
-  rule is in force (a later navigation is allowed by the rule and needs no retry; this ends the
-  hold of a popup that stays at `about:blank`); `HOLD_MAX_MS` after `tabs.onCreated`. Other events
-  of the popup that come before its `tabs.onCreated` go to the relay as they come; the relay keeps
-  `bridge.tabScope` and drops the other events of a tab that it does not know yet. So a client attaches to a popup
+  step of the sign-in pattern); 50 ms from the moment the popup's rule is in force, with no
+  main-frame navigation of the popup started (a later navigation is allowed by the rule and needs no
+  retry; this ends the hold of a popup that stays at `about:blank`); `HOLD_MAX_MS` after
+  `tabs.onCreated`. The 50 ms timer runs only while the popup has started no main-frame navigation
+  (`about:blank` does not count): a navigation that started before the rule (for example a
+  `noopener` popup's, blocked at 8 to 21 ms while its rule comes at 15 to 47 ms), or a planned retry
+  (its request comes 62 to 95 ms after the block), stops the timer, and then only the other
+  conditions end the hold. Chrome fires `tabs.onCreated` first, and the receiver holds it; other
+  events of the popup (for example `tabs.onUpdated`) go to the relay as they come, and the relay
+  keeps `bridge.tabScope` and drops the other events of a tab that it does not know yet. So the
+  held `tabs.onCreated` carries the tab's state at its release (the receiver reads the tab again
+  with `tabs.get` then). So a client attaches to a popup
   whose real document is still to come, and does not see Chrome's error page as the popup's page
   through CDP (the error page still shows in the window for 60 to 100 ms).
 - `contentDetails`: `<host>` must be covered by a list of the last applied `set_scopes` (any list).
