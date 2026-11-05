@@ -84,7 +84,11 @@ const scoped = (v) => SCOPED_OPS.has(v.req.op);
 // so they would also pass for a receiver that ignores it: part 1a's setup must apply the vector's setScopes,
 // and keep a positive tabs.create of a scope with a list (ab-lead) in the same setup (review-17 L8).
 // The request vector of tabs.remove holds the receiver's close of the per-scope build (Target.closeTarget
-// through chrome.debugger, board ab-v16.41): it runs with the scoped ones, under PENDING_1A.
+// through chrome.debugger, board ab-v16.41): it runs with the scoped ones, under PENDING_1A. Part 1a's setup
+// for it: debugger.getTargets gives the target id D8E9F0 for tab 8, tab 8 is open with one other tab (so the
+// window rule opens no about:blank), and a tabs.onRemoved of tab 8 comes (the fake timers never fire, so the
+// item would wait for ever). Until part 1a the plain test runs the same vector with today's chrome call,
+// its chromeToday (chrome.tabs.remove), so today's good path of the op keeps a plain test (review-17b N5).
 const PENDING_TAB_SCOPES = Object.hasOwn(OPS, "bridge.tabScopes") ? false : "board ab-v16.31 (part 1a): the op bridge.tabScopes";
 const NEW_OPS = new Set(["bridge.tabScopes"]);
 const newOp = (v) => NEW_OPS.has(v.req.op);
@@ -131,7 +135,9 @@ async function requestVectors(vectors) {
   }
 }
 
-test("each request vector makes its chrome call and gets the vector's res", () => requestVectors(V.requests.filter((v) => !perScopeRequest(v) && !newOp(v))));
+const today = (v) => (PENDING_1A && v.chromeToday ? { ...v, chrome: v.chromeToday } : v);
+test("each request vector makes its chrome call and gets the vector's res", () =>
+  requestVectors(V.requests.filter((v) => !scoped(v) && !newOp(v) && (PENDING_1A ? true : !PER_SCOPE_REQUESTS.has(v.req.op))).map(today)));
 
 test("bridge.tabScopes is C10's op, and its request vector gets the vector's res", { todo: PENDING_TAB_SCOPES }, async () => {
   const o = V.ops.find((x) => x.op === "bridge.tabScopes");

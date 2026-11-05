@@ -353,6 +353,8 @@ test("each request vector is a valid bridge request, and its res has the C10 sha
     else if (req.op === "tabs.remove") {
       // The receiver's close of the per-scope build (C10, board ab-v16.41): Target.closeTarget through chrome.debugger.
       assert.deepEqual([v.chrome[0], v.chrome[1][0], v.chrome[1][1], Object.keys(v.chrome[1][2])], ["debugger.sendCommand", { tabId: req.args[0] }, "Target.closeTarget", ["targetId"]], `${req.id}: the receiver's close`);
+      // Today's receiver (before part 1a) calls chrome.tabs.remove: the plain test of test/bridge.test.mjs uses it.
+      assert.deepEqual(v.chromeToday, ["tabs.remove", [req.args[0]]], `${req.id}: today's chrome call`);
     } else assert.ok(Array.isArray(v.chrome) && v.chrome[0].startsWith(req.op.split(".")[0] + "."), `${req.id}: chrome call`);
   }
   assert.deepEqual([...seen].sort(), [...opByName.keys()].sort(), "every op has a request vector");
@@ -553,16 +555,30 @@ test("the window rule: each vector follows C10's rule, also for a pending close 
   assert.ok(has((v) => v.guard && v.pending.some((t) => v.open.includes(t))), "a pending close that is still open counts as closed");
   assert.ok(has((v) => !v.guard && v.pending.length > 0), "a pending close and a tab that stays");
   assert.ok(has((v) => v.closes.length > 1 && v.guard) && has((v) => v.closes.length > 1 && !v.guard), "an item with several closes");
+  assert.ok(has((v) => v.guard && v.closes.some((t) => v.pending.includes(t))), "a later item closes a pending tab again (review-17 M1)");
   for (const s of ["**removal queue**", "**window rule**", "**pending close**", "`REMOVAL_WAIT_MS = 2000`", "a client's `Page.close`", "`windowRule`",
     // review-17: the receiver's close (H1), the fallback, a pending close closed again (M1), the gate and the link change (M4),
     // the limits of the item's calls (L1), the bound of the answer (L2), a child session's Page.close (L3), the memory-only limit (L5).
     "The **receiver's close**", "`Target.closeTarget` with the tab's target id", "`Detached while handling command.`", "The fallback: when the attach",
-    "closes a tab with a pending close again, by the receiver's close", "The gate opens at each of these ends", "drops every bridge request that waits in the queue or at a gate",
+    "a later item that closes the tab (also a `tabs.remove` or an import's close) closes it again, by the receiver's close", "The gate opens at each of these ends", "drops every bridge request that waits in the queue or at a gate",
     "The query and that tab each have a limit of `REMOVAL_WAIT_MS`", "The bound of a `set_scopes` answer", "A `Page.close` on a child session of the tab",
     "The pending closes live in the worker's memory only", "the close of a new tab whose rule update failed", "a restore tab that came after its step's deadline"]) {
     assert.ok(says(C10, s), `C10 says: ${s}`);
   }
   assert.ok(says(C5, "The sweep closes a tab with a pending close again, by the receiver's close"), "C5: the sweep does not skip a held tab");
+  // review-17b: B1 (pending from the start of the close), N1 (the chain), N2 (step 3), N3 (a tab that the sweep cannot close leaves its scope).
+  for (const s of ["a close is pending from the moment its item starts it (for the receiver's close, from its attach; for a client's `Page.close`, from its send) until the tab's `tabs.onRemoved`, or until it fails and the tab stays (after the fallback too)",
+    "a late `Page.close` answer with no error leaves the close pending", "also one that is still in its attach", "The receiver's close is one op of the tab's chain of attaches",
+    "only when it made one: never the bridge's attachment", "lists no target for the tab", "it never detaches the attach of a receiver's close that runs"]) {
+    assert.ok(says(C10, s), `C10 says: ${s}`);
+  }
+  assert.ok(says(C5, "A tab that the sweep's item does not close") && says(C5, "leaves the map at the end of that item"), "C5: a tab that the sweep cannot close leaves its scope");
+  assert.ok(says(C11, "it also drops from its model each tab whose scope the line gives no list"), "C11: the relay drops the tabs of a scope with no list");
+  assert.ok(says(bridge.windowRuleNote, "a close is pending from the moment its item starts it"), "the windowRuleNote has the same definition");
+  // review-17b N7: the old rule that skipped a tab with a pending close is gone.
+  for (const [name, text] of [["C5", C5], ["C10", C10]]) {
+    assert.ok(!says(text, "skip a tab with a pending close") && !says(text, "neither does a tab with a pending close"), `${name}: no rule skips a tab with a pending close`);
+  }
   assert.ok(says(C11, "while Chrome's own `Target.closeTarget` does not"), "C11: today's relay's Target.closeTarget runs beforeunload");
 });
 
