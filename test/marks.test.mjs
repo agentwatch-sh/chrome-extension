@@ -123,6 +123,13 @@ test("a tab that a page opened is no operator tab: a navigation target before it
   await flush();
   assert.equal(s.r.map.isMarked(22), false);
   assert.equal(s.r.map.scopeOf(22), "md-lead");
+  // The navigation target first, of a tab of no scope (no adoption): no mark either.
+  s.f.tabs_.push({ id: 26, windowId: 1, url: "", pendingUrl: NEW_TAB_URL });
+  navTargetOf(s, 26, 3, NEW_TAB_URL);
+  s.f.chrome.tabs.onCreated.fire({ id: 26, windowId: 1, url: "", pendingUrl: NEW_TAB_URL });
+  await flush();
+  assert.equal(s.r.map.isMarked(26), false, "a page opened it");
+  assert.equal(s.r.map.scopeOf(26), undefined);
   // The mark first, then a navigation target of a tab of scope md-lead: the mark goes.
   operatorTab(s, 23);
   await flush();
@@ -334,6 +341,44 @@ test("the mark stays at tabs.onReplaced: the added tab takes it, the removed tab
   assert.equal(s.r.map.isMarked(20), false);
   assert.deepEqual(updates(s.f).slice(calls), [{ removeRuleIds: [8], addRules: [markedRule([25])] }]);
   assert.equal(s.r.map.scopeOf(25), undefined);
+});
+
+test("a replaced marked tab whose added tab is already gone: the removed tab's mark goes, and so does rule 8", async () => {
+  const s = await setup();
+  operatorTab(s, 20);
+  await flush();
+  s.f.chrome.tabs.onRemoved.fire(25, { windowId: 1, isWindowClosing: false });
+  await flush();
+  s.f.chrome.tabs.onReplaced.fire(25, 20);
+  await flush();
+  assert.equal(s.r.map.isMarked(25), false, "no mark for a tab that closed (no stale state)");
+  assert.equal(s.r.map.isMarked(20), false);
+  assert.equal(ruleOf(s.f, MARKED_RULE_ID), undefined);
+});
+
+test("a tabs.remove that waits in the removal queue while its tab gets the mark (a late navigation target of a marked opener) gets not an agent tab when its item starts", async () => {
+  const s = await setup();
+  operatorTab(s, 20);
+  await flush();
+  // A tab of no scope yet: its navigation target has not come.
+  s.f.tabs_.push({ id: 9, windowId: 1, url: "", pendingUrl: "https://z.example/p" });
+  s.f.targets_.push({ id: "F9", tabId: 9, type: "page", attached: false });
+  // The queue is busy: an item whose tabs.query has not answered.
+  let answer;
+  s.f.impl["tabs.query"] = () => new Promise((r) => (answer = r));
+  void s.r.removals.closeOwn({ ids: [] });
+  await flush();
+  s.send({ t: "req", id: "rm", op: "tabs.remove", args: [9] });
+  await flush();
+  assert.deepEqual(s.resOf("rm"), [], "it waits in the queue");
+  navTargetOf(s, 9, 20);
+  await flush();
+  assert.equal(s.r.map.isMarked(9), true);
+  delete s.f.impl["tabs.query"];
+  answer(s.f.tabs_.map((t) => ({ ...t })));
+  await flush();
+  assert.deepEqual(s.resOf("rm").map((m) => m.error), ["not an agent tab"]);
+  assert.equal(s.f.tabs_.some((t) => t.id === 9), true, "the tab stays");
 });
 
 // ---- the mark's life ----

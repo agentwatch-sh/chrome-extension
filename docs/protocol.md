@@ -1257,14 +1257,57 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
     orphan set (C5). The operator's tabs depend on choice 3 of the
     design: with it, a tab that starts at `chrome://newtab/`, that no page opened and that no bridge
     op created gets the **operator mark** (no agent tab starts there: the relay opens `about:blank`
-    only and refuses `chrome:` URLs; that a page cannot open a `chrome://` page is Chrome's rule,
-    not measured), and a popup of a marked tab is marked too. A marked tab has no scope; C4's
+    only and refuses `chrome:` URLs; that a page cannot open a `chrome://` page is Chrome's rule:
+    a page's `window.open("chrome://newtab/")` opened no tab, measured in part 1d's live test), and
+    a popup of a marked tab is marked too. A marked tab has no scope; C4's
     `operator` field gives what it may open (C5: rule 8 with `"*"`, and C5's guard and closing rule
     skip the tab; a list name: that list). For the retry, a marked tab's list is its `operator` value
     (with `"*"` every host is covered). The mark stays at a link change (it is not a connection's)
     and at `tabs.onReplaced`; it goes at the worker's start (those tabs then fail closed). The
     bridge never attaches, selects or closes a marked tab (`not an agent tab`, the tab checks
-    above). Without that build, the operator's tabs fail closed.
+    above). Without that build, the operator's tabs fail closed. The receiver builds it from
+    version 0.3.2 (part 1d, board ab-v16.34):
+    - The receiver gives the mark in its `tabs.onCreated` listener, before any `await` and before
+      the eager attach of the tab, which then skips it (the hold, above): the tab's `pendingUrl`,
+      else its `url`, is exactly `chrome://newtab/`, no `webNavigation.onCreatedNavigationTarget` of
+      the tab came before, and the tab is not in the map. Measured (Chromium 156, part 1d's live
+      test): Ctrl+T and Ctrl+N (a new window) give `url` `""` and `pendingUrl` `chrome://newtab/`;
+      the page then commits at `chrome://new-tab-page-third-party/` (with a search engine other
+      than Google); for Ctrl+T, `openerTabId` names the active tab.
+    - A tab that a page opened is no operator tab: a navigation target of the tab that comes after
+      the mark removes it, and the tab takes its opener's scope or mark (a popup, above). A tab of
+      `tabs.create` or `windows.create` loses a mark at its entry write: its URL is `about:blank`,
+      so Chrome's `tabs.onCreated` does not name the New Tab page, and the rule "no bridge op
+      created" holds also if it did.
+    - A popup whose eager attach began before its navigation target marked it: when the attach and
+      the hold are on, the receiver ends the hold (the held requests continue), detaches the tab,
+      and its `tabs.onCreated` says `"attached":false,"held":false`. So a marked tab is never a
+      bridge tab.
+    - The marks live in memory only, as the orphan set does: the copy holds no mark. The kept
+      entries keep the mark of a tab that closed or was replaced for `TOMBSTONE_MS` (a popup of a
+      marked tab that closed a moment before is marked).
+    - Measured (part 1d's live test: Chromium 156, a stub daemon, and agent-browser's relay of
+      agent-browser main `1148770` with Playwright 1.64.1): with `"*"` the operator's tab, its
+      popups (a `target=_blank` link, which needed the retry, and `window.open`, also with the
+      eager attach on) and the tab of a new window loaded hosts of no list; none was in
+      `bridge.tabScopes`, none got a `bridge.tabScope`, the bridge refused a client's attach,
+      select and close of each, and a Playwright client of a scope saw its own tab and none of
+      them. With a list name a new marked tab loaded that list's host and was blocked off it, and
+      the closing rule closed each marked tab whose page the list did not cover; with `null` a
+      marked tab opened no site; after a link drop and a new connection with no `set_scopes` yet,
+      a marked tab still loaded any host. An agent tab and its popup never got the mark. CDP key
+      events of Ctrl+T and Ctrl+N (`Input.dispatchKeyEvent` with `nativeVirtualKeyCode` through
+      the bridge, and Playwright's `keyboard.press` through the relay) opened no tab, and
+      agent-browser's `press` refuses them (`unsupported key`).
+    - The limits. The first tab of a browser that starts at its New Tab page gets no mark: its
+      `tabs.onCreated` comes before the receiver's worker runs (measured), so it fails closed, and
+      the operator opens a new tab. A tab that the browser opens at a URL (a link dragged onto the
+      tab strip, Alt+Enter in the address bar, Ctrl+Shift+T) does not start at the New Tab page:
+      it gets no mark and fails closed (not measured). A program of the operator's OS user that
+      sends X input to the live view's display (Ctrl+T, then a URL) gets a marked tab, which can
+      open any site with the profile's sign-ins and needs no scope (review-42g build note 9).
+      Google Chrome stable's URL in `tabs.onCreated` of a new tab is not measured (taylor has
+      only Chromium).
   - A tab leaves the map when it closes: in `tabs.onRemoved` the receiver drops the tab's entry and
     sends the event before any other `await` of the handler (the next query of the removal queue
     and the relay then see the tab gone; review-48 X4 measured that the event comes before
