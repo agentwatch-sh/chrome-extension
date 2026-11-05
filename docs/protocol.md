@@ -195,9 +195,10 @@ There is no backward compatibility: agentwatch pins both repositories and moves 
     count in `refused`. Each entry follows C5; an entry that is not normalized is refused and
     counted, and the other entries of its list apply.
   - A list whose value is not an array applies as absent and counts 1 in `refused`.
-  - `scopes` maps a scope to a list name. A scope that does not match the scope pattern, or whose
-    value is not a string, applies as absent and counts in `refused`. A scope whose list is not in
-    `lists` has no list; it does not fall back to `default`.
+  - `scopes` maps a scope to a list name or `null`. A scope with `null`, or whose list is not in
+    `lists`, has no list; it does not fall back to `default`. A scope that does not match the scope
+    pattern, or whose value is neither a string nor `null`, applies as absent and counts in
+    `refused`.
   - `default` is a list name or `null`: the list of a scope that `scopes` does not name. With `null`,
     or a name that is not in `lists`, such a scope has no list. A `default` that is neither a string
     nor `null` counts in `refused` and applies as `null`.
@@ -205,9 +206,13 @@ There is no backward compatibility: agentwatch pins both repositories and moves 
     `refused`.
   - The new object replaces the last one in full. The daemon sends it after each `link` up, at each
     change of a list, and when a session (a scope) starts or ends. It waits 10 s for the answer.
-  - The daemon names a session's scope in `scopes` before it gives the session its endpoint (C11):
-    else the session could connect in the moment before and get the `default` list, which can be
-    another repo's list. With a `default` list, any scope that `scopes` does not name gets it.
+  - The daemon names a session's scope in `scopes` before it gives the session its endpoint (C11),
+    also through `agentwatch browser env` and an endpoint URL in the session's environment at its
+    launch: else the session could connect in the moment before and get the `default` list, which
+    can be another repo's list. The URL is easy to guess, so with a `default` list any scope that
+    `scopes` does not name gets it.
+  - At a session's end the daemon keeps its scope in `scopes` with `null` and writes `end_scope` to
+    the relay (C10), so the ended scope never falls back to the `default` list.
   - The answer comes after the scope rules are in force, the workers are removed (when C5 needs it)
     and the tabs are closed (C5's target). `rules` counts the scope rules of C5's target.
 - `blocked` names the tab's scope: `{"t":"blocked","tab":<tab id>,"host":"<host>","scope":"<scope>"}`,
@@ -309,8 +314,11 @@ above. The entry rules (normalization, refusal) stay.
     replaces only the two rules of its list (of both lists when it changes lists).
   - A failed `updateSessionRules` (the rule limit, a Chrome error) fails closed: the receiver removes
     every scope rule with a remove-only call and keeps the map, so the tabs of every scope are
-    blocked until the next update that succeeds. A failed `set_scopes` answers `ok: false` after the
-    tabs close. An old, wider rule never stays in force after a failure.
+    blocked until the next update that succeeds; that next update is a full replace from the map. A
+    failed `set_scopes` answers `ok: false` after the tabs close (the closing rule runs with the new
+    lists). If the remove-only call fails too, old rules can stay in force: the guard below still
+    judges each navigation by the new lists of the map, the closing rule still runs, and every later
+    change is a full replace until one succeeds.
 - So a tab of no list matches no allow rule and fails closed. Session rules go at a browser restart
   and at an extension reload or update (measured: none left after a restart). Until the first
   `set_scopes`, every main frame and every frame is blocked, except the restore tab of an import
@@ -336,7 +344,8 @@ above. The entry rules (normalization, refusal) stay.
   lacks the site. Measured: a scope-B tab loaded a scope-A site's worker page, 20 of 20; a worker that
   passes the navigation on (`fetch(event.request)`) loaded the page from the network in a scope-B tab,
   5 of 5, with no DNR match (in its own scope it loaded too, so no site breaks); navigation preload
-  is a `main_frame` request of the tab and was blocked in the scope-B tab, 5 of 5. So at each
+  is a `main_frame` request of the tab and was blocked in the scope-B tab, 5 of 5, for a worker that
+  does not fall back to `fetch()` (one that falls back loads the page as above). So at each
   main-frame `webNavigation.onBeforeNavigate` and `webNavigation.onCommitted` of an `http:`/`https:`
   URL, or a `blob:` URL with such an inner origin, whose host the tab's list does not cover (for a
   tab of no scope: the union of the lists; for the restore tab: its `domain`), the receiver sends the
@@ -387,8 +396,11 @@ the receiver adds the import's rules (C5's target, session rules 6 and 7: `domai
 tab only, main frames and frames). They allow `domain` whatever the lists hold, so the restore page
 and step 4's `location.replace` load. Step 4 starts that navigation in a timer after its script
 returns, so the rules cannot go at the end of the step: the receiver removes them at the restore
-tab's `webNavigation.onCommitted` or `onErrorOccurred` of `state.url`, at most 4 s after step 4, and
-in every failure cleanup (step 5). The restore tab is in no scope; after the import its page stays
+tab's first main-frame `webNavigation.onCommitted` or `onErrorOccurred` after step 4 (not matched to
+`state.url`: a redirect commits another URL), at most 4 s after step 4, and in every failure cleanup
+(step 5). The import ends (its answer, and the next import of the queue) only after the rules are
+gone, so two imports never share rules 6 and 7; the 4 s fit in the budget (100 s + 4 s + two
+cleanups of 4 s = 112 s, below 115 s). Until the rules go, C5's guard judges the tab by `domain`. The restore tab is in no scope; after the import its page stays
 while a list covers it (C5's closing rule), and it cannot navigate further or load new frames.
 
 ### C9. The two gateway routes, as the sender sees them
@@ -772,10 +784,12 @@ daemon's `allowlist` line above. The rest of C10 stays.
     the second arg is required, of the new kind `scope` (a string that matches C11's scope pattern).
     The `url` of `newTab` and `newWindow` is `about:blank` only (it makes no request). The receiver
     creates the tab, sets its scope, and answers when the tab's scope rule (C5's target) is in force.
-    When the rule update fails, the op answers with the error, and the tab stays, blocked (C5's
-    target: a failed update fails closed).
-    Measured: 11 to 15 ms for the rule with small lists (it grows with the entries of all lists in
-    use: about 46 ms for 20 lists of 1,000); the next `Page.navigate` loaded 20 of 20.
+    When the rule update fails, the receiver closes the new tab and the op answers with the error
+    (C5's target: a failed update fails closed).
+    Measured: the probe's whole assignment (its rule update and the wait for it, small lists, its tabs
+    open) took 11 to 15 ms, and the next `Page.navigate` loaded 20 of 20. Chrome's index cost alone
+    grows with the entries of all lists in use (about 46 ms to replace one list's rules with 20 lists
+    of 1,000 in use).
   - A popup: in `webNavigation.onCreatedNavigationTarget`, the new tab (`tabId`) takes the scope of
     `sourceTabId`, when that tab has one. The receiver sets it in the map in the handler, then
     updates the rules. Measured: `sourceTabId` named the right opener in every popup of every kind,
