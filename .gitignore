@@ -10,6 +10,8 @@ dist/
 *.crx
 # The committed CRX that agentwatch pins (board task ab-v16.22).
 !/release/agent.crx
+# The pack's temp file, which it renames to agent.crx (npm run pack:agent -- --out release).
+.agent.crx.*.tmp
 *.pem
 
 # The live test run folder (profiles, X auth files, logs, screenshots).
