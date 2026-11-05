@@ -1282,14 +1282,13 @@ settings and the allowlist refusals above. The rest of C11 stays.
     hex.
   - Where it lives: only in the session's environment, put there by agentwatch at the session's
     launch, in one variable, `AGENTWATCH_BROWSER_CRED` (its name keeps `KEY`, `SECRET` and `TOKEN`
-    out: Codex's default policy removes such names from the commands that the model runs). Never
-    in an argv, never in the output of `agentwatch browser
-    endpoint` or `agentwatch browser env`, never in a log, and never in a URL that a tool gets as an
-    argument. agent-browser and a script read it from their environment and add it to the URL at
-    the connect call only (agent-browser never puts it into its `Settings.cdpUrl`: `agent-browser
-    status` prints that). The daemon keeps each session's key in a token file under
-    `~/.config/agentwatch/tokens/` (0600 files in 0700 folders, the modes applied again at each
-    write), never in the browser state folder.
+    out: Codex's default policy removes such names from the commands that the model runs). Never in
+    an argv, never in the output of `agentwatch browser endpoint` or `agentwatch browser env`, never
+    in a log, and never in a URL that a tool gets as an argument. agent-browser and a script read it
+    from their environment and add it to the URL at the connect call only (agent-browser never puts
+    it into its `Settings.cdpUrl`: `agent-browser status` prints that). The daemon keeps each
+    session's key in a token file under `~/.config/agentwatch/tokens/` (0600 files in 0700 folders,
+    the modes applied again at each write), never in the browser state folder.
   - The session's environment is the agent's process environment. The launch line reads the key
     from the token file. agentwatch never sets the key with `tmux -e` or `set-environment`: both put
     the value into tmux's argv.
