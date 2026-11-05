@@ -89,6 +89,8 @@ const scoped = (v) => SCOPED_OPS.has(v.req.op);
 // window rule opens no about:blank), and a tabs.onRemoved of tab 8 comes (the fake timers never fire, so the
 // item would wait for ever). Until part 1a the plain test runs the same vector with today's chrome call,
 // its chromeToday (chrome.tabs.remove), so today's good path of the op keeps a plain test (review-17b N5).
+// The bad request vectors with "perScope": true (b41 to b44: an op of a tab of the orphan set gets not an agent
+// tab) run with the scoped ones too. Part 1a's setup for them puts tab 13 into the receiver's orphan set.
 const PENDING_TAB_SCOPES = Object.hasOwn(OPS, "bridge.tabScopes") ? false : "board ab-v16.31 (part 1a): the op bridge.tabScopes";
 const NEW_OPS = new Set(["bridge.tabScopes"]);
 const newOp = (v) => NEW_OPS.has(v.req.op);
@@ -168,9 +170,9 @@ async function badRequestVectors(vectors) {
   }
 }
 
-test("each bad request vector gets its error, and its op never reaches Chrome", () => badRequestVectors(V.badRequests.filter((v) => !scoped(v))));
+test("each bad request vector gets its error, and its op never reaches Chrome", () => badRequestVectors(V.badRequests.filter((v) => !scoped(v) && !v.perScope)));
 
-test("each bad request vector of tabs.create and windows.create: the scope arg", { todo: PENDING_1A }, () => badRequestVectors(V.badRequests.filter(scoped)));
+test("each bad request vector of the per-scope build: tabs.create and windows.create (the scope arg, no list), the orphan set", { todo: PENDING_1A }, () => badRequestVectors(V.badRequests.filter((v) => scoped(v) || v.perScope)));
 
 test("the checks run in C10's order: the op, the args, the wait, the tab", async () => {
   const s = await setup();

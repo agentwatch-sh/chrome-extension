@@ -267,9 +267,9 @@ held one list for the whole agent browser. The request is above. Its fields and 
   sends the object again (agentwatch picks the delay), and shows the error on the Browser page. The
   relay keeps its last line until a new one comes. After an `ok: false` of a failed rule update the
   receiver has failed closed (C5: a failed update removes the scope rules). After an `ok: false` of
-  a failed worker removal (C5), and after an answer that came later than 10 s (C10, the bound of a
-  `set_scopes` answer), the receiver's new rules are in force, and the relay's last line is older
-  than them.
+  a failed worker removal (C5) or of a failed key removal (C5, the sweep), and after an answer that
+  came later than 10 s (C10, the bound of a `set_scopes` answer), the receiver's new rules are in
+  force, and the relay's last line is older than them.
 - A send (C2) no longer adds its site to a list: agentwatch decides which list a sent site joins
   (the design's choice 6, asked in ab-dm6; its recommendation: no list).
 - The answer comes after the scope rules are in force, the workers are removed (when C5 needs it),
@@ -337,14 +337,15 @@ m1c19e2a):
    ran, or while the daemon was down is not in it, so its tabs close then, with no `end_scope`.
 2. A scope name that comes back. A scope that ended stays out of at least one `set_scopes` that the
    receiver answered `ok` in time (within the 10 s, so the daemon wrote its `allowlist` line; with a
-   `default` list: is `null` in it) before any `set_scopes` names it
-   again. The daemon splits a merged update that holds the end and the launch of one name into two
-   `set_scopes`, and sends the second after the `ok` of the first. The reason: the map stays over a
-   link drop, so a new session of the same name in the same gap would get the old session's tabs.
-   Over a daemon restart the rule needs no daemon memory: no agentwatch session launches while the
-   daemon is down (the daemon spawns them; the CLI, the web viewer and cron go through the gateway
-   to the daemon), and the first `set_scopes` of rule 1 is answered before a launch's scope enters
-   a `set_scopes`.
+   `default` list: is `null` in it) before any `set_scopes` names it again. The daemon splits a
+   merged update that holds the end and the launch of one name into two `set_scopes`, and sends the
+   second after the `ok` in time of the first. The reason: the map stays over a link drop, so a new
+   session of the same name in the same gap would get the old session's tabs. Over a daemon restart
+   the rule needs no daemon memory, with one gate: no agentwatch session launches while the daemon
+   is down (the daemon spawns them; the CLI, the web viewer and cron go through the gateway to the
+   daemon), and no launch's scope enters a `set_scopes` until the first `set_scopes` of rule 1 is
+   answered `ok` in time. After an `ok: false` or a late answer to it, the daemon sends that object
+   again, without the launch's scope, until one gets an `ok` in time.
 3. With a `default` list (choice 5 b) only: the daemon drops the `null` entry of an ended scope
    after the receiver answered `ok` in time to a `set_scopes` that holds it, not after a time and
    not at the next `link` up: else a scope that ended while the link was down falls back to the
@@ -522,11 +523,13 @@ m1c19e2a):
     The relay drops it from its model at its next `allowlist` line whose `scopes` and `lists` are
     objects (C11, when a connection ends): the line of that `set_scopes`, or after an `ok: false`
     or a late answer a later one. Rule 2 counts only an `ok` in time (C4: the daemon wrote its
-    line), so that line comes before the scope's name can come back, and a later session of the
-    same name never gets the tab. It does not count in `closed`.
+    line), also at its gate after a daemon restart, so that line comes before the scope's name can
+    come back, and a later session of the same name never gets the tab. It does not count in `closed`.
   - Other tabs join the orphan set too (C10, each tab's scope): a popup or a replaced tab whose
-    scope has no list (it never enters the map), a popup of a tab of the set, and the added tab of a
-    `tabs.onReplaced` of a tab of the set. A tab leaves the set at its `tabs.onRemoved`, and as the
+    scope has no list (from the first applied `set_scopes` after the worker's start on; it never
+    enters the map), a new tab of `tabs.create` or `windows.create` whose scope loses its list
+    during the op, a popup of a tab of the set, and the added tab of a `tabs.onReplaced` of a tab
+    of the set. A tab leaves the set at its `tabs.onRemoved`, and as the
     removed tab of a `tabs.onReplaced` (its added tab takes its place in the set).
   - A tab of the orphan set fails closed: the guard and the closing rule treat it as a tab with no
     list, not by the union of the lists, so no navigation of it loads, and the closing rule closes
@@ -721,6 +724,14 @@ first document request of a new tab (below).
     in the receiver's own origin (`chrome-extension://<receiver id>/`); and, with the design's
     choice 3 (part 1d), `debugger.attach`, `tabs.update` and `tabs.remove` of a marked tab (each
     tab's scope, below). No connection sees a marked tab, so this check is a second layer.
+  - `not an agent tab`, in the per-scope build (board ab-v16.41, review-17e): `debugger.attach`,
+    `debugger.sendCommand`, `tabs.update` and `tabs.remove` of a tab of the orphan set (C5, the
+    sweep). These are the ops that give a client control of a tab. The other ops that take a tab
+    id stay allowed for such a tab: `debugger.detach`, `tabs.get` and `bridge.release` (they read
+    the tab or end a state). No connection sees a tab of the orphan set, so this check is a second
+    layer too: an old model entry of the relay, or a client of the same name after a gap of rule 2,
+    still gets no control of it. The receiver's own close of such a tab is no bridge op, so the
+    check does not stop it. The vectors: b41 to b44 in `test/vectors/bridge.json`.
   - `not attached`: `debugger.sendCommand` for a tab that is not a bridge tab. So a command never
     goes through the import's attachment.
 
@@ -1050,8 +1061,9 @@ hold it; the last bullet gives the numbers and what the relay does about it.
   3. `debugger.getTargets`. In the per-scope build the relay gives each entry of step 2 its target
      id, and drops from its model each entry of step 2 whose tab the answer does not list (the tab
      closed). This step changes only the relay's model: the receiver's map keeps an entry until the
-     tab's `tabs.onRemoved`. It drops only the entries of step 2: an entry of a later
-     `bridge.tabScope` gets its target id as a popup's does (C11). It logs a failed
+     tab leaves the map (its `tabs.onRemoved`, the end of a sweep item that did not close it, or a
+     `tabs.onReplaced`: each tab's scope, below). It drops only the entries of step 2: an entry of a
+     later `bridge.tabScope` gets its target id as a popup's does (C11). It logs a failed
      `debugger.getTargets` and goes on.
   4. `debugger.detach` for each tab that the answer of step 3 reports attached (`"attached":true`
      and a `tabId`). It ignores the errors of these detaches.
@@ -1173,13 +1185,13 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
       `no list for this scope`, and create no tab. Before the first applied `set_scopes` after the
       worker's start every scope has no list, so they get this error then too (the relay admits no
       client before its `allowlist` line anyway).
-    - A popup or a replaced tab whose scope it gives no list never enters the map (review-17d): it
-      joins the orphan set at once (C5, the sweep), gets no key in the copy and no
-      `bridge.tabScope`, and closes in the removal queue by the receiver's close, with the window
-      rule (below). So a held close or a failed window rule leaves it open in no scope, never in
-      the ended scope. Before the first applied `set_scopes` after the worker's start such an entry
-      stays in the map (the lists are not known yet), and that `set_scopes` sweeps it when its
-      scope has no list.
+    - From the first applied `set_scopes` after the worker's start on, a popup or a replaced tab
+      whose scope it gives no list never enters the map (review-17d): it joins the orphan set at
+      once (C5, the sweep), gets no key in the copy and no `bridge.tabScope`, and closes in the
+      removal queue by the receiver's close, with the window rule (below). So a held close or a
+      failed window rule leaves it open in no scope, never in the ended scope. Before that first
+      applied `set_scopes` the lists are not known yet: such a tab enters the map with its scope,
+      as a live session's popup does, and that `set_scopes` sweeps it when its scope has no list.
     - The orphan set spreads as the mark does: a popup whose `sourceTabId` is a tab of the orphan
       set, or has a kept entry of one (`TOMBSTONE_MS` after its close), joins the set, also after
       the opener's own kept entry of its old scope has expired; the added tab of a `tabs.onReplaced`
@@ -1191,8 +1203,9 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
       of a tab of such a scope), and no later sweep comes until the next `set_scopes`, which can be
       hours later.
   - The kept entries (board ab-v16.41). The receiver keeps each entry that leaves the map for
-    `TOMBSTONE_MS = 10000` ms, in memory (with choice 3, a mark too), also the entry of a popup that
-    closed at once (above). A popup whose `sourceTabId` has such an entry takes its scope (or its
+    `TOMBSTONE_MS = 10000` ms, in memory (with choice 3, a mark too). It also keeps the orphan-set
+    membership of a tab that closed for `TOMBSTONE_MS` (C5, the sweep), so that a popup of it joins
+    the set (the spread, above). A popup whose `sourceTabId` has such an entry takes its scope (or its
     mark), as if the opener were still open, and the check above applies: a popup of a tab that the
     sweep closed a moment before closes too, and a popup of a page that closes itself right after
     `window.open` keeps its scope. A popup whose opener has neither an entry nor a kept entry gets
@@ -1280,7 +1293,8 @@ ends).
   - a client's `Page.close` on the tab's own session (a `debugger.sendCommand` with that method
     and a `target` with no `sessionId`);
   - C5's closing rule and its sweep;
-  - the close of a new entry whose scope has no list, and the close of a new tab whose rule update
+  - the close of a popup or a replaced tab whose scope has no list (a tab of the orphan set, not an
+    entry of the map), and the close of a new tab whose rule update
     failed (`tabs.create`, `windows.create`; each tab's scope, above);
   - the import's closes (C6): the tabs of its origin in step 1, the restore tab in step 5, and a
     restore tab that came after its step's deadline (agent `importer.js`, its failure cleanup).
@@ -1326,19 +1340,21 @@ ends).
   a tab of the sweep leaves its scope at the end of the item, into the orphan set (C5, the sweep).
 - A **pending close**: a close is pending from the moment its item starts it (for the receiver's
   close, from the moment it joins the tab's chain; for a client's `Page.close`, from its send) until
-  the tab's `tabs.onRemoved`, or until it fails and the tab stays (after the fallback too). An
-  answer that comes after the item's wait counts as any answer: a late `Page.close` answer with no
-  error leaves the close pending, and a late error ends it. The window rule counts each tab with a
-  pending close as closed until then, however long that takes. The reason: a `beforeunload` handler
-  holds a client's `Page.close` (and the fallback's `chrome.tabs.remove`) while its dialog is open,
-  and the page closes when the client or the operator accepts the dialog, maybe much later (board
-  ab-v16.43: an accept after the wait). Without the rule, a later item counts that tab as another
-  tab, removes the only other tab, and the accept then closes the last window. Only the item that
-  started a close waits for it (the time limit, below): a later item that closes the tab (also a
-  `tabs.remove` or an import's close) closes it again, by the receiver's close, unless that item is
-  a client's `Page.close`. After a dismiss the page stays, and the tab stays pending until it
-  closes: each later item that would leave it as the only open tab opens one `about:blank` tab that
-  was not necessary.
+  the tab's `tabs.onRemoved`, or until it fails and the tab stays (after the fallback too, and only
+  after the `Target.closeTarget` command also answered: a command that has not answered keeps the
+  close pending, also when the fallback failed, because Chrome can still run it). An answer that
+  comes after the item's wait counts as any answer: a late `Page.close` answer with no error leaves
+  the close pending, and a late error ends it. The window rule counts each tab with a pending close
+  as closed until then, however long that takes. The reason: a `beforeunload` handler holds a
+  client's `Page.close` (and the fallback's `chrome.tabs.remove`) while its dialog is open, and the
+  page closes when the client or the operator accepts the dialog, maybe much later (board ab-v16.43:
+  an accept after the wait). Without the rule, a later item counts that tab as another tab, removes
+  the only other tab, and the accept then closes the last window. Only the item that started a close
+  waits for it (the time limit, below): a later item that closes the tab (also a `tabs.remove` or an
+  import's close) closes it again, by the receiver's close, unless that item is a client's
+  `Page.close`. After a dismiss the page stays, and the tab stays pending until it closes: each
+  later item that would leave it as the only open tab opens one `about:blank` tab that was not
+  necessary.
 - The time limit. An item starts its closes one after the other, with no wait for one close before
   the next, and then waits until they ended, at most `REMOVAL_WAIT_MS = 2000` ms after it started
   the last one. Then the next item starts. Each close of the item that has not ended stays pending,
