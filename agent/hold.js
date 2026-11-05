@@ -24,6 +24,7 @@ export class Holds {
   setTimer = (fn, ms) => setTimeout(fn, ms);
   clearTimer = (h) => clearTimeout(h);
   forward = () => {}; // (source, method, params): an event of the tab to the relay
+  onKept = () => {}; // (tabId): the hold keeps a document request of the tab (popups.js)
 
   constructor(chrome) {
     this.#chrome = chrome;
@@ -80,8 +81,15 @@ export class Holds {
       this.#send(source.tabId, "Fetch.continueRequest", { requestId: params.requestId }).catch(() => {});
     } else {
       hold.requests.push(params);
+      this.onKept(source.tabId);
     }
     return true;
+  }
+
+  // The document requests that the hold of the tab keeps now.
+  keptCount(tabId) {
+    const hold = this.#holds.get(tabId);
+    return hold && !hold.client ? hold.requests.length : 0;
   }
 
   // A client's Fetch.enable or Fetch.disable on the tab's own session, just

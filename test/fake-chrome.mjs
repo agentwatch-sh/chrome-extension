@@ -183,6 +183,7 @@ export function makeFakeChrome() {
         if (fake.autoNavigate) fake.pauseRequest(tabId, props.url);
         return { id: tabId, ...props };
       }),
+      reload: rec("tabs.reload", async () => {}),
       onCreated: makeEvent(),
       onUpdated: makeEvent(),
       onRemoved: makeEvent(),

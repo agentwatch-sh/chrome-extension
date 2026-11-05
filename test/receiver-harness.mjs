@@ -4,7 +4,7 @@
 // hand (fire(ms)). This file holds no test.
 import assert from "node:assert/strict";
 import { Bridge } from "../agent/bridge.js";
-import { ReceiverLink } from "../agent/link.js";
+import { ReceiverLink, watchBlocked } from "../agent/link.js";
 import { mainOps, setScopes } from "../agent/allowlist.js";
 import { receiver } from "../agent/receiver.js";
 import { PART_BYTES, splitParts } from "../agent/wire.js";
@@ -33,6 +33,8 @@ export async function startReceiver({ tabs = [], copy = null, targets = [], scop
   };
   const link = new ReceiverLink(f.chrome, { main: mainOps(f.chrome), bridge: (req) => bridge.handle(req) }, { onLinkChange: () => bridge.reset(), setTimer, clearTimer });
   const bridge = new Bridge(f.chrome, link, { setTimer, clearTimer, navigator: { userAgent: "UA" } });
+  // The blocked notices, as agent/sw.js wires them: a popup's retry decides the notice of its first request.
+  watchBlocked(f.chrome, (msg) => link.send(msg), (details, msg, send) => receiver(f.chrome).popups.screen(details, msg, send));
   await beforeStart(f);
   void bridge.reset();
   const r = receiver(f.chrome);
@@ -57,6 +59,7 @@ export async function startReceiver({ tabs = [], copy = null, targets = [], scop
     return got[0];
   };
   const evs = () => port().posted.filter((m) => m.t === "ev");
+  const notices = () => port().posted.filter((m) => m.t === "blocked");
   const pending = (ms) => timers.filter((t) => !t.cleared && t.ms === ms);
   // Fires every pending timer of ms (once), then lets the promises run.
   const fire = async (ms) => {
@@ -69,7 +72,7 @@ export async function startReceiver({ tabs = [], copy = null, targets = [], scop
   await answer({ id: "open", op: "bridge.info", args: [] });
   if (scopes) await setScopes(f.chrome, scopes);
   await flush();
-  return { f, r, link, bridge, timers, port, send, sendMain, resOf, answer, evs, pending, fire, set: (msg) => setScopes(f.chrome, msg) };
+  return { f, r, link, bridge, timers, port, send, sendMain, resOf, answer, evs, notices, pending, fire, set: (msg) => setScopes(f.chrome, msg) };
 }
 
 // The chrome calls since mark, without the port's posts and the reads of lastError.

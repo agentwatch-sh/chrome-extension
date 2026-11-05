@@ -232,7 +232,11 @@ export class ReceiverLink {
   }
 }
 
-export function watchBlocked(chrome, send) {
+// A blocked main-frame navigation sends blocked (C4, C5). screen(details,
+// msg, send) can take the notice first: C10's retry decides the notice of a
+// popup's first request (popups.js), and it sends it later with send(), or
+// never (a retried request).
+export function watchBlocked(chrome, send, screen = () => false) {
   chrome.webNavigation.onErrorOccurred.addListener((details) => {
     if (details.frameId !== 0 || details.error !== "net::ERR_BLOCKED_BY_CLIENT") return;
     let host;
@@ -241,6 +245,8 @@ export function watchBlocked(chrome, send) {
     } catch {
       return;
     }
-    send({ t: "blocked", tab: details.tabId, host });
+    const msg = { t: "blocked", tab: details.tabId, host };
+    if (screen(details, msg, send)) return;
+    send(msg);
   });
 }
