@@ -1,15 +1,35 @@
 // The receiver's state per worker (one per chrome object): the attachments
 // (attach.js), the tab-to-scope map and its copy (tabmap.js), the session
 // rules (dnr.js), the removal queue (removals.js) and the popups with their
-// retry (popups.js), with the chrome events that change the map. The bridge
-// (bridge.js), set_scopes (allowlist.js) and the import (importer.js) share it.
+// retry (popups.js), with the chrome events that change the map and the
+// operator marks. The bridge (bridge.js), set_scopes (allowlist.js) and the
+// import (importer.js) share it.
+//
+// The operator mark (C10, each tab's scope; choice 3 of the design, part 1d):
+// a tab that starts at Chrome's New Tab page, that no page opened and that no
+// bridge op created is the operator's own tab in the live view (no agent tab
+// starts there: the relay opens about:blank only and refuses chrome: URLs). A
+// popup of a marked tab is marked too, and so is the tab that replaces one.
+// A marked tab has no scope; set_scopes' operator value gives what it may
+// open (C5: rule 8 with "*", the named list's rules with a name, no rule
+// with null). The bridge never attaches, selects or closes it, and no
+// connection sees it.
 import { attachments } from "./attach.js";
 import { SessionRules } from "./dnr.js";
 import { Popups } from "./popups.js";
 import { Removals } from "./removals.js";
+import { ANY } from "./scopes.js";
 import { TabMap } from "./tabmap.js";
 
 export const NO_LIST = "no list for this scope";
+// The URL of a tab that the operator opens (Ctrl+T, Ctrl+N, the new-tab
+// button): Chrome's tabs.onCreated names it in pendingUrl, with url ""
+// (measured on Chromium 156). The page then commits at another chrome: URL
+// (chrome://new-tab-page-third-party/ there).
+export const NEW_TAB_URL = "chrome://newtab/";
+
+// The tab starts at the New Tab page: its pendingUrl, else its url.
+const startsAtNewTab = (tab) => (tab.pendingUrl || tab.url) === NEW_TAB_URL;
 
 export class Receiver {
   // The timers and the clock; the bridge sets its own (tests use fake ones).
@@ -32,7 +52,7 @@ export class Receiver {
       now: () => this.clock.now(),
     };
     this.map = new TabMap(chrome, clock);
-    this.rules = new SessionRules(chrome, () => this.#model(), clock);
+    this.rules = new SessionRules(chrome, () => this.#model(), clock, () => (this.map.current.operator === ANY ? this.map.marked() : []));
     this.removals = new Removals(chrome, { att: this.att, map: this.map, clock });
     this.popups = new Popups(this);
     this.att.holds.onKept = (tabId) => this.popups.paused(tabId);
@@ -40,16 +60,20 @@ export class Receiver {
   }
 
   // The lists of the open tabs of the map, under the last set_scopes: list
-  // name -> {entries, tabIds}.
+  // name -> {entries, tabIds}. With an operator value that names a list, the
+  // marked tabs are in that list's tabIds too.
   #model() {
     const cur = this.map.current;
     const out = new Map();
-    for (const [tabId, scope] of this.map.entries()) {
-      const name = cur.listOf(scope);
-      if (name === null) continue;
+    const add = (name, tabId) => {
       if (!out.has(name)) out.set(name, { entries: cur.lists[name], tabIds: [] });
       out.get(name).tabIds.push(tabId);
+    };
+    for (const [tabId, scope] of this.map.entries()) {
+      const name = cur.listOf(scope);
+      if (name !== null) add(name, tabId);
     }
+    if (cur.operator !== null && cur.operator !== ANY) for (const tabId of this.map.marked()) add(cur.operator, tabId);
     return out;
   }
 
@@ -63,6 +87,30 @@ export class Receiver {
   // The list of a tab's scope under the last set_scopes (for its two rules).
   listName(scope) {
     return scope === undefined ? null : this.map.current.listOf(scope);
+  }
+
+  // The rules of the marked tabs under the last set_scopes, for
+  // rules.replaceLists: ANY (rule 8), the operator's list, or null (none).
+  markList() {
+    return this.map.current.operator;
+  }
+
+  #markRules() {
+    void this.rules.replaceLists([this.markList()]).catch(() => {});
+  }
+
+  // A tab's list under set (a ScopeSet; C5): ANY (every host: a marked tab
+  // with the operator value "*"), its entries, or null (no list). A tab of the
+  // orphan set has none; a tab of a scope has its scope's list; a marked tab
+  // its operator value; any other tab of no scope the union of the lists. The
+  // closing rule reads it (by the last applied set_scopes), and so can C5's
+  // guard (part 1c); the restore tab of a running import is the caller's case.
+  tabList(tabId, set) {
+    if (this.map.isOrphan(tabId)) return null;
+    const scope = this.map.scopeOf(tabId);
+    if (scope !== undefined) return set.entriesOf(scope);
+    if (this.map.isMarked(tabId)) return set.markEntries();
+    return set.union();
   }
 
   // A key of the copy goes: true when it went. A failure leaves it for the
@@ -92,13 +140,20 @@ export class Receiver {
   // the map, then its key and its list's rules follow (got.ruled: that rule
   // update). Or (a scope with no list from the first applied set_scopes on,
   // or a tab of the orphan set) it joins the orphan set and closes, with no
-  // key and no bridge.tabScope. A tab that closed gets nothing (no stale
-  // entry). Gives what map.adopt() gives.
+  // key and no bridge.tabScope. A tab of a marked tab is marked: no key, no
+  // bridge.tabScope, and the rules of the marks follow (got.ruled); a bridge
+  // tab that gets the mark is detached (a marked tab is never a bridge tab).
+  // A tab that closed gets nothing (no stale entry). Gives what map.adopt()
+  // gives.
   adoptTab(tabId, from) {
     if (this.map.isGone(tabId)) return null;
     const got = this.map.adopt(tabId, from);
     if (got && got.orphan) {
       this.orphanClose(tabId);
+    } else if (got && got.mark) {
+      got.ruled = this.rules.replaceLists([this.markList()]);
+      got.ruled.catch(() => {});
+      if (this.att.isBridgeTab(tabId)) void this.att.detach(tabId).catch(() => {});
     } else if (got) {
       this.emit("bridge.tabScope", { tabId, scope: got.scope });
       void this.map.writeKey(tabId, got.scope).catch(() => {});
@@ -125,6 +180,10 @@ export class Receiver {
   async #assign(tabId, scope) {
     // No stale entry: a tab that closed gets none.
     if (this.map.isGone(tabId)) return;
+    // No bridge op creates a marked tab (its URL is about:blank, so Chrome's
+    // tabs.onCreated never names the New Tab page; this keeps the rule).
+    const unmarked = this.map.unmark(tabId);
+    if (unmarked) this.#markRules();
     // A sweep came during the op: the scope check again at the entry write.
     if (!this.map.hasList(scope)) {
       this.orphanClose(tabId);
@@ -148,9 +207,22 @@ export class Receiver {
 
   #listen() {
     const c = this.chrome;
+    // The operator mark, in the handler (before any await), so the bridge's
+    // eager attach of the tab, which comes in the next listener of this
+    // event, skips it. A tab whose navigation target came first is a page's
+    // popup. The mark needs no restore of the map (no copy holds it); its
+    // rule update runs in the rules' chain, after the start's removal.
+    c.tabs.onCreated.addListener((tab) => {
+      if (!tab || !Number.isInteger(tab.id) || !startsAtNewTab(tab)) return;
+      const id = tab.id;
+      if (this.popups.has(id) || this.map.has(id) || this.map.isOrphan(id) || this.map.isGone(id) || this.att.isRestoreTab(id)) return;
+      this.map.mark(id);
+      this.#markRules();
+    });
     // The entry goes and the event goes before any other await (the next
     // query of the removal queue and the relay then see the tab gone).
     c.tabs.onRemoved.addListener((tabId, removeInfo) => this.map.whenRestored(() => {
+      const marked = this.map.isMarked(tabId);
       const scope = this.map.removed(tabId);
       this.popups.removed(tabId);
       this.emit("tabs.onRemoved", { tabId, removeInfo });
@@ -159,35 +231,46 @@ export class Receiver {
         void this.rules.replaceLists([this.listName(scope)]).catch(() => {});
         void this.dropKey(tabId);
       }
+      if (marked) this.#markRules();
     }));
-    // The added tab takes the removed tab's scope; bridge.tabScope goes right
-    // before the receiver's tabs.onReplaced event. A scope with no list (from
-    // the first applied set_scopes on), or a tab of the orphan set: the added
-    // tab joins the orphan set and closes.
+    // The added tab takes the removed tab's scope (or its mark); bridge.tabScope
+    // goes right before the receiver's tabs.onReplaced event. A scope with no
+    // list (from the first applied set_scopes on), or a tab of the orphan set:
+    // the added tab joins the orphan set and closes.
     c.tabs.onReplaced.addListener((addedTabId, removedTabId) => this.map.whenRestored(() => {
       const before = this.map.scopeOf(removedTabId);
+      // The added tab takes only the removed tab's state: a mark that its own
+      // tabs.onCreated gave it goes first.
+      const marked = this.map.unmark(addedTabId) || this.map.isMarked(removedTabId);
       const from = this.map.opener(removedTabId);
       this.map.release(removedTabId);
       this.popups.removed(removedTabId);
-      this.adoptTab(addedTabId, from);
+      const got = this.adoptTab(addedTabId, from);
       this.emit("tabs.onReplaced", { addedTabId, removedTabId });
       this.removals.tabRemoved(removedTabId);
       if (before !== undefined) {
         void this.dropKey(removedTabId);
         void this.rules.replaceLists([this.listName(before)]).catch(() => {});
       }
+      // The added tab's mark replaced the rules of the marks already.
+      if (marked && !(got && got.mark)) this.#markRules();
     }));
     // A popup takes the scope of its sourceTabId (never chrome.tabs'
     // openerTabId: it names the active tab): the entry is in the map in the
-    // handler, then bridge.tabScope, its key and its list's rules. Then the
-    // event goes, and (with the eager attach off) the popup's tabs.onCreated
-    // after it. receiver.js sends this event: it changes the map.
+    // handler, then bridge.tabScope, its key and its list's rules. A popup of
+    // a marked tab is marked. Then the event goes, and (with the eager attach
+    // off) the popup's tabs.onCreated after it. receiver.js sends this event:
+    // it changes the map. A page opened this tab, so a mark that its
+    // tabs.onCreated gave it goes: it takes its opener's scope or mark.
     c.webNavigation.onCreatedNavigationTarget.addListener((details) => {
       const tabId = details && details.tabId;
       this.popups.target(tabId);
       return this.map.whenRestored(() => {
         const ids = Number.isInteger(tabId) && Number.isInteger(details.sourceTabId);
-        this.popups.adopted(tabId, ids ? this.adoptTab(tabId, this.map.opener(details.sourceTabId)) : null);
+        const unmarked = Number.isInteger(tabId) && this.map.unmark(tabId);
+        const got = ids ? this.adoptTab(tabId, this.map.opener(details.sourceTabId)) : null;
+        if (unmarked && !(got && got.mark)) this.#markRules();
+        this.popups.adopted(tabId, got);
         this.emit("webNavigation.onCreatedNavigationTarget", { details });
         this.popups.announced(tabId);
       });

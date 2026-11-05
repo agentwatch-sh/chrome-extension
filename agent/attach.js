@@ -138,16 +138,21 @@ export class Attachments {
   // its answer: Chrome runs the calls in order, and the tab's first request
   // leaves a few ms after tabs.onCreated (C10 gives the measured numbers).
   // While the import creates its restore tab and does not know its id, the op
-  // waits; then it skips the restore tab. skip: a tab that the bridge never
-  // attaches (a page of the agent package's own origin). A tab whose
-  // attachment Chrome ends during the op (the tab closed) is no bridge tab.
-  // Gives the fields of the tabs.onCreated event: attached, held, and error
-  // when Chrome refused the attach.
-  attachNewTab(tabId, skip = false) {
+  // waits; then it skips the restore tab. skip(): true for a tab that the
+  // bridge never attaches (a page of the agent package's own origin, a
+  // marked tab). It is read again when the attach and the hold are on: a tab
+  // that became such a tab meanwhile (a popup of a marked tab, whose
+  // navigation target came during the attach) gets its hold ended and its
+  // attachment detached, and is no bridge tab. A tab whose attachment Chrome
+  // ends during the op (the tab closed) is no bridge tab either. Gives the
+  // fields of the tabs.onCreated event: attached, held, and error when
+  // Chrome refused the attach.
+  attachNewTab(tabId, skip = () => false) {
     const no = { attached: false, held: false };
+    const skipped = typeof skip === "function" ? skip : () => skip;
     return this.#queue(tabId, "eager", async (epoch) => {
       while (this.#opening) await this.#opening;
-      if (epoch !== this.#epoch || !this.attachNew || skip || this.isRestoreTab(tabId)) return no;
+      if (epoch !== this.#epoch || !this.attachNew || skipped() || this.isRestoreTab(tabId)) return no;
       if (this.#tabs.has(tabId)) return { attached: true, held: false };
       this.#eager.add(tabId);
       try {
@@ -169,6 +174,13 @@ export class Attachments {
         if (epoch !== this.#epoch) {
           // A link change came while the attach ran: no connection owns the tab.
           this.holds.drop(tabId);
+          await this.#detachNow(tabId).catch(() => {});
+          return no;
+        }
+        if (skipped()) {
+          // The tab got the mark while the attach ran: no client takes its
+          // held requests (they continue), and it is detached.
+          await this.holds.release(tabId, false);
           await this.#detachNow(tabId).catch(() => {});
           return no;
         }

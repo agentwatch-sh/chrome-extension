@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
-import { Bridge, BRIDGE_VERSION, CONTENT_TYPES, OPS, WAIT_DEFAULT_MS, WAIT_MAX_MS } from "../agent/bridge.js";
+import { Bridge, BRIDGE_VERSION, CONTENT_TYPES, OPS, TARGET_METHODS, WAIT_DEFAULT_MS, WAIT_MAX_MS } from "../agent/bridge.js";
 import { attachments } from "../agent/attach.js";
 import { HOLD_MAX_MS, HOLD_FORCE_MS } from "../agent/hold.js";
 import { ReceiverLink } from "../agent/link.js";
@@ -125,6 +125,7 @@ test("the bridge's constants and ops are C10's", () => {
   assert.equal(MAX_RESULT, K.MAX_RESULT);
   assert.equal(RESULT_PART_BYTES, K.RESULT_PART_BYTES);
   assert.deepEqual(CONTENT_TYPES, V.contentTypes);
+  assert.deepEqual(TARGET_METHODS, V.targetMethods, "the Target methods that the relay sends (review-22 B1)");
   assert.deepEqual(Object.keys(OPS).sort(), V.ops.map((o) => o.op).sort(), "the ops of C10 and no other (no cookie op)");
   for (const o of V.ops) {
     const spec = OPS[o.op];
@@ -260,6 +261,10 @@ test("the kinds of args: each case fits or gets bad args", async () => {
     ["contentSettings.set", ["location", { primaryPattern: "http://a.example:65535/*", setting: "allow" }]],
     ["contentSettings.clear", ["automaticDownloads"]],
     ["bridge.attachNew", [false]],
+    ["debugger.sendCommand", [{ tabId: 1 }, "Target.setAutoAttach", { autoAttach: true, flatten: true }]],
+    ["debugger.sendCommand", [{ tabId: 1 }, "Target.getTargetInfo"]],
+    ["debugger.sendCommand", [{ tabId: 1, sessionId: "S1" }, "Target.detachFromTarget", { sessionId: "S2" }]],
+    ["debugger.sendCommand", [{ tabId: 1 }, "TargetX.createTarget"]],
   ];
   for (const [op, args] of fits) {
     const req = args === undefined ? { op } : { op, args };
@@ -271,6 +276,10 @@ test("the kinds of args: each case fits or gets bad args", async () => {
     ["debugger.attach", {}],
     ["debugger.sendCommand", [{ tabId: 1, sessionId: "" }, "Page.enable"]],
     ["debugger.sendCommand", [{ tabId: 1 }, ""]],
+    // Of the Target domain only the methods that the relay sends (review-22 B1).
+    ["debugger.sendCommand", [{ tabId: 1 }, "Target.createTarget", { url: "chrome://newtab/" }]],
+    ["debugger.sendCommand", [{ tabId: 1, sessionId: "S1" }, "Target.closeTarget", { targetId: "x" }]],
+    ["debugger.sendCommand", [{ tabId: 1 }, "Target.getTargets"]],
     ["debugger.sendCommand", [{ tabId: 1 }, "Page.enable", []]],
     ["debugger.sendCommand", [{ tabId: 1 }, "Page.enable", null]],
     // A new tab or window opens at about:blank only, and names its scope (C10).

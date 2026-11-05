@@ -7,6 +7,9 @@ import { normalizeEntry } from "./lib/domains.js";
 // C11's scope pattern: list names and scopes share it.
 export const SCOPE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 export const isName = (v) => typeof v === "string" && SCOPE_PATTERN.test(v);
+// The operator value "*" (C4): the marked tabs may open any site. As a tab's
+// list it covers every host; no list name can be "*" (the scope pattern).
+export const ANY = "*";
 
 const isObj = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
 const normalized = (e) => {
@@ -17,7 +20,7 @@ const normalized = (e) => {
 // What applies of one set_scopes. lists: list name -> its valid entries (a
 // list that applies as absent is not there). scopes: scope -> a list name or
 // null. default: a valid name or null. operator: "*", a list name of lists,
-// or null (choice 3 of the design; its effect is part 1d). applied: scopes
+// or null (choice 3 of the design: what the marked tabs may open). applied: scopes
 // and lists are objects (C5: only an applied set_scopes sweeps, and only an
 // applied one is the reference of the new entries).
 export class ScopeSet {
@@ -44,8 +47,15 @@ export class ScopeSet {
     return name === null ? null : this.lists[name];
   }
 
-  // The union of the lists: the list of a tab of no scope (C5's closing rule)
-  // and of contentDetails (C10).
+  // A marked tab's list (C5): ANY with "*", the entries of the named list,
+  // or null (no list).
+  markEntries() {
+    if (this.operator === ANY) return ANY;
+    return this.operator === null ? null : this.lists[this.operator];
+  }
+
+  // The union of the lists: the list of a tab of no scope that is not marked
+  // (C5's closing rule) and of contentDetails (C10).
   union() {
     const out = new Set();
     for (const name of Object.keys(this.lists)) for (const e of this.lists[name]) out.add(e);
@@ -96,7 +106,7 @@ export function parseScopes(msg) {
   let operator = null;
   if (Object.hasOwn(m, "operator") && m.operator !== null) {
     const o = m.operator;
-    if (o === "*") operator = "*";
+    if (o === ANY) operator = ANY;
     else if (isName(o)) operator = Object.hasOwn(lists, o) ? o : null;
     else refused += 1;
   }
@@ -113,9 +123,8 @@ export function shrinks(last, next) {
   const lost = (a, b) => a !== null && b !== null && a.some((e) => !b.includes(e));
   const names = new Set([...Object.keys(last.scopes), ...Object.keys(next.scopes), ""]); // "" names no scope: the default
   for (const s of names) if (lost(last.entriesOf(s), next.entriesOf(s))) return true;
-  const op = (set) => (set.operator === "*" ? "*" : set.operator === null ? null : set.lists[set.operator]);
-  const a = op(last);
-  const b = op(next);
-  if (a === "*") return b !== "*" && b !== null;
-  return b !== "*" && lost(a, b);
+  const a = last.markEntries();
+  const b = next.markEntries();
+  if (a === ANY) return b !== ANY && b !== null;
+  return b !== ANY && lost(a, b);
 }

@@ -314,6 +314,7 @@ function kindFits(kind, a) {
     case "id": return int(a) && a >= 0;
     case "object": return isObj(a);
     case "string": return typeof a === "string" && a.length > 0;
+    case "method": return typeof a === "string" && a.length > 0 && (!a.startsWith("Target.") || bridge.targetMethods.includes(a));
     case "boolean": return typeof a === "boolean";
     case "target":
       return isObj(a) && int(a.tabId) && a.tabId >= 0 && onlyKeys(a, ["tabId", "sessionId"]) &&
@@ -979,7 +980,7 @@ test("review-18's notes (board ab-v16.50): the file of ended scopes, the freed n
     "A scope that ended while the daemon was down is in no file: with 5 b it falls back to the `default` list after the restart, and the sweep does not close its tabs (a limit; with 5 a it does not exist)"]) {
     assert.ok(says(daemon, s), `C4 says: ${s}`);
   }
-  for (const s of ["The check of a marked tab needs no `debugger.sendCommand`, because a marked tab is never a bridge tab",
+  for (const s of ["A marked tab is never a bridge tab (a bridge tab that gets the mark is detached: each tab's scope, below), so its check of `debugger.sendCommand` is one more layer",
     "A call that went to Chrome before its tab joined the set runs to its end (what stops a handler, below)",
     "An op of the removal queue gets the check when its item starts: a tab joins the set only at the end of a sweep item (or as a new tab), and one item runs at a time"]) {
     assert.ok(says(C10, s), `C10 says: ${s}`);
@@ -1486,4 +1487,33 @@ test("part 1b's decisions are the contract (ab-v16.32, PR #21 questions 1 to 4):
   for (const old of ["A POST is not sent again", "The packed agent has no `webRequest`", "a POST that Chrome does not send again", "Part 1b's live test measures the delay", "or 50 ms late when none comes"]) {
     assert.ok(!says(C10, old), `gone: ${old}`);
   }
+});
+
+// Part 1d (board ab-v16.34): C10 states the operator mark as the receiver builds it, with its measures and its limits,
+// and the receiver's New Tab URL is the one that C10 names.
+test("C10 states part 1d's operator mark as built: where the mark comes from, what removes it, the eager attach, the measures and the limits", async () => {
+  const { NEW_TAB_URL } = await import("../agent/receiver.js");
+  assert.ok(says(C10, "a tab that starts at `" + NEW_TAB_URL + "`, that no page opened and that no bridge op created gets the **operator mark**"));
+  for (const s of [
+    "The receiver builds it from version 0.3.2 (part 1d, board ab-v16.34)",
+    "the tab's `pendingUrl`, else its `url`, is exactly `chrome://newtab/`, no `webNavigation.onCreatedNavigationTarget` of the tab came before, and the tab is not in the map",
+    "Ctrl+T and Ctrl+N (a new window) give `url` `\"\"` and `pendingUrl` `chrome://newtab/`",
+    "a navigation target of the tab that comes after the mark removes it",
+    "A tab of `tabs.create` or `windows.create` loses a mark at its entry write",
+    "the receiver ends the hold (the held requests continue), detaches the tab, and its `tabs.onCreated` says `\"attached\":false,\"held\":false`. So a marked tab is never a bridge tab",
+    "The marks live in memory only, as the orphan set does: the copy holds no mark",
+    "a page's `window.open(\"chrome://newtab/\")` opened no tab",
+    "CDP key events of Ctrl+T and Ctrl+N (`Input.dispatchKeyEvent` with `nativeVirtualKeyCode` through the bridge, and Playwright's `keyboard.press` through the relay) opened no tab",
+    "The first tab of a browser that starts at its New Tab page gets no mark",
+    "A program of the operator's OS user that sends X input to the live view's display (Ctrl+T, then a URL) gets a marked tab",
+    // review-22: B1, note 3 and note 4.
+    "and `debugger.sendCommand` sends no `Target.createTarget` (the kind `method`). So a bridge op never opens a site, a `chrome:`, `file:` or `javascript:` URL, or Chrome's New Tab page",
+    "Of the `Target` domain only the methods that the relay sends to Chrome (C11, where each call goes; the vector's `targetMethods`)",
+    "a mark that its own `tabs.onCreated` gave it goes first",
+    "Measured on Google Chrome 157 too (review-22): Ctrl+T and Ctrl+N give `url` `\"\"` and `pendingUrl` `chrome://newtab/`, with no navigation target",
+  ]) assert.ok(says(C10, s), `C10 says: ${s}`);
+  for (const m of bridge.targetMethods) assert.ok(says(C10, "`" + m + "`"), `C10 names ${m}`);
+  assert.ok(!says(C10, "Google Chrome stable's URL in `tabs.onCreated` of a new tab is not measured"), "measured now");
+  assert.ok(!says(C10, "that a page cannot open a `chrome://` page is Chrome's rule, not measured"), "measured now");
+  assert.equal(JSON.parse(read("agent/manifest.json")).version, "0.3.2");
 });

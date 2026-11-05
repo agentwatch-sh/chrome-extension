@@ -237,7 +237,11 @@ and no prompt showed.
   list. So a page of a listed site still loads frames and subresources from
   any host, and a tab whose top-level page is not on its list (for example
   `about:blank` with content that a CDP client wrote) loads none. A tab of no
-  scope, and a tab whose scope has no list, matches no rule. When the lists
+  scope, and a tab whose scope has no list, matches no rule. Your own tabs in
+  the live view are the exception: a tab that you open at Chrome's New Tab
+  page (Ctrl+T, a new window), and each popup of it, gets a mark, and the
+  daemon's setting says what a marked tab may open (any site, one list, or
+  none). No agent connection sees a marked tab. When the lists
   change, the receiver closes each tab whose site left its list, and every tab
   of a scope that has no list any more (a session that ended), in one removal
   queue that never closes the browser's last window; it reports each blocked
@@ -255,8 +259,8 @@ and no prompt showed.
   tab-to-scope map) and gets a fixed list of Chrome events. The bridge checks
   each request before it reaches Chrome: a new tab or window opens only
   `about:blank` and names its scope (never a site, a `chrome:`, `file:` or
-  `javascript:` URL); it never touches the restore tab of a running send or a
-  tab of an ended session, sets content settings only for hosts that a list
+  `javascript:` URL); it never touches the restore tab of a running send, a
+  tab of an ended session or one of your marked tabs, sets content settings only for hosts that a list
   covers, and has no cookie operation. A close of a tab is the receiver's
   own (`Target.closeTarget`, no "Leave site?" dialog), except a client's
   `Page.close`. A navigation is a CDP command (`Page.navigate`), which the

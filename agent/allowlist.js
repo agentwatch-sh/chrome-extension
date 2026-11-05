@@ -17,7 +17,7 @@ import { importState } from "./importer.js";
 import { covers } from "./lib/domains.js";
 import { receiver } from "./receiver.js";
 import { REMOVAL_WAIT_MS } from "./removals.js";
-import { parseScopes, shrinks } from "./scopes.js";
+import { ANY, parseScopes, shrinks } from "./scopes.js";
 import { tabUrl } from "./tabs.js";
 
 // Per Receiver: the chain of set_scopes, the last one that applied in full,
@@ -62,7 +62,8 @@ export function setScopes(chrome, msg) {
 // set_scopes: at one that is not applied (its scopes or lists is not an
 // object) the receiver sweeps nothing, and one bad message closes no live
 // session's page; with no applied one since the worker's start it closes
-// nothing.
+// nothing. A marked tab has no scope, so the sweep never closes it; the
+// closing rule judges it by its operator value ("*": never).
 function picks(r, next, t, swept) {
   const id = t.id;
   if (r.att.isRestoreTab(id)) return false; // never the restore tab of a running import
@@ -76,9 +77,11 @@ function picks(r, next, t, swept) {
   if (by === null) return false;
   const u = tabUrl(t);
   if (u === null) return false;
-  // The tab's list: none for a tab of the orphan set, its scope's list, or
-  // the union of the lists for a tab of no scope.
-  const list = orphan ? null : scope !== undefined ? by.entriesOf(scope) : by.union();
+  // The tab's list: none for a tab of the orphan set, its scope's list, a
+  // marked tab's operator value, or the union of the lists for any other tab
+  // of no scope.
+  const list = r.tabList(id, by);
+  if (list === ANY) return false;
   return list === null || !list.some((d) => covers(d, u.hostname));
 }
 

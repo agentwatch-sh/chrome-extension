@@ -5,7 +5,12 @@
 //   open tab, rule 100 + 2i allows its main frames (requestDomains) and rule
 //   101 + 2i its frames, <object> and <embed> documents (topDomains), both
 //   with the tabIds of the tabs whose list it is;
-// - the import's rules 6 and 7: the import's domain in its restore tab only.
+// - the import's rules 6 and 7: the import's domain in its restore tab only;
+// - the marked-tab rule 8 (choice 3 of the design, part 1d): with the
+//   operator value "*", every main frame, frame and <object>/<embed>
+//   document in the operator's marked tabs, with no host condition. With a
+//   list name, the marked tabs are in that list's tabIds instead (the model);
+//   with null they have no rule.
 // Dynamic rule 5 sets Sec-Fetch-Site: none on the receiver's own top-level
 // requests. Dynamic rules 2 and 4 (one list for every tab, before part 1a)
 // are gone: the worker removes them at its start and at each set_scopes.
@@ -14,6 +19,7 @@
 // when it runs. A failed scope update fails closed: a remove-only call takes
 // every scope rule out, and the next update is a full replace.
 
+import { ANY } from "./scopes.js";
 import { RESTORE_MAX_MS } from "./tabmap.js";
 
 const OLD_RULE_ID = 2;
@@ -23,8 +29,8 @@ export const IMPORT_RULE_ID = 6;
 export const IMPORT_FRAME_RULE_ID = 7;
 export const FIRST_SCOPE_RULE_ID = 100;
 const IMPORT_IDS = [IMPORT_RULE_ID, IMPORT_FRAME_RULE_ID];
-// Rule 8, the marked-tab rule of part 1d: this part never writes it.
-const MARKED_RULE_ID = 8;
+// Rule 8, the marked-tab rule (C5).
+export const MARKED_RULE_ID = 8;
 // Chrome's MAX_NUMBER_OF_SESSION_RULES (measured: the 5001st is refused).
 const MAX_SESSION_RULES = 5000;
 // The potentially trustworthy URLs, to which Chrome sends Sec-Fetch-*
@@ -54,6 +60,12 @@ export function importRules(domain, tabId) {
   ];
 }
 
+// C5, the marked-tab rule with "*": every site in the marked tabs. DNR
+// refuses an empty tabIds, so there is no rule while no tab is marked.
+export function markedRule(tabIds) {
+  return { id: MARKED_RULE_ID, priority: 2, action: { type: "allow" }, condition: { resourceTypes: [...MAIN, ...FRAMES], tabIds: [...tabIds] } };
+}
+
 // Chrome names the extension as the initiator of a Page.navigate, so the site
 // sees Sec-Fetch-Site: cross-site. This rule sets none for the top-level
 // requests that the agent package starts, and for no other: then a
@@ -74,18 +86,21 @@ export function headerRule(extensionId) {
 
 export class SessionRules {
   #chrome;
-  #model; // () => Map(list name -> {entries, tabIds}): the lists of the open tabs of the map
+  #model; // () => Map(list name -> {entries, tabIds}): the lists of the open tabs of the map (and of the marked tabs)
+  #marked; // () => the tabIds of rule 8: the marked tabs while the operator value is "*", else none
   #clock;
   #chain = Promise.resolve();
   #ids = new Map(); // list name -> the id of its first scope rule, for the rules in force
+  #rule8 = false; // rule 8 is in force
   #dirty = false; // after a failed update: the next change is a full replace
   #unknown = false; // the start's removal failed: a full replace removes every rule of the scheme first
   #importing = false; // rules 6 and 7 of a running import are (or may be) in force
 
-  constructor(chrome, model, clock = { setTimer: (fn, ms) => setTimeout(fn, ms), clearTimer: (h) => clearTimeout(h) }) {
+  constructor(chrome, model, clock = { setTimer: (fn, ms) => setTimeout(fn, ms), clearTimer: (h) => clearTimeout(h) }, marked = () => []) {
     this.#chrome = chrome;
     this.#model = model;
     this.#clock = clock;
+    this.#marked = marked;
   }
 
   get #dnr() {
@@ -141,14 +156,15 @@ export class SessionRules {
     }));
   }
 
-  // set_scopes: every scope rule, from the map. Gives the count of the rules
-  // that it wrote.
+  // set_scopes: every scope rule and rule 8, from the map and the marks.
+  // Gives the count of the rules that it wrote.
   replaceAll() {
     return this.#run(() => this.#replaceAll());
   }
 
-  // A tab got or lost a scope: the two rules of each named list (null names
-  // no list). A full replace after a failed update.
+  // A tab got or lost a scope or the mark: the two rules of each named list
+  // (null names no list), and rule 8 for the name ANY. A full replace after
+  // a failed update.
   replaceLists(names) {
     return this.#run(() => (this.#dirty || this.#unknown ? this.#replaceAll().then(() => {}) : this.#replaceLists(names)));
   }
@@ -165,6 +181,8 @@ export class SessionRules {
       add.push(...scopeRules(id, entries, tabIds));
       id += 2;
     }
+    const marked = this.#marked();
+    if (marked.length > 0) add.push(markedRule(marked));
     const remove = new Set(this.#inForce());
     if (this.#unknown) {
       // A worker before this one can have left scope rules (they stay over a
@@ -186,6 +204,7 @@ export class SessionRules {
     }
     await this.#update({ removeRuleIds: [...remove], addRules: add });
     this.#ids = ids;
+    this.#rule8 = marked.length > 0;
     this.#dirty = false;
     this.#unknown = false;
     return add.length;
@@ -194,10 +213,18 @@ export class SessionRules {
   async #replaceLists(names) {
     const model = this.#model();
     const ids = new Map(this.#ids);
+    let rule8 = this.#rule8;
     const remove = [];
     const add = [];
     for (const name of new Set(names)) {
       if (name === null || name === undefined) continue;
+      if (name === ANY) {
+        if (rule8) remove.push(MARKED_RULE_ID);
+        const marked = this.#marked();
+        rule8 = marked.length > 0;
+        if (rule8) add.push(markedRule(marked));
+        continue;
+      }
       const old = ids.get(name);
       if (old !== undefined) remove.push(old, old + 1);
       ids.delete(name);
@@ -210,6 +237,7 @@ export class SessionRules {
     if (remove.length === 0 && add.length === 0) return;
     await this.#update({ removeRuleIds: remove, addRules: add });
     this.#ids = ids;
+    this.#rule8 = rule8;
   }
 
   // The lowest pair of ids that no list of ids holds.
@@ -220,14 +248,15 @@ export class SessionRules {
     return id;
   }
 
+  // The scope rules and rule 8 in force.
   #inForce() {
-    return [...this.#ids.values()].flatMap((id) => [id, id + 1]);
+    return [...[...this.#ids.values()].flatMap((id) => [id, id + 1]), ...(this.#rule8 ? [MARKED_RULE_ID] : [])];
   }
 
   // One updateSessionRules call; it is all or nothing. A failure fails
-  // closed: a remove-only call takes every scope rule out (if that fails too,
-  // old rules can stay), and every later change is a full replace until one
-  // succeeds. The map stays.
+  // closed: a remove-only call takes every scope rule and rule 8 out (if that
+  // fails too, old rules can stay), and every later change is a full replace
+  // until one succeeds. The map and the marks stay.
   async #update(details) {
     try {
       await this.#dnr.updateSessionRules(details);
@@ -236,6 +265,7 @@ export class SessionRules {
       try {
         await this.#dnr.updateSessionRules({ removeRuleIds: this.#inForce() });
         this.#ids = new Map();
+        this.#rule8 = false;
       } catch {
         // Old rules can stay in force: the closing rule still runs.
       }
