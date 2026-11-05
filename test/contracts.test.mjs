@@ -18,6 +18,7 @@ const bridge = JSON.parse(read("test/vectors/bridge.json"));
 const endpoint = JSON.parse(read("test/vectors/endpoint.json"));
 const scopesV = JSON.parse(read("test/vectors/scopes.json"));
 const helloV = JSON.parse(read("test/vectors/hello.json"));
+const blockedV = JSON.parse(read("test/vectors/blocked.json"));
 
 // The text of one contract: from its "### Cn." heading to the next "### ".
 function section(name) {
@@ -152,6 +153,88 @@ test("the rollout: each side meets the other's old form and fails closed, with C
   assert.equal(res.id, req.id);
   assert.equal(res.ok, false);
   assert.ok(C4.includes("`" + JSON.stringify({ ...res, id: "<id>" }) + "`"), "C4 shows the answer");
+});
+
+// ---- C4 and C5: blocked and the guard (part 1c, board ab-v16.33) ----
+
+// The host that C5's guard judges: an http:/https: URL's, a blob: URL's inner origin's (when that is
+// http:/https:); null for any other URL and for a blob: URL of an opaque origin.
+function guardHostOf(url) {
+  let m = /^blob:(.*)$/.exec(url);
+  const raw = m ? m[1] : url;
+  m = /^(https?):\/\/([^/:?#]+)(:[0-9]+)?([/?#]|$)/.exec(raw);
+  return m ? m[2].toLowerCase() : null;
+}
+// C5's covered set of the vector's tab, by the last set_scopes (null: none since the worker's start):
+// "*" (every host), a list of entries, or null (no host).
+function coveredSet(v) {
+  if (v.tab.restore) return [v.tab.restore]; // the restore tab of a running import: its domain only
+  if (v.in === null || v.tab.orphan) return null;
+  const a = applySetScopes(v.in);
+  if (v.tab.scope) {
+    const name = a.listOf(v.tab.scope);
+    return name === null ? null : a.lists[name];
+  }
+  if (v.tab.marked) return a.operator === "*" ? "*" : a.operator === null ? null : a.lists[a.operator];
+  return [...new Set(Object.values(a.lists).flat())]; // a tab of no scope: the union of the lists
+}
+const coversHost = (entry, host) => host === entry || host.endsWith("." + entry);
+
+test("each guard vector follows C5's guard: the host that it judges and the covered set of its tab", () => {
+  const kinds = new Set();
+  for (const v of blockedV.guard) {
+    const keys = Object.keys(v.tab);
+    assert.ok(keys.length <= 1 && keys.every((k) => ["scope", "marked", "orphan", "restore"].includes(k)), `${v.note}: one kind of tab`);
+    kinds.add(keys[0] ?? "none");
+    if (v.tab.scope) assert.ok(NAME.test(v.tab.scope), v.note);
+    if (v.tab.restore) assert.equal(normalizeEntry(v.tab.restore).entry, v.tab.restore, v.note);
+    const host = guardHostOf(v.url);
+    assert.equal(host, v.host, `${v.note}: the host`);
+    const set = coveredSet(v);
+    const blocks = host !== null && !(set === "*" || (set !== null && set.some((e) => coversHost(e, host))));
+    assert.equal(blocks, v.blocks, v.note);
+  }
+  assert.deepEqual([...kinds].sort(), ["marked", "none", "orphan", "restore", "scope"], "every kind of tab");
+  const has = (f) => blockedV.guard.some(f);
+  assert.ok(has((v) => v.url.startsWith("blob:") && v.blocks), "a blob: URL of another site");
+  assert.ok(has((v) => v.url.startsWith("blob:null/") && v.host === null), "an opaque blob:");
+  assert.ok(has((v) => v.tab.marked && v.in?.operator === "*" && !v.blocks), "a marked tab with *");
+  assert.ok(has((v) => v.tab.marked && typeof v.in?.operator === "string" && v.in.operator !== "*" && v.blocks), "a marked tab with a list name");
+  assert.ok(has((v) => v.tab.marked && v.in && !Object.hasOwn(v.in, "operator") && v.host !== null && v.blocks), "a marked tab with no operator value");
+  assert.ok(has((v) => v.tab.orphan && v.blocks && coveredSet({ ...v, tab: {} }).some((e) => coversHost(e, v.host))), "the orphan set: no host, also one on the union");
+  assert.ok(has((v) => v.tab.restore && v.in?.operator === "*" && v.blocks), "the restore tab: its domain only");
+  assert.ok(has((v) => v.in && !isObj(v.in.scopes) && v.tab.scope && v.blocks), "a set_scopes that is not applied fails closed for a scope's tab");
+  assert.ok(has((v) => v.in === null && v.blocks), "before the first set_scopes");
+  for (const s of [
+    "The guard judges by the lists of the last `set_scopes`, as the scope rules do, not by the last applied one, as the closing rule does",
+    "The host of a `blob:` URL is its inner origin's host. A `blob:` URL of an opaque origin (`blob:null/...`), and `about:`, `data:`, `chrome:` and `file:` URLs, have no host",
+    "for the restore tab of a running import its `domain` only (rules 6 and 7), from its mark to the import's end",
+    "`test/vectors/blocked.json`",
+  ]) assert.ok(says(C5, s), `C5 says: ${s}`);
+});
+
+test("C4's blocked holds from (board ab-v16.33), each notice vector has C4's shape, and C5 states from and the once rule", () => {
+  assert.ok(C4.includes('`{"t":"blocked","tab":<tab id>,"host":"<host>","scope":"<scope>","from":"<host>"}`'), "C4 shows blocked with from");
+  assert.ok(says(C4, '`"scope":null` for a tab of no scope and `"from":null` for a tab with no listed host'));
+  assert.ok(says(C4, "`test/vectors/blocked.json`"), "C4 names the vector");
+  const host = (h) => typeof h === "string" && normalizeEntry(h).ok && normalizeEntry(h).entry === h;
+  for (const { note, msg } of blockedV.notices) {
+    assert.deepEqual(Object.keys(msg), ["t", "tab", "host", "scope", "from"], `${note}: the fields in C4's order`);
+    assert.equal(msg.t, "blocked", note);
+    assert.ok(Number.isInteger(msg.tab) && msg.tab >= 0, note);
+    assert.ok(host(msg.host), `${note}: host`);
+    assert.ok(msg.scope === null || NAME.test(msg.scope), `${note}: scope`);
+    assert.ok(msg.from === null || host(msg.from), `${note}: from`);
+  }
+  assert.ok(blockedV.notices.some((n) => n.msg.scope === null && n.msg.from === null), "a notice with both null");
+  assert.ok(blockedV.notices.some((n) => n.msg.scope !== null && n.msg.from !== null), "a notice with both");
+  for (const s of [
+    "`from` is the tab's **last listed host**: the host of its last main-frame commit of an `http:`/`https:` URL (or of a `blob:` URL with such an inner origin) that the guard let stay, so never a host that the guard sent away",
+    "A new popup with no such commit takes its opener's (`sourceTabId`, at its `webNavigation.onCreatedNavigationTarget`)",
+    "`from` does not say who started the blocked navigation",
+    "`scope` is the tab's scope (C10) when the notice goes",
+    "A navigation starts at a main-frame `onBeforeNavigate` whose URL is not `about:blank`, and lasts until the next one: a redirect stays in it, and the receiver's own `about:blank` starts none",
+  ]) assert.ok(says(C5, s), `C5 says: ${s}`);
 });
 
 test("each set_scopes vector applies by C4's rules, with its count in refused", () => {
@@ -1515,5 +1598,7 @@ test("C10 states part 1d's operator mark as built: where the mark comes from, wh
   for (const m of bridge.targetMethods) assert.ok(says(C10, "`" + m + "`"), `C10 names ${m}`);
   assert.ok(!says(C10, "Google Chrome stable's URL in `tabs.onCreated` of a new tab is not measured"), "measured now");
   assert.ok(!says(C10, "that a page cannot open a `chrome://` page is Chrome's rule, not measured"), "measured now");
-  assert.equal(JSON.parse(read("agent/manifest.json")).version, "0.3.2");
+  // Part 1d built the mark in 0.3.2; a later part raises the version (part 1c: 0.3.3).
+  const [maj, min, pat] = JSON.parse(read("agent/manifest.json")).version.split(".").map(Number);
+  assert.ok(maj > 0 || min > 3 || (min === 3 && pat >= 2), "the manifest's version is 0.3.2 or later");
 });

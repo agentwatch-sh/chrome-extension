@@ -37,6 +37,7 @@ export class Attachments {
   #chains = new Map(); // tabId -> {kind, epoch, run, done}: the last op of the tab that has not ended
   #epoch = 0; // counts the resets
   #restore = null; // the restore tab of the running import
+  #restoreDomain = null; // its import's domain (C5's guard: the restore tab's covered set)
   #opening = null; // a promise while the import creates its restore tab and does not know its id
   #eager = new Set(); // the tabs whose eager attach runs
   #gone = new Set(); // of those, the tabs whose attachment Chrome ended meanwhile
@@ -60,6 +61,11 @@ export class Attachments {
 
   isRestoreTab(tabId) {
     return this.#restore !== null && this.#restore === tabId;
+  }
+
+  // The domain of the import whose restore tab this is, else null.
+  restoreDomain(tabId) {
+    return this.isRestoreTab(tabId) ? this.#restoreDomain : null;
   }
 
   // True while the import creates its restore tab and does not know its id.
@@ -269,12 +275,15 @@ export class Attachments {
     };
   }
 
-  markRestore(tabId) {
+  markRestore(tabId, domain = null) {
     this.#restore = tabId;
+    this.#restoreDomain = domain;
   }
 
   clearRestore(tabId) {
-    if (this.#restore === tabId) this.#restore = null;
+    if (this.#restore !== tabId) return;
+    this.#restore = null;
+    this.#restoreDomain = null;
   }
 
   attachRestore(tabId) {

@@ -244,7 +244,7 @@ async function runImport(chrome, state, opts) {
         if (!tab || typeof tab.id !== "number") throw new Error("no tab");
         ctx.tabId = tab.id;
         // A tab that came after the deadline is closed, and the import has ended.
-        if (!signal.aborted) att.markRestore(tab.id);
+        if (!signal.aborted) att.markRestore(tab.id, state.domain);
         return tab.id;
       } finally {
         ctx.known();

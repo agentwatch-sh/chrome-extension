@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ReceiverLink, fitForDaemon, watchBlocked } from "../agent/link.js";
+import { ReceiverLink, fitForDaemon } from "../agent/link.js";
 import { PART_BYTES, MAX_TO_DAEMON, RESULT_PART_BYTES, ChannelJoiner, splitParts } from "../agent/wire.js";
 import { makeFakeChrome } from "./fake-chrome.mjs";
 
@@ -103,17 +103,6 @@ test("a disconnect reconnects after 1 s, 2 s, 4 s ... capped at 30 s; a message 
   f.ports.at(-1).fireMessage({ t: "link", up: true });
   f.ports.at(-1).fireDisconnect();
   assert.equal(timers.at(-1).ms, 1000);
-});
-
-test("blocked main-frame navigations post the host only", () => {
-  const f = makeFakeChrome();
-  const sent = [];
-  watchBlocked(f.chrome, (m) => sent.push(m));
-  const ev = f.chrome.webNavigation.onErrorOccurred;
-  ev.fire({ frameId: 0, tabId: 4, url: "https://evil.example/path?q=secret", error: "net::ERR_BLOCKED_BY_CLIENT" });
-  ev.fire({ frameId: 3, tabId: 4, url: "https://evil.example/", error: "net::ERR_BLOCKED_BY_CLIENT" });
-  ev.fire({ frameId: 0, tabId: 4, url: "https://evil.example/", error: "net::ERR_FAILED" });
-  assert.deepEqual(sent, [{ t: "blocked", tab: 4, host: "evil.example" }]);
 });
 
 test("a never-settling handler times out at 9 s and the next request runs", async () => {

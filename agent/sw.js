@@ -1,7 +1,7 @@
 // The agent package's service worker. Every chrome event listener is
 // registered synchronously while this file is evaluated (the Manifest V3 rule),
 // before the first await.
-import { ReceiverLink, watchBlocked } from "./link.js";
+import { ReceiverLink } from "./link.js";
 import { mainOps } from "./allowlist.js";
 import { Bridge } from "./bridge.js";
 import { receiver } from "./receiver.js";
@@ -15,8 +15,9 @@ const link = new ReceiverLink(chrome, {
 });
 const bridge = new Bridge(chrome, link);
 
-// A popup's retry decides the notice of its first request (C10, popups.js).
-watchBlocked(chrome, (msg) => link.send(msg), (details, msg, send) => receiver(chrome).popups.screen(details, msg, send));
+// The blocked notices (C4): the guard, DNR's blocks, and a popup's retry,
+// which decides the notice of its first request (guard.js, popups.js).
+receiver(chrome).notify = (msg) => link.send(msg);
 // C10: the cleanup at the worker's start (a worker that started again knows no bridge tabs).
 void bridge.reset();
 // C5 and C10 at the worker's start: every session rule goes and the map comes

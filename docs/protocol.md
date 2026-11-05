@@ -160,8 +160,10 @@ One JSON object per native message. On the daemon's socket each message is one N
   `{"t":"res","id":"<id>","ok":true,"data":{...}}` or `{"t":"res","id":"<id>","ok":false,"error":"<text>"}`
   (a res on the bridge channel also has `"ch":"bridge"`, and its `data` can also be a list or `null`:
   C10);
-  `{"t":"blocked","tab":<tab id>,"host":"<host>","scope":"<scope>"}`, with `"scope":null` for a tab of
-  no scope (C5);
+  `{"t":"blocked","tab":<tab id>,"host":"<host>","scope":"<scope>","from":"<host>"}`, with
+  `"scope":null` for a tab of no scope and `"from":null` for a tab with no listed host (C5, `blocked`;
+  `from` since board ab-v16.33: the receiver from version 0.3.3 sends it, and a daemon that reads only
+  `tab`, `host` and `scope` ignores it);
   on the bridge channel, the events of C10: `{"t":"ev","ch":"bridge","ev":"<event>",...}`, and a
   large res in parts (C10):
   `{"t":"part","ch":"bridge","id":"<id>","seq":<i>,"n":<count>,"b64":"<base64>"}`.
@@ -340,9 +342,10 @@ held one list for the whole agent browser. The request is above. Its fields and 
     `tabs.create` without the scope arg gets `bad args`.
   - There is no backward compatibility: agentwatch pins both repositories and moves them at once.
 - The shared vectors: `test/vectors/scopes.json` (`set_scopes` objects and what applies, for the
-  receiver, and for the relay's `allowlist` line of C10 and C11; the sweep of C5) and
+  receiver, and for the relay's `allowlist` line of C10 and C11; the sweep of C5),
   `test/vectors/hello.json` (the hello with `features`, and the `ok:false` answer to
-  `set_allowlist`).
+  `set_allowlist`) and `test/vectors/blocked.json` (`blocked` with its `scope` and `from`, and C5's
+  guard).
 
 **The tabs of a session that ended (board ab-v16.41).** The receiver closes them itself at a
 `set_scopes` that gives their scope no list (C5, the sweep), also while no relay runs, and it keeps
@@ -652,10 +655,52 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
   not the request of a worker that passes the navigation on: with both receiver layers on, no page
   of such a worker committed in a scope-B tab (0 of 10), but its request reached the site in 10 of
   10, with the site's cookies, and the site's answer came back to the worker (ab-lead's reviewer).
-- `blocked`: a main-frame `webNavigation.onErrorOccurred` with `net::ERR_BLOCKED_BY_CLIENT` sends
-  `blocked` (C4) with the host and the tab's scope. One navigation sends at most one `blocked` (the
-  guard and `onErrorOccurred` can both see it). C10's retry decides the notice of a popup's first
-  request; a retried request that is blocked again sends `blocked` (there is no second retry).
+  The receiver builds the guard from part 1c (board ab-v16.33, version 0.3.3):
+  - The guard judges by the lists of the last `set_scopes`, as the scope rules do, not by the last
+    applied one, as the closing rule does: after a `set_scopes` that is not applied each tab of a
+    scope has no list (C4), so the guard fails closed with the scope rules, and a tab of no scope
+    keeps the union of the lists that apply. Before the first `set_scopes` after the worker's start
+    no tab has a list, except the restore tab. Its check waits for the restore of the map (C10, each
+    tab's scope). A tab's covered set is C5's tab's list (above: the receiver's `tabList`), and for
+    the restore tab of a running import its `domain` only (rules 6 and 7), from its mark to the
+    import's end; then it is a tab of no scope.
+  - The host of a `blob:` URL is its inner origin's host. A `blob:` URL of an opaque origin
+    (`blob:null/...`), and `about:`, `data:`, `chrome:` and `file:` URLs, have no host: the guard
+    does not check them (a page of an opaque origin holds no site's cookies or storage). A port does
+    not count. A frame's navigation is not checked (O11).
+  - A `tabs.update` that fails (the tab closed) is ignored; the notice still goes. The guard acts at
+    both layers of one navigation: when it lost the race at `onBeforeNavigate`, the commit sends the
+    tab away again.
+- `blocked`: a main-frame `webNavigation.onErrorOccurred` with `net::ERR_BLOCKED_BY_CLIENT` (DNR's
+  block), and each block of the guard, send `blocked` (C4) with the host (never the path or the
+  query), the tab's scope and `from`. The receiver builds it from part 1c (board ab-v16.33, version
+  0.3.3):
+  - `scope` is the tab's scope (C10) when the notice goes: `null` for a tab of no scope (a marked
+    tab, a tab of the orphan set, the restore tab, any other tab of no scope). The viewer names the
+    repo whose list lacks the host.
+  - `from` is the tab's **last listed host**: the host of its last main-frame commit of an
+    `http:`/`https:` URL (or of a `blob:` URL with such an inner origin) that the guard let stay, so
+    never a host that the guard sent away. A new popup with no such commit takes its opener's
+    (`sourceTabId`, at its `webNavigation.onCreatedNavigationTarget`), and the added tab of a
+    `tabs.onReplaced` takes the removed tab's. A commit of `about:blank` (also the guard's own) and a
+    frame's commit change nothing. `null` for a tab with no such commit. It lives in memory only:
+    after a worker start each tab has `null` until its next commit. The source: the operator's
+    answer ab-pbk and the sign-in design (agent-browser
+    `docs/superpowers/specs/2026-11-05-sign-in-provider-design.md`, section 7.5; only `from` is
+    taken from its option a). `from` does not say who started the blocked navigation: the site, a
+    click or a script of the agent, or the agent's own `goto` from that page give the same `from`.
+    When `from` is a site of a list and `host` is on no list, the web viewer can offer to add `host`
+    to that repo's list; nothing is added by itself.
+  - One navigation sends at most one `blocked`. A navigation starts at a main-frame
+    `onBeforeNavigate` whose URL is not `about:blank`, and lasts until the next one: a redirect stays
+    in it, and the receiver's own `about:blank` starts none. So the guard at both layers, DNR's block
+    and the retry's decision (C10) send one notice for it, and a new navigation, also to the same
+    URL, sends again. C10's retry decides the notice of a popup's first request; a retried request
+    that is blocked again sends `blocked` (there is no second retry: the reload is a new
+    navigation).
+  - The shared vector: `test/vectors/blocked.json` (`notices`: `blocked` as the receiver sends it;
+    `guard`: the covered set of each kind of tab, and the host that the guard judges for each kind
+    of URL).
 - Stage-2 limit (not handled now): a tab whose back/forward cache holds a page of a removed host may go
   Back to it with no request, so DNR does not block it. The guard's `onCommitted` check also covers
   a page that Chrome restores from the cache and reports there (not measured).
