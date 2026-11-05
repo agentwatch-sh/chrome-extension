@@ -567,17 +567,38 @@ test("the window rule: each vector follows C10's rule, also for a pending close 
   }
   assert.ok(says(C5, "The sweep closes a tab with a pending close again, by the receiver's close"), "C5: the sweep does not skip a held tab");
   // review-17b: B1 (pending from the start of the close), N1 (the chain), N2 (step 3), N3 (a tab that the sweep cannot close leaves its scope).
-  for (const s of ["a close is pending from the moment its item starts it (for the receiver's close, from its attach; for a client's `Page.close`, from its send) until the tab's `tabs.onRemoved`, or until it fails and the tab stays (after the fallback too)",
-    "a late `Page.close` answer with no error leaves the close pending", "also one that is still in its attach", "The receiver's close is one op of the tab's chain of attaches",
+  for (const s of ["a close is pending from the moment its item starts it (for the receiver's close, from the moment it joins the tab's chain; for a client's `Page.close`, from its send) until the tab's `tabs.onRemoved`, or until it fails and the tab stays (after the fallback too)",
+    "a late `Page.close` answer with no error leaves the close pending, and a late error ends it", "also one that still waits in the tab's chain, or is still in its attach",
+    // review-17c: the chain op ends before a held fallback (note 1); the orphan set in C10 (T11, T12, T13); a new entry's limit (note 5).
+    "The op ends when the command answered, or when the fallback called `chrome.tabs.remove`; the close stays pending outside the chain",
+    "a tab of the sweep leaves its scope at the end of the item, into the orphan set", "the sweep takes such a tab out of its scope into the orphan set",
+    "The limits of a tab that a sweep item does not close", "a window rule that failed or came late, with no close and no dialog", "the held `chrome.tabs.remove` call does not end",
+    "The limit of a new entry", "the end of a sweep item that did not close the tab", "The receiver's close is one op of the tab's chain of attaches",
     "only when it made one: never the bridge's attachment", "lists no target for the tab", "it never detaches the attach of a receiver's close that runs"]) {
     assert.ok(says(C10, s), `C10 says: ${s}`);
   }
-  assert.ok(says(C5, "A tab that the sweep's item does not close") && says(C5, "leaves the map at the end of that item"), "C5: a tab that the sweep cannot close leaves its scope");
-  assert.ok(says(C11, "it also drops from its model each tab whose scope the line gives no list"), "C11: the relay drops the tabs of a scope with no list");
+  // review-17c B1: both cases, the orphan set, the true limits.
+  for (const s of ["A tab that the sweep's item does not close leaves its scope at the end of that item", "The item's window rule failed or came late (C10): then no close starts, and no dialog opens",
+    "The receiver keeps its id in the **orphan set**, in memory", "the guard and the closing rule treat it as a tab with no list", "Each later sweep item closes it again by the receiver's close, whatever its URL",
+    "after a dismiss the page stays, and the held `chrome.tabs.remove` call does not end", "After a worker start the orphan set is gone", "its key leaves the copy (the answer waits for that removal, C4)",
+    "The relay drops it from its model at its next `allowlist` line", "except a tab of the orphan set"]) {
+    assert.ok(says(C5, s), `C5 says: ${s}`);
+  }
+  assert.ok(!says(C5, "The case needs a failed attach, a `beforeunload` handler and a user activation of the page; its limit is a tab of no scope that stays open until someone answers its dialog"), "C5: the old, wrong limit is gone");
+  // review-17c notes 3 and 4, and the C4 nits (T18).
+  assert.ok(says(C4, "the copy's key removals of the sweep have ended"), "C4: the answer waits for the key removals");
+  assert.ok(says(C4, "after an answer that came later than 10 s (C10, the bound of a `set_scopes` answer), the receiver's new rules are in force"), "C4: a late answer");
+  assert.ok(says(C4, "After an `ok: false` of a failed worker removal (C5)"), "C4: an ok:false of a failed worker removal");
+  assert.ok(says(C11, "at a line whose `scopes` and `lists` are objects, it also drops from its model each tab of a scope that the line gives no list"), "C11: the relay drops the tabs of a scope with no list");
+  assert.ok(says(C11, "A tab that still waits for its `bridge.tabScope` (up to `TAB_SCOPE_WAIT_MS`) has no scope yet, and it stays"), "C11: a popup that waits for its scope stays");
   assert.ok(says(bridge.windowRuleNote, "a close is pending from the moment its item starts it"), "the windowRuleNote has the same definition");
-  // review-17b N7: the old rule that skipped a tab with a pending close is gone.
+  // review-17b N7 and review-17c note 7: no sentence lets the sweep, the closing rule or a later item skip a tab with a
+  // pending close (also a paraphrase: "skips", "never closes ... again").
   for (const [name, text] of [["C5", C5], ["C10", C10]]) {
-    assert.ok(!says(text, "skip a tab with a pending close") && !says(text, "neither does a tab with a pending close"), `${name}: no rule skips a tab with a pending close`);
+    for (const sentence of flat(text).split(/(?<=\.)\s+/)) {
+      const skips = /\b(skips?|skipped|neither does)\b/i.test(sentence) || /\bnever close[sd]?\b[^.]*\bagain\b/i.test(sentence);
+      assert.ok(!(skips && /pending close/i.test(sentence)), `${name}: no rule skips a tab with a pending close: ${sentence}`);
+    }
   }
   assert.ok(says(C11, "while Chrome's own `Target.closeTarget` does not"), "C11: today's relay's Target.closeTarget runs beforeunload");
 });

@@ -265,14 +265,17 @@ held one list for the whole agent browser. The request is above. Its fields and 
   first one on each connection names every live session (the tabs of a session that ended, below).
 - When the answer is `ok: false`, or no answer comes in 10 s, the daemon writes no `allowlist` line,
   sends the object again (agentwatch picks the delay), and shows the error on the Browser page. The
-  relay keeps its last line until a new one comes. After an `ok: false` the receiver has failed
-  closed (C5: a failed update removes the scope rules). After an answer that came later than 10 s
-  the receiver's new rules are in force (C10, the bound of a `set_scopes` answer), and the relay's
-  last line is older than them.
+  relay keeps its last line until a new one comes. After an `ok: false` of a failed rule update the
+  receiver has failed closed (C5: a failed update removes the scope rules). After an `ok: false` of
+  a failed worker removal (C5), and after an answer that came later than 10 s (C10, the bound of a
+  `set_scopes` answer), the receiver's new rules are in force, and the relay's last line is older
+  than them.
 - A send (C2) no longer adds its site to a list: agentwatch decides which list a sent site joins
   (the design's choice 6, asked in ab-dm6; its recommendation: no list).
-- The answer comes after the scope rules are in force, the workers are removed (when C5 needs it)
-  and the tabs are closed (C5: the closing rule and the sweep). `rules` counts the session rules of
+- The answer comes after the scope rules are in force, the workers are removed (when C5 needs it),
+  the tabs are closed (C5: the closing rule and the sweep), and the copy's key removals of the
+  sweep have ended (C10, each tab's scope: a lost key removal could bring an old scope back after
+  a worker start). `rules` counts the session rules of
   C5 that `set_scopes` writes: the scope rules, and with choice 3 the marked-tab rule. `closed`
   counts the tabs that closed before the answer: a close that did not end in its item's wait (C10,
   removals and the last window) does not count. The answer can come later than the 10 s (C10, the
@@ -485,7 +488,8 @@ m1c19e2a):
 - The closing rule: on each `set_scopes` the receiver closes every tab whose `http:`/`https:` host
   its list does not cover; for a marked tab, its `operator` value counts (with `"*"` it never
   closes; with a list name, that list; with `null` no list, so its `http:`/`https:` page closes);
-  for a tab of no scope, the union of the lists counts (so an unmarked operator's tab and the page
+  for a tab of no scope, the union of the lists counts, except for a tab of the orphan set (the
+  sweep, below), which has no list (so an unmarked operator's tab and the page
   of a finished import stay while a list covers them). It never closes the restore tab of a running
   import. A window closes with its last tab, except the browser's last window: there the receiver
   first opens `about:blank`, so that Chrome does not end. (With one window per page, agent-browser
@@ -501,19 +505,28 @@ m1c19e2a):
   the rule update fails. With `default` `null` that is every tab of a session that ended, also of
   one that ended while the link was down or while no relay ran. A tab of no scope never closes by
   the sweep (C10, each tab's scope: the operator's tabs, an import's restore tab, the `about:blank`
-  tab of the window rule, a tab whose entry was lost). The sweep closes a tab with a pending close
-  again, by the receiver's close (C10): a `beforeunload` dialog of a client's `Page.close` cannot
-  keep a tab of an ended session in its scope.
-  - A tab that the sweep's item does not close (its close failed, or it is still pending when the
-    item ends: for example the fallback's `chrome.tabs.remove`, held by a dialog, C10) leaves the
-    map at the end of that item, and its key leaves the copy. It is then a tab of no scope: it fails
-    closed, `bridge.tabScopes` no longer lists it, no session sees it, and the sweep never tries it
-    again (the closing rule still closes its `http:`/`https:` page when no list covers its host,
-    and its pending close can still end). It does not count in `closed`. The relay drops it from
-    its model at the `allowlist` line of that `set_scopes` (C11, when a connection ends). So a
-    later session of the same name never gets the tab (C4, rule 2 of the tabs of a session that
-    ended). The case needs a failed attach, a `beforeunload` handler and a user activation of the
-    page; its limit is a tab of no scope that stays open until someone answers its dialog.
+  tab of the window rule, a tab whose entry was lost), except a tab of the orphan set (below). The
+  sweep closes a tab with a pending close again, by the receiver's close (C10): a `beforeunload`
+  dialog of a client's `Page.close` cannot keep a tab of an ended session in its scope.
+  - A tab that the sweep's item does not close leaves its scope at the end of that item. There are
+    two cases. (1) Its close failed, or it is still pending when the item ends: for example the
+    fallback's `chrome.tabs.remove`, which a `beforeunload` dialog holds (C10); that needs a failed
+    attach, a `beforeunload` handler and a user activation of the page. (2) The item's window rule
+    failed or came late (C10): then no close starts, and no dialog opens. The tab leaves the map,
+    and its key leaves the copy (the answer waits for that removal, C4). The receiver keeps its id
+    in the **orphan set**, in memory, until its `tabs.onRemoved`. `bridge.tabScopes` no longer
+    lists it, and no session sees it. The relay drops it from its model at its next `allowlist`
+    line: the line of that `set_scopes`, or a later one after an `ok: false` or a late answer (C11,
+    when a connection ends). So a later session of the same name never gets the tab (C4, rule 2 of
+    the tabs of a session that ended). It does not count in `closed`.
+  - A tab of the orphan set fails closed: the guard and the closing rule treat it as a tab with no
+    list, not by the union of the lists, so no navigation of it loads, and the closing rule closes
+    its `http:`/`https:` page. Each later sweep item closes it again by the receiver's close,
+    whatever its URL, `about:blank` too. The limits: in case 1 the tab stays open until someone
+    accepts the dialog or a later sweep item closes it; after a dismiss the page stays, and the held
+    `chrome.tabs.remove` call does not end (measured, C10). After a worker start the orphan set is
+    gone: such a tab is then a plain tab of no scope, judged by the union of the lists, and the
+    sweep never closes it.
   - An **applied** `set_scopes` is one whose `scopes` and `lists` are objects. At any other the
     receiver sweeps nothing: C4 applies such a field as an empty object, so every scope would have
     no list, and one bad message would close every agent tab. The rest of it applies as C4 says, so
@@ -535,8 +548,9 @@ m1c19e2a):
   5, for a worker that does not fall back to `fetch()` (one that falls back loads the page as
   above). So at each main-frame `webNavigation.onBeforeNavigate` and `webNavigation.onCommitted` of
   an `http:`/`https:` URL, or a `blob:` URL with such an inner origin, whose host the tab's list
-  does not cover (for a tab of no scope: the union of the lists; for the restore tab: its `domain`;
-  for a marked tab: nothing with `"*"`, the named list with a name, every host with `null`), the
+  does not cover (for a tab of no scope: the union of the lists, but every host for a tab of the
+  orphan set, the sweep above; for the restore tab: its `domain`; for a marked tab: nothing with
+  `"*"`, the named list with a name, every host with `null`), the
   receiver sends the tab to `about:blank` (`tabs.update`) and sends `blocked`. `onCommitted` also
   catches a redirect from a host of the list to a worker's host (a redirect fires no new
   `onBeforeNavigate`). A page's own navigation was stopped before its commit 10 of 10; a page that
@@ -1087,8 +1101,9 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
   - `tabs.onReplaced`: the added tab takes the removed tab's scope.
   - Every other tab has no scope: the restore tab, the tab that C5's closing rule opens (and every
     `about:blank` tab of the window rule, removals and the last window, below), a tab from before
-    the worker's start whose entry the copy does not hold, and the operator's own tabs. The sweep
-    never closes a tab of no scope (C5). The operator's tabs depend on choice 3 of the
+    the worker's start whose entry the copy does not hold, a tab of the orphan set (C5, the sweep),
+    and the operator's own tabs. The sweep never closes a tab of no scope, except a tab of the
+    orphan set (C5). The operator's tabs depend on choice 3 of the
     design: with it, a tab that starts at `chrome://newtab/`, that no page opened and that no bridge
     op created gets the **operator mark** (no agent tab starts there: the relay opens `about:blank`
     only and refuses `chrome:` URLs; that a page cannot open a `chrome://` page is Chrome's rule,
@@ -1106,7 +1121,8 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
     disconnect and each new daemon connection (the cleanup of "What stops a handler"), with the
     scope rules, the marks, the last `operator` value and rule 8 (C5; board ab-v16.41): a link drop
     or a daemon restart does not take a live session's tabs out of their scopes. Only a tab's close
-    (also by the sweep, C5), a `tabs.onReplaced` (above) and the worker's start remove entries.
+    (also by the sweep, C5), a `tabs.onReplaced` (above), the end of a sweep item that did not close
+    the tab (C5: the tab joins the orphan set) and the worker's start remove entries.
   - No stale entry: the receiver writes a scope only for a tab that exists. A write of an op or an
     event that started before a link change still applies (the map stays), so a tab that the old
     relay opened keeps its scope: a relay gets it from `bridge.tabScopes` at the next link up after
@@ -1268,7 +1284,10 @@ ends).
   - The chain. The receiver's close is one op of the tab's chain of attaches (as `agent/attach.js`
     runs the bridge's attaches and detaches of a tab one after the other). A bridge attach of the tab
     that is in flight ends first, and the close then uses that attachment. A relay's
-    `debugger.attach` of the tab that comes during the close waits until the close ended. An attach
+    `debugger.attach` of the tab that comes during the close's op waits until that op ended. The op
+    ends when the command answered, or when the fallback called `chrome.tabs.remove`; the close
+    stays pending outside the chain (below), so a held fallback never stops the tab's chain or a
+    relay's `debugger.attach`. An attach
     of a second client of the same extension fails (measured: `Another debugger is already attached
     to the tab`, and the first attachment stays and works; review-17b check E3), so the close never
     makes a second one.
@@ -1276,7 +1295,7 @@ ends).
     for the tab, or when the command fails and the tab stays, the receiver ends its attach for the
     close (only when it made one: never the bridge's attachment) and calls `chrome.tabs.remove`. Its
     limit: a `beforeunload` handler can then hold that close (measured, below). A later item tries
-    again; the sweep takes such a tab out of its scope (C5, the sweep).
+    again; the sweep takes such a tab out of its scope into the orphan set (C5, the sweep).
 - The **window rule**. Before an item closes its tabs, the receiver reads every tab (`tabs.query`
   with `{}`). When no tab stays open other than the tabs of the item and the tabs with a pending
   close (below), it first opens an `about:blank` tab, not active and in no scope, in the window of
@@ -1284,26 +1303,27 @@ ends).
   `REMOVAL_WAIT_MS`. When either fails or comes later, the receiver closes no tab of the item, and
   the item ends: `tabs.remove` and `Page.close` answer the error, and the closing rule and the sweep
   count no tab in `closed`. A tab of the closing rule stays, and the next `set_scopes` tries again;
-  a tab of the sweep leaves its scope at the end of the item (C5, the sweep).
+  a tab of the sweep leaves its scope at the end of the item, into the orphan set (C5, the sweep).
 - A **pending close**: a close is pending from the moment its item starts it (for the receiver's
-  close, from its attach; for a client's `Page.close`, from its send) until the tab's
-  `tabs.onRemoved`, or until it fails and the tab stays (after the fallback too). An answer that
-  comes later than the item's wait changes nothing: a late `Page.close` answer with no error leaves
-  the close pending, a late error ends it. The window rule counts each tab with a pending close as
-  closed until then, however long that takes. The reason: a `beforeunload` handler holds a client's
-  `Page.close` (and the fallback's `chrome.tabs.remove`) while its dialog is open, and the page
-  closes when the client or the operator accepts the dialog, maybe much later (board ab-v16.43: an
-  accept after the wait). Without the rule, a later item counts that tab as another tab, removes the
-  only other tab, and the accept then closes the last window. Only the item that started a close
-  waits for it (the time limit, below): a later item that closes the tab (also a `tabs.remove` or an
-  import's close) closes it again, by the receiver's close, unless that item is a client's
-  `Page.close`. After a dismiss the page stays, and the tab stays pending until it closes: each
-  later item that would leave it as the only open tab opens one `about:blank` tab that was not
-  necessary.
+  close, from the moment it joins the tab's chain; for a client's `Page.close`, from its send) until
+  the tab's `tabs.onRemoved`, or until it fails and the tab stays (after the fallback too). An
+  answer that comes after the item's wait counts as any answer: a late `Page.close` answer with no
+  error leaves the close pending, and a late error ends it. The window rule counts each tab with a
+  pending close as closed until then, however long that takes. The reason: a `beforeunload` handler
+  holds a client's `Page.close` (and the fallback's `chrome.tabs.remove`) while its dialog is open,
+  and the page closes when the client or the operator accepts the dialog, maybe much later (board
+  ab-v16.43: an accept after the wait). Without the rule, a later item counts that tab as another
+  tab, removes the only other tab, and the accept then closes the last window. Only the item that
+  started a close waits for it (the time limit, below): a later item that closes the tab (also a
+  `tabs.remove` or an import's close) closes it again, by the receiver's close, unless that item is
+  a client's `Page.close`. After a dismiss the page stays, and the tab stays pending until it
+  closes: each later item that would leave it as the only open tab opens one `about:blank` tab that
+  was not necessary.
 - The time limit. An item starts its closes one after the other, with no wait for one close before
   the next, and then waits until they ended, at most `REMOVAL_WAIT_MS = 2000` ms after it started
   the last one. Then the next item starts. Each close of the item that has not ended stays pending,
-  also one that is still in its attach or its `chrome.debugger.getTargets()` (the definition above).
+  also one that still waits in the tab's chain, or is still in its attach or its
+  `chrome.debugger.getTargets()` (the definition above).
   An op still answers when its own call ends, or with `timeout` at its wait (the deadline, above).
 - The bound of a `set_scopes` answer. An item ends at most three times `REMOVAL_WAIT_MS` (6 s) after
   it starts (its query, its `about:blank` tab, its wait), and in the normal case after a few ms
@@ -1312,7 +1332,7 @@ ends).
   waits for the items before the sweep's item and for that item, so several long items can make it
   later than the daemon's 10 s (C4). The daemon then writes no `allowlist` line for it and sends the
   object again: the relay keeps its last line, the receiver's new rules are in force, and the next
-  `set_scopes` sweeps again.
+  `set_scopes` sweeps again, also the tabs of the orphan set (C5, the sweep).
 - A client's `Page.close` keeps its own semantics: Chrome runs the page's `beforeunload` handler,
   and the receiver answers with Chrome's answer. Each later `debugger.sendCommand` request of the
   tab waits at a gate until that `Page.close` ends: it went to Chrome, the window rule refused it
@@ -1351,10 +1371,20 @@ ends).
   and the operator's close in the live view are outside the queue, so at the same moment as a
   removal they can still end Chromium. The pending closes live in the worker's memory only: after a
   worker start the receiver knows none, so a `Page.close` that a dialog holds over a worker restart
-  can still close the last window at a late accept (the case of board ab-v16.43). A close of the
-  fallback can wait for its dialog until someone answers it or a later item closes the tab again;
-  when the sweep's close of a tab is such a close, the tab leaves its scope at the end of the item
-  (C5, the sweep) and stays open as a tab of no scope.
+  can still close the last window at a late accept (the case of board ab-v16.43). The orphan set
+  lives in memory too (C5, the sweep).
+- The limits of a tab that a sweep item does not close (C5, the sweep). In both cases (a close
+  that failed or is still pending, for example a fallback that its dialog holds; and a window rule
+  that failed or came late, with no close and no dialog) the tab leaves its scope into the orphan
+  set, and each later sweep item closes it again. In the first case the tab stays open until
+  someone accepts the dialog or a later sweep item closes it; after a dismiss the page stays, and
+  the held `chrome.tabs.remove` call does not end (measured, above). After a worker start such a
+  tab is a plain tab of no scope.
+- The limit of a new entry. A popup or a replaced tab whose scope has no list and whose close does
+  not end (a fallback that a dialog holds) stays in its scope until the next applied `set_scopes`;
+  that sweep closes it or takes it into the orphan set, before the scope's name can come back (C4,
+  rule 2). The chance is near zero: the dialog needs a user activation in a tab that is a few ms
+  old.
 - The shared vectors: `windowRule` in `test/vectors/bridge.json`, and its request of `tabs.remove`.
 
 ### C11. The endpoint (agent-browser's relay)
@@ -1514,10 +1544,13 @@ vectors: `test/vectors/endpoint.json`.
   of before (measured, board ab-v16.39).
 - The relay stops: every connection closes with 1001, `The agent browser stopped`.
 - At each `allowlist` line, the relay closes every connection of a scope that has no list any more,
-  with 1008, `The allowlist has no list for this scope any more`. In the per-scope build it also
-  drops from its model each tab whose scope the line gives no list: the receiver's sweep has closed
-  those tabs, or taken them out of their scope (C5), so a later session of the same name never sees
-  one (C4).
+  with 1008, `The allowlist has no list for this scope any more`. In the per-scope build, at a line
+  whose `scopes` and `lists` are objects, it also drops from its model each tab of a scope that the
+  line gives no list: the receiver's sweep has closed those tabs, or taken them out of their scope
+  into its orphan set (C5), so a later session of the same name never sees one (C4). A tab that
+  still waits for its `bridge.tabScope` (up to `TAB_SCOPE_WAIT_MS`) has no scope yet, and it stays.
+  At a line whose `scopes` or `lists` is not an object it drops no tab: the receiver sweeps nothing
+  then (C5).
 - With keys on, at each `allowlist` line, the relay closes every connection of a scope that still
   has a list (the same list or another one) but whose `keys` entry is gone, or holds another hash
   than at the connection's upgrade (also a line with no `keys` field),
