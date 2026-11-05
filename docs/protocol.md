@@ -14,6 +14,20 @@ rule) goes to aw-lead by mail, with its commit, before it merges. agentwatch's p
 (`CHROME_EXTENSION_COMMIT`, `CHROME_EXTENSION_RECEIVER_ID`, `AGENT_CRX_PATH`, `AGENT_CRX_SHA256`)
 move only in an agentwatch tip, so a chrome-extension merge alone never reaches a box.
 
+The per-scope allowlists (board task ab-v16.23; the design: agent-browser
+`docs/superpowers/specs/2026-11-04-per-scope-allowlist-design.md`) are the contract in C4, C5, C6,
+C10 and C11 since board task ab-v16.30. This file is the master over that design too: where the two
+differ (for example the key's 403 text, or a count in `refused`), this file holds. Each side builds
+the rules in a part of the design's section 12: the receiver in parts 1a to 1d (boards ab-v16.31 to
+ab-v16.34), the relay in part 2 (ab-v16.35 and ab-v16.36), agentwatch in part 3 (aw-lead). Until its
+part merges, a side still does what this file said before ab-v16.30 (main `27543ce`:
+`set_allowlist`, one list for the whole agent browser), and this repository's tests run the shared
+vectors that the receiver does not meet yet as `todo` tests. There
+is no backward compatibility: agentwatch pins both repositories and moves them at once, and it
+moves `CHROME_EXTENSION_COMMIT` to a commit with part 1a only together with its part 3 (aw-lead,
+mail md2ae63e). The operator's choices of the design's section 13 that are still open (ab-dm6:
+choice 1, the scope's key; choice 3, the operator's own tabs) change only the rules that name them.
+
 - Sender extension ID: `bpfkgknpndlpkcffmaaelkfcbpackiip`
 - Receiver extension ID: `ifhfjdmdbgbnmllffiadajepajbcdnai`
 
@@ -118,11 +132,13 @@ The fixes over the probe: `-0` survives; an object key `__proto__` is decoded wi
 One JSON object per native message. On the daemon's socket each message is one NDJSON line.
 
 - receiver -> daemon:
-  `{"t":"hello","v":2,"version":"<manifest version>","channels":["main","bridge"]}`;
+  `{"t":"hello","v":2,"version":"<manifest version>","channels":["main","bridge"],"features":["scopes"]}`
+  (`features`: the allowlists, below);
   `{"t":"res","id":"<id>","ok":true,"data":{...}}` or `{"t":"res","id":"<id>","ok":false,"error":"<text>"}`
   (a res on the bridge channel also has `"ch":"bridge"`, and its `data` can also be a list or `null`:
   C10);
-  `{"t":"blocked","tab":<tab id>,"host":"<host>"}`;
+  `{"t":"blocked","tab":<tab id>,"host":"<host>","scope":"<scope>"}`, with `"scope":null` for a tab of
+  no scope (C5);
   on the bridge channel, the events of C10: `{"t":"ev","ch":"bridge","ev":"<event>",...}`, and a
   large res in parts (C10):
   `{"t":"part","ch":"bridge","id":"<id>","seq":<i>,"n":<count>,"b64":"<base64>"}`.
@@ -136,11 +152,12 @@ One JSON object per native message. On the daemon's socket each message is one N
   joins the decoded slices of one `id` of one channel in `seq` order once all `n` arrived, decodes
   UTF-8 and parses the request.
 - Requests (channel `main`): `{"t":"req","id":"<id>","op":"ping"}` -> `{}`;
-  `{"t":"req","id":"<id>","op":"set_allowlist","domains":["a.example"]}` ->
-  `{"rules":<1 if the valid list is not empty, else 0>,"closed":<tabs closed>,"refused":<entries refused>}`;
+  `{"t":"req","id":"<id>","op":"set_scopes","lists":{"<list>":["a.example"]},"scopes":{"<scope>":"<list>"},"default":"<list>"}`
+  -> `{"rules":<scope rules in force>,"closed":<tabs closed>,"refused":<entries, list names and scopes refused>}`
+  (the allowlists, below);
   `{"t":"req","id":"<id>","op":"import","state":<C2 payload>}` ->
   `{"cookies_removed":0,"cookies_set":0,"tabs_closed":0,"local":0,"session":0,"idb_databases":0,"idb_records":0,"cache_entries":0,"errors":["<store or cookie name>: <reason>"]}`.
-- Ids are strings. The daemon waits 10 s for `ping` and `set_allowlist`, 120 s for `import`.
+- Ids are strings. The daemon waits 10 s for `ping` and `set_scopes`, 120 s for `import`.
 - A message from the receiver to the daemon is at most `MAX_TO_DAEMON = 8388608` bytes (8 MiB) of
   UTF-8 JSON: one line on the daemon's socket, without its newline. The daemon drops the link at a
   longer line, and that would fail a running import. So the receiver never sends a longer message. A
@@ -192,21 +209,87 @@ side is stage 4 of the two-modes design (agentwatch).
 - The shared vectors: `test/vectors/parts.json` (parts without `ch`) and
   `test/vectors/parts-bridge.json` (parts with `"ch":"bridge"`).
 
-**Target (board ab-v16.23): `set_scopes` in place of `set_allowlist`.** C4, C5, C6, C10 and C11 hold
-blocks marked "Target (board ab-v16.23)". Each block is the contract of the build that gives each
-scope its own allowlist (the design: agent-browser
-`docs/superpowers/specs/2026-11-04-per-scope-allowlist-design.md`). The text around a block holds
-until that build merges; the build then replaces it with the block, and changes the vectors with it.
-There is no backward compatibility: agentwatch pins both repositories and moves them at once.
+**The allowlists: `set_scopes` (board ab-v16.23).** Each scope (C11) has its own list (the per-scope
+design, section 8). `set_scopes` replaced `set_allowlist` in board task ab-v16.30: `set_allowlist`
+held one list for the whole agent browser. The request is above. Its fields and its answer:
 
-- The rollout. The receiver's hello names the new form: `{"t":"hello","v":2,"version":"<manifest
-  version>","channels":["main","bridge"],"features":["scopes"]}`. When one side meets the other
-  side's old form, it fails closed, in the named way:
+- `lists` maps a list name to its entries. A list name matches the scope pattern of C11
+  (`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`). A list whose name does not match, or whose value is not an
+  array, applies as absent: it counts 1 in `refused`, and each entry of its array counts 1 more.
+  Each entry of a list that applies follows C5: an entry that is not a normalized entry (a string
+  that equals its normalized form) is refused and counts 1, and the other entries of its list
+  apply. So an invalid entry never keeps an older, wider rule.
+- A valid name (of a list, in `scopes`, `default` and `operator`) is a string that matches the scope
+  pattern. A field that must hold a list name and holds a valid name that is not in `lists` gives
+  no list, with no count; one that holds neither a valid name nor `null` (nor `"*"` for `operator`)
+  counts 1 in `refused` and applies as `null`.
+- `scopes` maps a scope to a list name or `null`. A scope with `null`, or whose list is not in
+  `lists` (also a list that applies as absent), has no list: it does not fall back to `default`, and
+  it counts nothing. A scope that does not match the scope pattern applies as absent and counts 1
+  in `refused` (no connection can name it: C11's 404). A scope that matches the pattern but whose
+  value is neither a valid name nor `null` applies as `null` and counts 1 in `refused`: it has no
+  list and does not fall back to `default`, so a broken entry never gives a session another list.
+- Each scope in `scopes` is the scope that agentwatch fixed at the session's launch (C11, the
+  socket and the URL): `set_scopes` names only the launch scope (`AGENTWATCH_SESSION_ID`); another
+  name of the session is never a scope. A rename changes no scope, and the receiver never moves a
+  tab to another scope at a rename.
+- `default` is a list name or `null`: the list of a scope that `scopes` does not name. With `null`,
+  or a valid name that is not in `lists`, such a scope has no list. A `default` that is neither a
+  valid name nor `null` (also a missing one) counts 1 in `refused` and applies as `null`.
+- A `lists` or `scopes` that is not an object (also a missing one) applies as an empty object and
+  counts 1 in `refused`. A `scopes` that is not an object also makes `default` apply as `null`
+  (with no more count): no scope gets the `default` list while the daemon's scopes are not known.
+- A name that comes twice in one object: the last one applies, as `JSON.parse` and Python's `json`
+  read it. The daemon never sends one.
+- With the design's choice 3 (the operator's own tabs), `set_scopes` has one more field,
+  `"operator"`: `"*"` (the marked tabs may open any site), a list name (they have that list), or
+  `null` (no site; also when the field is absent). C10 gives the mark (each tab's scope). For "every
+  repo's sites" agentwatch adds a list of the union to `lists` and names it. Any other value (not
+  `"*"`, not `null`, not a string that matches the scope pattern) counts 1 in `refused` and applies
+  as `null`; a valid name that is not in `lists` applies as `null` with no count. The daemon's
+  `allowlist` line carries the field; the relay ignores it (no connection sees a marked tab).
+  These are the same counts as for a value of `scopes` and for `default` (a valid name above).
+- The new object replaces the last one in full. The daemon sends it after each `link` up, at each
+  change of a list, and when a session (a scope) starts or ends. It waits 10 s for the answer.
+- When the answer is `ok: false`, or no answer comes in 10 s, the daemon writes no `allowlist` line,
+  sends the object again (agentwatch picks the delay), and shows the error on the Browser page. The
+  relay keeps its last line until a new one comes. The receiver has failed closed meanwhile (C5: a
+  failed update removes the scope rules).
+- A send (C2) no longer adds its site to a list: agentwatch decides which list a sent site joins
+  (the design's choice 6, asked in ab-dm6; its recommendation: no list).
+- The answer comes after the scope rules are in force, the workers are removed (when C5 needs it)
+  and the tabs are closed (C5). `rules` counts the session rules of C5 that `set_scopes` writes:
+  the scope rules, and with choice 3 the marked-tab rule.
+- The daemon names a session's scope in `scopes` before it gives the session its endpoint:
+  `agentwatch browser endpoint` and `agentwatch browser env` wait for the receiver's answer and the
+  `allowlist` line that name the scope (C11). Else the session could connect in the moment before
+  and get the `default` list, which can be another repo's list. The URL is easy to guess, so with a
+  `default` list any scope that `scopes` does not name gets it. An endpoint URL in the session's
+  environment at its launch (only when the operator allowed it: C11, the scope's key) cannot wait,
+  because a launch never waits for the agent browser: the daemon adds the scope to its map before
+  the launch. With `default` `null`, such a session gets the no-list 503 (C11) until an `allowlist`
+  line names its scope, and its agent connects again. A limit: with a `default` list, it can
+  connect in that moment and get the `default` list.
+- At a session's end the daemon writes `end_scope` to the relay (C10) and drops the scope from
+  `scopes` in its next `set_scopes` (agentwatch stage 4, B5). So `scopes` holds only the live
+  sessions, and the receiver's map cannot grow without bound. With `default` `null` (the design's
+  choice 5 a) a dropped scope has no list, so its tabs fail closed. Only with a `default` list
+  (choice 5 b) does the daemon first send the ended scope as `null`, so that it never falls back to
+  the `default` list. The daemon drops the `null` entry after the receiver answered `ok` to a
+  `set_scopes` that holds it, not after a time and not at the next `link` up (the rule of the
+  orphan-tabs design, agent-browser PR #48, section 15, rule 3; the other details of 5 b come with
+  that design's contract change). The `null` entries live in the daemon's memory only. aw-lead
+  prefers choice 5 a, which needs no `null` entry (mail mcbd5352), and builds the rest of 5 b only
+  if the operator takes 5 b. The daemon can also write
+  an `end_scope` for each alias of the ended session; the relay does nothing for a name that is no
+  scope (C10, C11).
+- The rollout. The hello's `"features":["scopes"]` says that the receiver speaks `set_scopes`. When
+  one side meets the other side's old form, it fails closed, in the named way:
   - A new daemon and an old receiver (its latest hello has no `"scopes"` in `features`): the daemon
-    sends `set_allowlist` with `"domains":[]` (the old receiver then blocks every site and closes
-    its `http:`/`https:` tabs), writes no `allowlist` line to the relay (so the relay admits no
-    connection), and shows on the Browser page: "The agent browser's extension is too old for the
-    per-repo allowlists. Update it."
+    sends the old request `{"t":"req","id":"<id>","op":"set_allowlist","domains":[]}` (the old
+    receiver then blocks every site and closes its `http:`/`https:` tabs), writes no `allowlist`
+    line to the relay (so the relay admits no connection), and shows this text on the Browser page:
+    "The agent browser's extension is too old for the per-repo allowlists. Update it."
   - A new receiver and an old daemon: the receiver answers `set_allowlist` with
     `{"t":"res","id":"<id>","ok":false,"error":"set_allowlist is gone: send set_scopes"}` and
     applies nothing, so no scope rule exists (it removed the old dynamic rules 2 and 4 at its
@@ -214,59 +297,17 @@ There is no backward compatibility: agentwatch pins both repositories and moves 
     rule 8: rule 8 stays at a link change, so after a rollback of the daemon a marked tab with `"*"`
     can still open any site, until the receiver's worker starts again. An old relay's `tabs.create`
     without the scope arg gets `bad args`.
-- `set_allowlist` goes. In its place, on channel `main`:
-  `{"t":"req","id":"<id>","op":"set_scopes","lists":{"<list>":["a.example"]},"scopes":{"<scope>":"<list>"},"default":"<list>"}`
-  -> `{"rules":<scope rules in force>,"closed":<tabs closed>,"refused":<entries, list names and
-  scopes refused>}`.
-  - `lists` maps a list name to its entries. A list name matches the scope pattern of C11
-    (`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`); a list with another name applies as absent, and its
-    entries count in `refused`. Each entry follows C5; an entry that is not normalized is refused
-    and counted, and the other entries of its list apply.
-  - A list whose value is not an array applies as absent and counts 1 in `refused`.
-  - `scopes` maps a scope to a list name or `null`. A scope with `null`, or whose list is not in
-    `lists`, has no list; it does not fall back to `default`. A scope that does not match the scope
-    pattern, or whose value is neither a string nor `null`, applies as absent and counts in
-    `refused`.
-  - `default` is a list name or `null`: the list of a scope that `scopes` does not name. With
-    `null`, or a name that is not in `lists`, such a scope has no list. A `default` that is neither
-    a string nor `null` counts in `refused` and applies as `null`.
-  - A `lists` or `scopes` that is not an object applies as an empty object and counts 1 in
-    `refused`.
-  - The new object replaces the last one in full. The daemon sends it after each `link` up, at each
-    change of a list, and when a session (a scope) starts or ends. It waits 10 s for the answer.
-  - The daemon names a session's scope in `scopes` before it gives the session its endpoint (C11),
-    also through `agentwatch browser env` and, only when the operator allowed it (C11's target), an
-    endpoint URL in the session's environment at its launch: else the session could connect in the
-    moment before and get the `default` list, which can be another repo's list. The URL is easy to
-    guess, so with a `default` list any scope that `scopes` does not name gets it.
-  - At a session's end the daemon writes `end_scope` to the relay (C10) and drops the scope from
-    `scopes` in its next `set_scopes` (agentwatch stage 4, B5). So `scopes` holds only the live
-    sessions, and the receiver's map cannot grow without bound. With `default` `null` (the design's
-    choice 5 a) a dropped scope has no list, so its tabs fail closed. Only with a `default` list
-    does the daemon first send the ended scope as `null`, so that it never falls back to the
-    `default` list. `end_scope` has no answer, so the daemon cannot see when the tabs are gone: it
-    drops the `null` entry 60 s after `end_scope` (the relay removes the tabs at once), or at the
-    next `link` up.
-  - With choice 3 of the design (the operator's own tabs), `set_scopes` has one more field,
-    `"operator"`: `"*"` (the marked tabs may open any site), a list name (they have that list), or
-    `null` (no site; also when the field is absent). C10's target gives the mark. For "every repo's
-    sites" agentwatch adds a list of the union to `lists` and names it. Any other value (not `"*"`,
-    not `null`, not a string that matches the scope pattern) counts 1 in `refused` and applies as
-    `null`; a valid name that is not in `lists` applies as `null` with no count. `rules` counts the
-    marked-tab rule (C5's target) too. The daemon's `allowlist` line carries the field; the relay
-    ignores it (no connection sees a marked tab). The shared vector `test/vectors/scopes.json` holds
-    these cases, and `test/vectors/hello.json` holds the hello with `features` and the `ok:false`
-    answer to `set_allowlist`. Today `test/contracts.test.mjs` reads only `bridge.json` and
-    `endpoint.json`; the build makes it read the two new files too.
-  - The answer comes after the scope rules are in force, the workers are removed (when C5 needs it)
-    and the tabs are closed (C5's target). `rules` counts the scope rules of C5's target.
-- `blocked` names the tab's scope: `{"t":"blocked","tab":<tab
-  id>,"host":"<host>","scope":"<scope>"}`, with `"scope":null` for a tab of no scope.
+  - There is no backward compatibility: agentwatch pins both repositories and moves them at once.
+- The shared vectors: `test/vectors/scopes.json` (`set_scopes` objects and what applies, for the
+  receiver, and for the relay's `allowlist` line of C10 and C11) and `test/vectors/hello.json` (the
+  hello with `features`, and the `ok:false` answer to `set_allowlist`).
 
 ### C5. The allowlist and the block
 
 - File `CONFIG_DIR/browser/allowlist.json` = `{"allow": ["example.com", ...]}` (agent-browser's
-  format; the daemon writes it with `statefiles.write_json`).
+  format; the daemon writes it with `statefiles.write_json`). It stays the list of agent-browser's
+  CDP proxy. The lists of agent mode come in `set_scopes` (C4); agentwatch decides where it keeps
+  them (the per-scope design, section 8.1).
 - An entry is a hostname: trimmed, lowercased, a trailing dot removed, Unicode labels to punycode
   (IDNA), at least two labels, each label 1-63 of `[a-z0-9-]` not starting or ending with `-`, total at
   most 253; no scheme, port, path, `*` or IP address. A pasted URL is refused with the hint "paste the
@@ -277,74 +318,55 @@ There is no backward compatibility: agentwatch pins both repositories and moves 
   U+FF0E, U+FF61, or `ß` (U+00DF) or `ς` (U+03C2) ("use the punycode form": JavaScript's URL and
   Python's IDNA map these differently). After IDNA the entry matches `^[a-z0-9.-]+$`. A refusal
   reason never echoes the input; an empty label says "a label is empty".
-- DNR: the receiver's static ruleset `block_main_frame` (`rules/block-main-frame.json`, enabled in the
-  manifest): rule id 1, priority 1, `{"type":"block"}`, `resourceTypes: ["main_frame"]`. One dynamic
-  rule id 2, priority 2, `{"type":"allow"}`, `requestDomains` = the list, `resourceTypes:
-  ["main_frame"]`; no rule 2 when the list is empty. So the block holds from Chromium's first moment,
-  before the service worker runs.
-- Three more rules come from the two-modes design (sections 7 and 8). Each `set_allowlist` writes the
-  dynamic rules 2, 4 and 5 in one `updateDynamicRules` call, so the daemon's `allowlist` line to the
-  relay (C10) always comes after them. The answer's `rules` still counts rule 2 only.
-  - The frame rules, as rules 1 and 2 for pages. The static ruleset `block_frames`
-    (`rules/block-frames.json`, enabled in the manifest): rule id 3, priority 1, `{"type":"block"}`,
-    `resourceTypes: ["sub_frame", "object"]` (an `<object>` or `<embed>` document is type `object`).
-    The dynamic rule id 4, priority 2, `{"type":"allow"}`, `topDomains` = the list, the same
-    `resourceTypes`; no rule 4 when the list is empty. A CDP client can make a top-level document
-    with no request (`about:blank`, `setContent`) and put any host in a frame, an `<object>` or an
-    `<embed>` there; these rules load such a document only in a tab whose top-level domain is on the
-    list. A page of an allowlisted site still loads them from any host (O11). Measured on Chromium
-    156: no frame, `<object>` or `<embed>` document loads under an `about:blank` tab, also from an
-    allowlisted host; under an allowlisted page all three load, also from an off-list host; an
-    `about:blank` popup of an allowlisted page loads them too. `topDomains` needs Chrome 141; the receiver's `minimum_chrome_version` is 145,
-    a safe minimum.
-  - The navigation-header rule: dynamic rule id 5, priority 3, `{"type":"modifyHeaders",
+- Each tab has at most one scope (C10, each tab's scope), and each scope at most one list
+  (`set_scopes`, C4: its `scopes` entry when it has one, else `default`). A **tab's list** is its
+  scope's list. A marked tab (C10, the operator mark of the design's choice 3) has no scope; its
+  list is its `operator` value: `"*"` (any site), a list, or none (`null`: the tab fails closed, as
+  a tab with no list). Any other tab of no scope, and a tab whose scope has no list, has no list.
+- The DNR rules. The per-scope design's probe measured them (Chromium 156, 2026-11-04), unless a
+  rule names another measure.
+  - Static rule 1: the receiver's static ruleset `block_main_frame` (`rules/block-main-frame.json`,
+    enabled in the manifest): rule id 1, priority 1, `{"type":"block"}`, `resourceTypes:
+    ["main_frame"]`. So the block holds from Chromium's first moment, before the service worker
+    runs.
+  - Static rule 3, the frame rule (two-modes design, sections 7 and 8): the static ruleset
+    `block_frames` (`rules/block-frames.json`, enabled in the manifest): rule id 3, priority 1,
+    `{"type":"block"}`, `resourceTypes: ["sub_frame", "object"]` (an `<object>` or `<embed>`
+    document is type `object`). A CDP client can make a top-level document with no request
+    (`about:blank`, `setContent`) and put any host in a frame, an `<object>` or an `<embed>` there;
+    rule 3 and the frame rule of each list (below) load such a document only in a tab whose
+    top-level domain is on the tab's list. A page of a site on the tab's list still loads them from
+    any host (O11). Measured on Chromium 156 with one list for all tabs (before board task
+    ab-v16.30): no frame, `<object>` or `<embed>` document loads under an `about:blank` tab, also
+    from an allowlisted host; under an allowlisted page all three load, also from an off-list host;
+    an `about:blank` popup of an allowlisted page loads them too. Measured with the scope rules:
+    under a scope-A page a frame of an off-list host loads; under `about:blank` of a scope-A tab and
+    of a tab of no scope, rule 3 blocks it. `topDomains` needs Chrome 141; the receiver's
+    `minimum_chrome_version` is 145, a safe minimum.
+  - Dynamic rule 5, the navigation-header rule (two-modes design, sections 7 and 8): rule id 5,
+    priority 3, `{"type":"modifyHeaders",
     "requestHeaders":[{"header":"sec-fetch-site","operation":"set","value":"none"}]}`,
     `resourceTypes: ["main_frame"]`, `initiatorDomains` = the receiver's own ID (`chrome.runtime.id`),
     `regexFilter` = `^(https://|http://(localhost|[^/:]+\.localhost|127\.[0-9]+\.[0-9]+\.[0-9]+|\[::1\])(:[0-9]+)?/)`.
     Chrome names the extension as the initiator of a top-level request that it starts (a bridge
-    `Page.navigate`, `tabs.create`), so without the rule a `Page.navigate` sends `Sec-Fetch-Site:
-    cross-site`. Chrome sends `Sec-Fetch-*` headers only to a potentially trustworthy URL (`https:`,
-    and `http:` to `localhost`, `*.localhost`, `127.0.0.0/8` or `[::1]`), so the `regexFilter` keeps
-    the rule to those: a `Sec-Fetch-Site` on another `http:` URL would mark the agent browser.
-    Measured on Chromium 156: a `Page.navigate` sends `none` and `Sec-Fetch-User: ?1`, as a typed
-    URL; a page script's navigation keeps `same-origin`; a `Page.navigate` to an off-list host is
-    still blocked; a `Page.navigate` and a page script's navigation to a plain-`http:` host that is
-    not localhost send no `Sec-Fetch-*` header. Chrome applies a `modifyHeaders` rule only above the
-    priority of every `allow` rule that matches, so its priority is above rule 2's.
-- `set_allowlist` replaces the list. An entry that is not a normalized entry (C5 rules, equal to its
-  normalized form) is refused and counted in `refused`; the valid entries apply, so an invalid entry
-  never keeps an older, wider rule. A `domains` that is not a list applies as an empty list.
-- A site's service worker answers a navigation to its host before DNR sees it (measured on Chromium
-  156: a link to a host that had left the list loaded the worker's page). So whenever the new list
-  lacks an entry of the last applied one (and on the first `set_allowlist` after the receiver's
-  worker starts), the receiver calls `browsingData.remove({}, {serviceWorkers: true})` (permission
-  `browsingData`) after the rule update and before the tabs close. A failed removal fails the call
-  (`ok: false`) after the tabs closed; the next call removes again.
-- On each `set_allowlist` the receiver closes every tab whose `http:`/`https:` host the new list does
-  not cover; if that would close the last tab of a window, it first opens `about:blank` there.
-- A main-frame `webNavigation.onErrorOccurred` with `net::ERR_BLOCKED_BY_CLIENT` sends `blocked` with
-  the host only.
-- Stage-2 limit (not handled now): a tab whose back/forward cache holds a page of a removed host may go
-  Back to it with no request, so DNR does not block it.
-
-**Target (board ab-v16.23): a list per scope.** Measured in the design's probe (Chromium 156,
-2026-11-04). It replaces the DNR bullets, `set_allowlist`, the worker removal and the closing rule
-above. The entry rules (normalization, refusal) stay.
-
-- Each tab has at most one scope (C10's target gives the map), and each scope at most one list
-  (`set_scopes`, C4's target: its `scopes` entry when it has one, else `default`). A **tab's list**
-  is its scope's list. A marked tab (C10's target, the operator mark) has no scope; its list is its
-  `operator` value: `"*"` (any site), a list, or none (`null`: the tab fails closed, as a tab with
-  no list). Any other tab of no scope, and a tab whose scope has no list, has no list.
-- The rules:
-  - Static rules 1 (`block_main_frame`) and 3 (`block_frames`) stay as above.
-  - Dynamic rule 5 (the navigation-header rule) stays as above. The receiver writes it at each
-    `set_scopes`, in one `updateDynamicRules` call that also removes the dynamic ids 2 and 4.
-  - Dynamic rules 2 and 4 go. The receiver removes ids 2 and 4, and every session rule, as the first
-    thing that its worker does at its start, and removes ids 2 and 4 again at each `set_scopes`: a
-    package before this build leaves them in the profile, and dynamic rules stay after a browser
-    restart (measured). Between an update of the package and that start, the old rules 2 and 4 still
-    allow the old one list in every tab (the upgrade window).
+    `Page.navigate`), so without the rule a `Page.navigate` sends `Sec-Fetch-Site: cross-site`.
+    Chrome sends `Sec-Fetch-*` headers only to a potentially trustworthy URL (`https:`, and `http:`
+    to `localhost`, `*.localhost`, `127.0.0.0/8` or `[::1]`), so the `regexFilter` keeps the rule
+    to those: a `Sec-Fetch-Site` on another `http:` URL would mark the agent browser. Measured on
+    Chromium 156: a `Page.navigate` sends `none` and `Sec-Fetch-User: ?1`, as a typed URL; a page
+    script's navigation keeps `same-origin`; a `Page.navigate` to an off-list host is still blocked;
+    a `Page.navigate` and a page script's navigation to a plain-`http:` host that is not localhost
+    send no `Sec-Fetch-*` header. Chrome applies a `modifyHeaders` rule only above the priority of
+    every `allow` rule that matches, so its priority is above the scope rules' (2); measured with a
+    scope rule: `Sec-Fetch-Site: none`, 20 of 20. The receiver writes rule 5 at each `set_scopes`,
+    in one `updateDynamicRules` call that also removes the dynamic ids 2 and 4.
+  - Dynamic rules 2 and 4 are gone. Before board task ab-v16.30 they allowed the one list in every
+    tab (rule 2: `requestDomains`, main frames; rule 4: `topDomains`, frames). The receiver removes
+    ids 2 and 4, and every session rule, as the first thing that its worker does at its start, and
+    removes ids 2 and 4 again at each `set_scopes`: a package before part 1a (board ab-v16.31)
+    leaves them in the profile, and dynamic rules stay after a browser restart (measured). Between
+    an update of the package and that start, the old rules 2 and 4 still allow the old one list in
+    every tab (the upgrade window).
   - The **scope rules** are session rules (`updateSessionRules`). For each list L that has at least
     one entry and is the list of at least one open tab: one rule with priority 2,
     `{"type":"allow"}`, `requestDomains` = L, `resourceTypes: ["main_frame"]`, `tabIds` = the tabs
@@ -353,12 +375,12 @@ above. The entry rules (normalization, refusal) stay.
     `tabIds`. Their ids are 100 and up, two per list; the receiver picks them. A list with no open
     tab whose list it is, or with no entry, has no rule; a list that only marked tabs use has its
     two rules too.
-  - The import's rules (C6's target): session rule id 6, priority 2, `{"type":"allow"}`,
+  - The import's rules (C6): session rule id 6, priority 2, `{"type":"allow"}`,
     `requestDomains` = [the import's `domain`], `resourceTypes: ["main_frame"]`, `tabIds` = [the
     restore tab]; and session rule id 7, priority 2, `{"type":"allow"}`, `topDomains` = [the same
     `domain`], `resourceTypes: ["sub_frame", "object"]`, the same `tabIds`. They hold from C6 step 2
-    until the restore tab's last navigation (C6's target).
-  - The marked-tab rule (with choice 3 of the design; C10's target gives the operator mark): with
+    until the restore tab's last navigation (C6, the import's rules).
+  - The marked-tab rule (with choice 3 of the design; C10 gives the operator mark): with
     `"operator":"*"`, session rule id 8, priority 2, `{"type":"allow"}`, `resourceTypes:
     ["main_frame", "sub_frame", "object"]`, `tabIds` = the marked tabs, no host condition. No rule 8
     while no tab is marked (DNR refuses an empty `tabIds`). With `"operator":"<list>"`, the marked
@@ -367,9 +389,9 @@ above. The entry rules (normalization, refusal) stay.
     the map when it runs. A `set_scopes` replaces every scope rule and rule 8. A tab that gets or
     loses a scope replaces only the two rules of its list (of both lists when it changes lists). A
     tab that gets or loses the mark replaces rule 8 (with `"*"`) or its list's two rules. At each
-    disconnect and each new daemon connection the receiver removes the scope rules (C10's target)
-    and keeps the marks, the last `operator` value and rule 8, because the operator's own tabs are
-    no connection's; at its worker's start every session rule goes (rules 6, 7 and 8 too).
+    disconnect and each new daemon connection the receiver removes the scope rules (C10, what stops
+    a handler) and keeps the marks, the last `operator` value and rule 8, because the operator's own
+    tabs are no connection's; at its worker's start every session rule goes (rules 6, 7 and 8 too).
   - A failed `updateSessionRules` (the rule limit, a Chrome error) fails closed: the receiver
     removes every scope rule and rule 8 with a remove-only call and keeps the map and the marks, so
     the tabs of every scope are blocked until the next update that succeeds; that next update is a
@@ -383,20 +405,23 @@ above. The entry rules (normalization, refusal) stay.
   (rules 6 and 7).
 - DNR decides when a request starts, before the hold's `Fetch` pause (measured: a request of a tab
   with no rule was blocked at once, 10 of 10, and never paused). So a tab's rule must be in force
-  before its first request; C10's target says how.
+  before its first request; C10 says how (each tab's scope).
 - The limits (measured): at most 5000 session rules (`MAX_NUMBER_OF_SESSION_RULES`; the 5001st is
   refused with "Session rule count exceeded."). A rule took 100,000 entries and 10,000 tab ids. At
   two rules per list, about 2,490 lists can be in use at once.
-- The worker removal: the receiver calls `browsingData.remove({}, {serviceWorkers: true})` after the
-  rule update and before the tabs close, at the first `set_scopes` after its worker starts, and in
-  one case only after that: a scope has a list in the last and in the new `set_scopes` (its `scopes`
-  entry, else the `default` list), and the new list lacks an entry of the old one. A new scope, a
-  scope that leaves the map, and a scope whose new list is none (an ended session's `null`, a list
-  that is gone) do not remove the workers: their tabs are blocked and close, so no tab of them can
-  reach a worker. The `operator` value counts as one more scope's list: a change from `"*"` to a
-  list, or a list that loses an entry, removes the workers too. The entries count, not the list
-  names; "the last" is the last `set_scopes` that applied in full. A failed removal fails the call
-  (`ok: false`) after the tabs closed; the next call removes again.
+- The worker removal. A site's service worker answers a navigation to its host before DNR sees it
+  (measured on Chromium 156: a link to a host that had left the list loaded the worker's page; the
+  guard below gives the measures per scope). So the receiver calls `browsingData.remove({},
+  {serviceWorkers: true})` (permission `browsingData`) after the rule update and before the tabs
+  close, at the first `set_scopes` after its worker starts, and in one case only after that: a
+  scope has a list in the last and in the new `set_scopes` (its `scopes` entry, else the `default`
+  list), and the new list lacks an entry of the old one. A new scope, a scope that leaves the map,
+  and a scope whose new list is none (an ended session's `null`, a list that is gone) do not remove
+  the workers: their tabs are blocked and close, so no tab of them can reach a worker. The
+  `operator` value counts as one more scope's list: a change from `"*"` to a list, or a list that
+  loses an entry, removes the workers too. The entries count, not the list names; "the last" is the
+  last `set_scopes` that applied in full. A failed removal fails the call (`ok: false`) after the
+  tabs closed; the next call removes again.
 - The closing rule: on each `set_scopes` the receiver closes every tab whose `http:`/`https:` host
   its list does not cover; for a marked tab, its `operator` value counts (with `"*"` it never
   closes; with a list name, that list; with `null` no list, so its `http:`/`https:` page closes);
@@ -404,7 +429,7 @@ above. The entry rules (normalization, refusal) stay.
   of a finished import stay while a list covers them). It never closes the restore tab of a running
   import. A window closes with its last tab, except the browser's last window: there the receiver
   first opens `about:blank`, so that Chrome does not end. (With one window per page, agent-browser
-  PR #43, the old rule would leave an `about:blank` window for each closed page.)
+  PR #44, an `about:blank` in place of each closed page would leave an empty window for each.)
 - The guard (the operator's choice 2 of the design can replace it with a block of service workers):
   a site's service worker answers a navigation before DNR sees it, also in a tab of a scope whose
   list lacks the site. Measured: a scope-B tab loaded a scope-A site's worker page, 20 of 20; a
@@ -421,32 +446,34 @@ above. The entry rules (normalization, refusal) stay.
   `onBeforeNavigate`). A page's own navigation was stopped before its commit 10 of 10; a page that
   commits runs its scripts until the receiver acts (measured: `tabs.update` answered 50 to 75 ms
   after the navigation started). The relay refuses a client's `Page.navigate` and
-  `Target.createTarget` off the list itself (C11's target). The guard stops the page, not the
-  request of a worker that passes the navigation on: with both receiver layers on, no page of such a
-  worker committed in a scope-B tab (0 of 10), but its request reached the site in 10 of 10, with
-  the site's cookies, and the site's answer came back to the worker (ab-lead's reviewer).
-- `blocked` (C4's target) names the tab's scope. One navigation sends at most one `blocked` (the
+  `Target.createTarget` off the scope's list itself (C11, the refusals). The guard stops the page,
+  not the request of a worker that passes the navigation on: with both receiver layers on, no page
+  of such a worker committed in a scope-B tab (0 of 10), but its request reached the site in 10 of
+  10, with the site's cookies, and the site's answer came back to the worker (ab-lead's reviewer).
+- `blocked`: a main-frame `webNavigation.onErrorOccurred` with `net::ERR_BLOCKED_BY_CLIENT` sends
+  `blocked` (C4) with the host and the tab's scope. One navigation sends at most one `blocked` (the
   guard and `onErrorOccurred` can both see it). C10's retry decides the notice of a popup's first
   request; a retried request that is blocked again sends `blocked` (there is no second retry).
-- The back/forward-cache limit above stays. The guard's `onCommitted` check also covers a page that
-  Chrome restores from the cache and reports there (not measured).
+- Stage-2 limit (not handled now): a tab whose back/forward cache holds a page of a removed host may go
+  Back to it with no request, so DNR does not block it. The guard's `onCommitted` check also covers
+  a page that Chrome restores from the cache and reports there (not measured).
 
 ### C6. The restore page (the receiver's import)
 
 1. Close every tab whose origin equals `origin` (they hold the state being replaced, and a page of
-   the origin could write a cookie during the swap; the about:blank guard of C5 applies). Then
-   (measured: a partitioned cookie of an http secure-context test site, `*.localhost`, does not move
-   with this URL rule; https sites are not affected) remove every cookie of `domain` and its
-   subdomains (`getAll({domain})` and `getAll({domain, partitionKey: {}})`), then `cookies.set` each
-   sent cookie (C2 -> set details: `url` = `https://` if secure else `http://`, the domain without a
-   leading dot, the path; `domain` only when not `hostOnly`; `expirationDate` only when not
-   `session`; `sameSite` and `partitionKey` as sent).
-2. `tabs.create({url: "about:blank", active: true})`, `debugger.attach({tabId}, "1.3")`,
-   `Network.enable`, `Network.setBypassServiceWorker({bypass: true})` (measured: the bypass needs the
-   Network domain on), `Fetch.enable({patterns: [{urlPattern: R, requestStage: "Request"}]})` with
-   `R = origin + "/__agentwatch_restore_" + <16 hex chars> + "__"`, `tabs.update(tabId, {url: R})`;
-   on `Fetch.requestPaused` for `R`: `Fetch.fulfillRequest` 200, headers `Content-Type: text/html;
-   charset=utf-8` and `Cache-Control: no-store`, body
+   the origin could write a cookie during the swap; C5's rule for the browser's last window
+   applies). Then (measured: a partitioned cookie of an http secure-context test site,
+   `*.localhost`, does not move with this URL rule; https sites are not affected) remove every
+   cookie of `domain` and its subdomains (`getAll({domain})` and `getAll({domain, partitionKey:
+   {}})`), then `cookies.set` each sent cookie (C2 -> set details: `url` = `https://` if secure else
+   `http://`, the domain without a leading dot, the path; `domain` only when not `hostOnly`;
+   `expirationDate` only when not `session`; `sameSite` and `partitionKey` as sent).
+2. `tabs.create({url: "about:blank", active: true})`, the import's rules (below),
+   `debugger.attach({tabId}, "1.3")`, `Network.enable`, `Network.setBypassServiceWorker({bypass:
+   true})` (measured: the bypass needs the Network domain on), `Fetch.enable({patterns: [{urlPattern:
+   R, requestStage: "Request"}]})` with `R = origin + "/__agentwatch_restore_" + <16 hex chars> +
+   "__"`, `tabs.update(tabId, {url: R})`; on `Fetch.requestPaused` for `R`: `Fetch.fulfillRequest`
+   200, headers `Content-Type: text/html; charset=utf-8` and `Cache-Control: no-store`, body
    `<!doctype html><meta charset="utf-8"><link rel="icon" href="data:,"><title>agentwatch</title>`.
 3. After `webNavigation.onCompleted` for `R` in that tab: `executeScript({files: ["lib/codec.js"]})`,
    then `executeScript({func: replacePageState, args: [JSON.stringify(state.storage), R]})` (one
@@ -461,18 +488,18 @@ above. The entry rules (normalization, refusal) stay.
    each of the two cleanup calls at most 4 s, so an import ends before the link's 115 s answer and
    the daemon's 120 s wait. One import at a time; a second waits.
 
-**Target (board ab-v16.23).** In step 2, after `tabs.create` and before `tabs.update(tabId, {url:
-R})`, the receiver adds the import's rules (C5's target, session rules 6 and 7: `domain` for the
-restore tab only, main frames and frames). They allow `domain` whatever the lists hold, so the
-restore page and step 4's `location.replace` load. Step 4 starts that navigation in a timer after
-its script returns, so the rules cannot go at the end of the step: the receiver removes them at the
-restore tab's first main-frame `webNavigation.onCommitted` or `onErrorOccurred` after step 4 (not
-matched to `state.url`: a redirect commits another URL), at most 4 s after step 4, and in every
-failure cleanup (step 5). The import ends (its answer, and the next import of the queue) only after
-the rules are gone, so two imports never share rules 6 and 7; the 4 s fit in the budget (100 s, plus
-4 s, plus two cleanups of 4 s each: 112 s, below 115 s). Until the rules go, C5's guard judges the
-tab by `domain`. The restore tab is in no scope; after the import its page stays while a list covers
-it (C5's closing rule), and it cannot navigate further or load new frames.
+**The import's rules (board ab-v16.23).** In step 2, after `tabs.create` and before
+`tabs.update(tabId, {url: R})`, the receiver adds the import's rules (C5: session rules 6 and 7,
+`domain` for the restore tab only, main frames and frames). They allow `domain` whatever the lists
+hold, so the restore page and step 4's `location.replace` load. Step 4 starts that navigation in a
+timer after its script returns, so the rules cannot go at the end of the step: the receiver removes
+them at the restore tab's first main-frame `webNavigation.onCommitted` or `onErrorOccurred` after
+step 4 (not matched to `state.url`: a redirect commits another URL), at most 4 s after step 4, and
+in every failure cleanup (step 5). The import ends (its answer, and the next import of the queue)
+only after the rules are gone, so two imports never share rules 6 and 7; the 4 s fit in the budget
+(100 s, plus 4 s, plus two cleanups of 4 s each: 112 s, below 115 s). Until the rules go, C5's guard
+judges the tab by `domain`. The restore tab is in no scope; after the import its page stays while a
+list covers it (C5's closing rule), and it cannot navigate further or load new frames.
 
 ### C9. The two gateway routes, as the sender sees them
 
@@ -518,7 +545,12 @@ first document request of a new tab (below).
   each res and each event as one line on the relay's standard input. It changes no field, and it
   writes them in the order in which it read them (a res in parts takes the place of its last part).
 - So Chrome's order stays the same from the receiver to the relay. An event that Chrome fires
-  before the answer to a command reaches the relay before that answer.
+  before the answer to a command reaches the relay before that answer. There are two exceptions,
+  both for a new tab's `tabs.onCreated` (each tab's scope, below): while the eager attach is on,
+  the receiver holds the `tabs.onCreated` of a popup whose hold is on; while it is off, the
+  receiver sends a new tab's `tabs.onCreated` after the tab's
+  `webNavigation.onCreatedNavigationTarget`, or 50 ms late when none comes. Other events of that
+  tab then go before its `tabs.onCreated`.
 
 **Requests.** `{"t":"req","id":"<id>","op":"<op>","args":[...],"wait":<ms>}`.
 
@@ -542,23 +574,29 @@ first document request of a new tab (below).
   - `target`: `{"tabId":<id>}` or `{"tabId":<id>,"sessionId":"<child session>"}`, with no other key.
   - `contentType`: one of `location`, `notifications`, `camera`, `microphone`, `clipboard`,
     `automaticDownloads`.
+  - `scope`: a scope of C11, a string that matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`.
   - `newTab` (`tabs.create`): an object with `url`, and at most `active` (a boolean), `windowId` and
-    `index` (ids). `url` is a web URL.
+    `index` (ids). `url` is `about:blank`.
   - `tabUpdate` (`tabs.update`): exactly `{"active":<boolean>}`. A navigation is `Page.navigate`.
-  - `newWindow` (`windows.create`): an object with `url` (a web URL, one string), and at most
-    `focused` (a boolean), `left`, `top`, `width`, `height` (integers) and `state`.
+  - `newWindow` (`windows.create`): an object with `url` (`about:blank`, one string), and at most
+    `focused` (a boolean), `left`, `top`, `width`, `height` (integers) and `state`. It has no
+    `tabId`: no op moves a tab to another window.
   - `windowUpdate` (`windows.update`): an object with at least one of `left`, `top`, `width`,
     `height`, `state` and `focused`, and no other key.
   - `contentDetails` (`contentSettings.set`): exactly `primaryPattern` and `setting`. `setting` is
     `allow` or `block`. `primaryPattern` is `<scheme>://<host>/*` or `<scheme>://<host>:<port>/*`.
-    `<scheme>` is `http`, `https` or `*`. `<host>` is a host that the receiver's applied allowlist
-    covers (C5: the list of its last `set_allowlist`), with or without `*.` before it.
-  - A web URL is `about:blank`, or an absolute `http:` or `https:` URL. So a bridge op never opens a
-    `chrome:`, `file:` or `javascript:` URL, or Chrome's New Tab page.
+    `<scheme>` is `http`, `https` or `*`. `<host>` is a host that a list of the receiver's last
+    applied `set_scopes` covers (C4, C5: any list, because the receiver does not know which scope
+    calls), with or without `*.` before it.
+  - A new tab or window opens at `about:blank` only: it makes no request before its scope rule is in
+    force (each tab's scope, below). So a bridge op never opens a site, a `chrome:`, `file:` or
+    `javascript:` URL, or Chrome's New Tab page. A navigation is `Page.navigate` (C11 checks its URL).
 - The tab checks:
   - `not an agent tab`: `debugger.attach`, `debugger.detach`, `tabs.update` and `tabs.remove` of the
-    restore tab of a running import (C6); and `debugger.attach` of a tab whose `url` or `pendingUrl`
-    is in the receiver's own origin (`chrome-extension://<receiver id>/`).
+    restore tab of a running import (C6); `debugger.attach` of a tab whose `url` or `pendingUrl` is
+    in the receiver's own origin (`chrome-extension://<receiver id>/`); and, with the design's
+    choice 3 (part 1d), `debugger.attach`, `tabs.update` and `tabs.remove` of a marked tab (each
+    tab's scope, below). No connection sees a marked tab, so this check is a second layer.
   - `not attached`: `debugger.sendCommand` for a tab that is not a bridge tab. So a command never
     goes through the import's attachment.
 
@@ -604,13 +642,13 @@ first document request of a new tab (below).
 | `debugger.detach` | `[tabId]` | `null` | `WAIT_DEFAULT_MS` | Releases a hold of the tab, then `chrome.debugger.detach({tabId})`. A tab that is not a bridge tab also answers `null`. |
 | `debugger.sendCommand` | `[target, method, params?]` | the CDP result | `WAIT_MAX_MS` | `chrome.debugger.sendCommand(target, method, params)`; a missing `params` goes as `{}`. |
 | `debugger.getTargets` | `[]` | `[TargetInfo]` | `WAIT_DEFAULT_MS` | `chrome.debugger.getTargets()`. |
-| `tabs.create` | `[createProperties]` | `Tab` | `WAIT_DEFAULT_MS` | `chrome.tabs.create`. |
+| `tabs.create` | `[createProperties, scope]` | `Tab` | `WAIT_DEFAULT_MS` | `chrome.tabs.create(createProperties)`. The new tab gets the scope; the op answers when the tab's scope rule is in force (each tab's scope, below). |
 | `tabs.get` | `[tabId]` | `Tab` | `WAIT_DEFAULT_MS` | `chrome.tabs.get`. |
 | `tabs.query` | `[queryInfo]` | `[Tab]` | `WAIT_DEFAULT_MS` | `chrome.tabs.query`. |
 | `tabs.update` | `[tabId, updateProperties]` | `Tab` | `WAIT_DEFAULT_MS` | `chrome.tabs.update`. |
 | `tabs.remove` | `[tabId]` | `null` | `WAIT_DEFAULT_MS` | `chrome.tabs.remove`. |
 | `windows.get` | `[windowId, queryOptions?]` | `Window` | `WAIT_DEFAULT_MS` | `chrome.windows.get`. |
-| `windows.create` | `[createData]` | `Window` | `WAIT_DEFAULT_MS` | `chrome.windows.create`. |
+| `windows.create` | `[createData, scope]` | `Window` | `WAIT_DEFAULT_MS` | `chrome.windows.create(createData)`. The window's tab gets the scope, as for `tabs.create`. |
 | `windows.update` | `[windowId, updateInfo]` | `Window` | `WAIT_DEFAULT_MS` | `chrome.windows.update`. |
 | `downloads.search` | `[query]` | `[DownloadItem]` | `WAIT_DEFAULT_MS` | `chrome.downloads.search`. |
 | `downloads.cancel` | `[downloadId]` | `null` | `WAIT_DEFAULT_MS` | `chrome.downloads.cancel`. |
@@ -624,7 +662,8 @@ first document request of a new tab (below).
   `bridge` is the version of this contract, `BRIDGE_VERSION = 1`. `fullVersion` is the version of
   the brand "Google Chrome", else of "Chromium", in `navigator.userAgentData`'s `fullVersionList`;
   it is `""` when neither is there. The relay uses them for `Browser.getVersion`.
-- No op changes the allowlist or the DNR rules, runs the import, or reads or writes page storage.
+- No op changes a list or the entries of a DNR rule, runs the import, or reads or writes page
+  storage. `tabs.create` and `windows.create` only put the new tab under its scope's rules (C5).
 - No op reads, sets or removes cookies: agent mode gives programs no cookie access (board ab-8mf,
   C11). The import's cookie work stays on channel `main` (C4, C6). A later cookie grant, for a use
   that needs cookie access, can add `cookies.*` ops here.
@@ -635,7 +674,7 @@ first document request of a new tab (below).
 | --- | --- | --- |
 | `debugger.onEvent` | `"source"` (`{"tabId":N}` or with `"sessionId"`), `"method"`, `"params"` | For a bridge tab. Never for the hold's own `Fetch` events, never for the import's restore tab. |
 | `debugger.onDetach` | `"source"`, `"reason"` | For a bridge tab. |
-| `tabs.onCreated` | `"tab"`, `"attached"`, `"held"`, and `"error"` when the eager attach failed | For each new tab. |
+| `tabs.onCreated` | `"tab"`, `"attached"`, `"held"`, and `"error"` when the eager attach failed | For each new tab. The receiver can hold it for a moment (the hold, and each tab's scope, below). |
 | `tabs.onUpdated` | `"tabId"`, `"changeInfo"`, `"tab"` | When `changeInfo` has `url`, `title` or `status`. |
 | `tabs.onRemoved` | `"tabId"`, `"removeInfo"` | For each tab. |
 | `tabs.onReplaced` | `"addedTabId"`, `"removedTabId"` | For each tab. |
@@ -643,6 +682,7 @@ first document request of a new tab (below).
 | `webNavigation.onErrorOccurred` | `"details"` (only `tabId`, `frameId`, `url`, `error`) | For the main frame only. |
 | `downloads.onCreated` | `"item"` | For each download. |
 | `downloads.onChanged` | `"delta"` | For each change. |
+| `bridge.tabScope` | `"tabId"`, `"scope"` | When the receiver gives a tab a scope itself: a popup (its opener's), a replaced tab (its old one). Before the popup's `tabs.onCreated`, and before the replaced tab's `tabs.onReplaced` (each tab's scope, below). |
 | `bridge.tooLarge` | `"of"` (the event), `"tabId"`, and for `debugger.onEvent` `"method"`, `"sessionId"` (of a child session) and `"requestId"` (of a `Fetch` event) | In place of an event above `MAX_TO_DAEMON`. |
 
 - A bridge event never waits, like a res. The receiver sends it at once while the link is up, and
@@ -714,6 +754,9 @@ reach Chrome in the order in which the relay sent them. Playwright needs that, f
      attached (a worker that started again knows no bridge tabs). It ignores the error of a detach.
      It never detaches the restore tab of a running import: that attachment belongs to channel
      `main`.
+  4. empties the tab-to-scope map and removes every scope rule (each tab's scope, below; C5). At a
+     disconnect and at a new daemon connection it keeps the operator marks, the last `operator`
+     value and rule 8; at its worker's start every session rule goes, rule 8 too, and the marks go.
   So no domain state (Fetch, emulation, interception) stays behind, and a long `Runtime.evaluate`
   ends.
 - The daemon, at a link drop, answers every bridge request that waits or runs with `disconnected`.
@@ -770,15 +813,17 @@ hold it; the last bullet gives the numbers and what the relay does about it.
   attach (the tab closed) says `"attached":false,"held":false`, and no `debugger.onDetach` comes for
   it.
 - An event of the tab that Chrome fires while the receiver attaches it (for example `tabs.onUpdated`)
-  can come before the tab's `tabs.onCreated`. While the eager attach is off, `tabs.onCreated` comes
-  at once.
+  can come before the tab's `tabs.onCreated`. While the eager attach is off, the receiver sends a
+  new tab's `tabs.onCreated` after the tab's `webNavigation.onCreatedNavigationTarget` (a popup), or
+  50 ms after Chrome's `tabs.onCreated` when none comes (a tab that no page opened): each tab's
+  scope, below.
 - The receiver never attaches the restore tab of an import. The import sets a flag before it calls
   `tabs.create` for its restore tab, and it clears the flag when it knows that tab's id. A
   `tabs.onCreated` that comes while the flag is set waits until the import knows the id. Then the
   receiver skips the restore tab (`"attached":false`) and attaches the others.
 - The receiver also skips a tab of its own origin. Tabs that the operator opens in the live view
-  have no mark today (agentwatch design §5.15 names an exemption for them, not built). When they get
-  one, the receiver skips them too.
+  (agentwatch design §5.15) get the operator mark with the design's choice 3 (each tab's scope,
+  below), and the receiver skips a marked tab too.
 - The relay sends `bridge.release` when the client sends `Runtime.runIfWaitingForDebugger` on that
   tab (it does not wait for the answer: while the hold keeps a tab's first request, Chrome answers
   no command of that tab, and waiting held every popup for 5 s; measured), or before it detaches a
@@ -832,37 +877,40 @@ hold it; the last bullet gives the numbers and what the relay does about it.
 **The daemon and the relay.**
 
 - The daemon starts the relay with the unit: `agent-browser relay --socket <path>` (C11 gives the
-  path). The relay reads the daemon's lines on its standard input. It writes its requests on its
-  standard output, and its log on its standard error. When its standard input ends, the relay closes
-  every connection, removes its socket and exits. The daemon stops the relay that way when the unit
-  stops.
+  path), with `--keys` when keys are on (C11, the scope's key). The relay reads the daemon's lines on
+  its standard input. It writes its requests on its standard output, and its log on its standard
+  error. When its standard input ends, the relay closes every connection, removes its socket and
+  exits. The daemon stops the relay that way when the unit stops.
 - The daemon's lines to the relay, in addition to the receiver's `res` and `ev`:
   - `{"t":"link","up":true,"version":"<manifest version>"}`: a receiver is connected, and its hello
     lists `bridge`.
   - `{"t":"link","up":false}`: the link dropped. The `disconnected` answers come first.
-  - `{"t":"allowlist","domains":["a.example"]}`: the receiver confirmed this list (an `ok` answer to
-    `set_allowlist` on the current connection). It comes after each such answer.
-  - `{"t":"end_scope","scope":"<scope>"}`: the agentwatch session of that name ended. The relay
-    closes the scope's connections and removes its tabs (C11).
+  - `{"t":"allowlist","lists":{"<list>":["a.example"]},"scopes":{"<scope>":"<list>"},"default":"<list>"}`
+    (with `"default":null` when there is none): the object of the `set_scopes` that the receiver
+    confirmed (an `ok` answer on the current connection). It comes after each such answer. It also
+    carries the `"operator":` field when `set_scopes` has one (the relay ignores it), and with the
+    design's choice 1 b `"keys":{"<scope>":"<sha-256 hex of the key>"}` (C11, the scope's key); the
+    receiver never sees the keys. The relay applies C4's rules to the line (C11, the scope's list).
+  - `{"t":"end_scope","scope":"<scope>"}`: the agentwatch session of that scope ended. The relay
+    closes the scope's connections and removes its tabs (C11). The daemon can also write one for
+    each alias of the session; the relay does nothing for a name that is no scope.
 - No side logs the args, the results or the event params of the bridge: they can contain page
   content and sign-in values. A log line contains an op, a CDP method, a tab id, a size or a time.
 
-**Target (board ab-v16.23): each tab's scope.** It changes the ops, an event, the hold and the
-daemon's `allowlist` line above. The rest of C10 stays.
+**Each tab's scope (board ab-v16.23).** The receiver keeps the scope of each tab, so that each tab is
+blocked by its own list (C5; the per-scope design, sections 4 and 5).
 
 - The receiver keeps a map from tab to scope. It sets a tab's scope in these cases only:
   - `tabs.create` with `[createProperties, scope]` and `windows.create` with `[createData, scope]`:
-    the second arg is required, of the new kind `scope` (a string that matches C11's scope pattern).
-    The `url` of `newTab` and `newWindow` is `about:blank` only (it makes no request). If the build
-    of one window per page (agent-browser PR #43) moves a popup into a window of its own
-    (`windows.create` with a `tabId`), that move takes no `url`, its scope arg must be the moved
-    tab's own scope (else `bad args`), and the tab keeps its scope and rules. The receiver creates
-    the tab, sets its scope, and answers when the tab's scope rule (C5's target) is in force. When
-    the rule update fails, the receiver closes the new tab and the op answers with the error (C5's
-    target: a failed update fails closed). Measured: the probe's whole assignment (its rule update
-    and the wait for it, small lists, its tabs open) took 11 to 15 ms, and the next `Page.navigate`
-    loaded 20 of 20. Chrome's index cost alone grows with the entries of all lists in use (about 46
-    ms to replace one list's rules with 20 lists of 1,000 in use).
+    the second arg is required, of the kind `scope`. The `url` of `newTab` and `newWindow` is
+    `about:blank` only (it makes no request), and `windows.create` never moves a tab: `newWindow`
+    has no `tabId` (C11: the relay never moves a tab). The receiver creates the tab, sets its scope,
+    and answers when the tab's scope rule (C5) is in force. When the rule update fails, the receiver
+    closes the new tab and the op answers with the error (C5: a failed update fails closed).
+    Measured: the probe's whole assignment (its rule update and the wait for it, small lists, its
+    tabs open) took 11 to 15 ms, and the next `Page.navigate` loaded 20 of 20. Chrome's index cost
+    alone grows with the entries of all lists in use (about 46 ms to replace one list's rules with
+    20 lists of 1,000 in use).
   - A popup: in `webNavigation.onCreatedNavigationTarget`, the new tab (`tabId`) takes the scope of
     `sourceTabId`, when that tab has one. The receiver sets it in the map in the handler, then
     updates the rules. Measured: `sourceTabId` named the right opener in every popup of every kind,
@@ -871,36 +919,33 @@ daemon's `allowlist` line above. The rest of C10 stays.
   - `tabs.onReplaced`: the added tab takes the removed tab's scope.
   - Every other tab has no scope: the restore tab, the tab that C5's closing rule opens, a tab from
     before the link, and the operator's own tabs. The operator's tabs depend on choice 3 of the
-    design: with it, a tab that starts at `chrome://newtab/` and that no page opened gets the
-    **operator mark** (no agent tab starts there: the relay opens `about:blank` only and refuses
-    `chrome:` URLs; that a page cannot open a `chrome://` page is Chrome's rule, not measured), and
-    a popup of a marked tab is marked too. A marked tab has no scope; C4's `operator` field gives
-    what it may open (C5's target: rule 8 with `"*"`, and C5's guard and closing rule skip the tab;
-    a list name: that list). For the retry, a marked tab's list is its `operator` value (with `"*"`
-    every host is covered). The mark stays at a link change (it is not a connection's) and at
-    `tabs.onReplaced`; it goes at the worker's start (those tabs then fail closed). Without that
-    build, the operator's tabs fail closed.
+    design: with it, a tab that starts at `chrome://newtab/`, that no page opened and that no bridge
+    op created gets the **operator mark** (no agent tab starts there: the relay opens `about:blank`
+    only and refuses `chrome:` URLs; that a page cannot open a `chrome://` page is Chrome's rule,
+    not measured), and a popup of a marked tab is marked too. A marked tab has no scope; C4's
+    `operator` field gives what it may open (C5: rule 8 with `"*"`, and C5's guard and closing rule
+    skip the tab; a list name: that list). For the retry, a marked tab's list is its `operator` value
+    (with `"*"` every host is covered). The mark stays at a link change (it is not a connection's)
+    and at `tabs.onReplaced`; it goes at the worker's start (those tabs then fail closed). The
+    bridge never attaches, selects or closes a marked tab (`not an agent tab`, the tab checks
+    above). Without that build, the operator's tabs fail closed.
   - A tab leaves the map when it closes. At each disconnect and each new daemon connection (the
     cleanup of "What stops a handler"), the receiver empties the map and removes every scope rule;
-    it keeps the marks, the last `operator` value and rule 8 (C5's target). At its worker's start it
-    empties the map and removes every session rule, rule 8 too (the marks go).
+    it keeps the marks, the last `operator` value and rule 8 (C5). At its worker's start it empties
+    the map and removes every session rule, rule 8 too (the marks go).
   - No stale entry: the receiver writes a scope only for a tab that exists, and drops a write of an
     op or an event that started before the last reset (the epoch check of `attach.js`).
-- The new event `bridge.tabScope`, fields `"tabId"`, `"scope"`: sent when the receiver sets a scope
-  itself (a popup, a replaced tab), as soon as it is in the map. Not for a tab of `tabs.create` or
-  `windows.create`: the relay named that scope. For a popup it comes before the popup's
-  `tabs.onCreated`: `webNavigation.onCreatedNavigationTarget` comes 0 to 1 ms after Chrome creates
-  the tab, before the eager attach ends; while the eager attach is off, the receiver sends a new
-  tab's `tabs.onCreated` after that event, or after 50 ms when none comes (a tab that no page
-  opened). The row for C10's event table, with the build:
-
-  | Event | Fields | When (target) |
-  | --- | --- | --- |
-  | `bridge.tabScope` | `"tabId"`, `"scope"` | When the receiver gives a tab a scope itself: a popup (its opener's), a replaced tab (its old one). Before the popup's `tabs.onCreated`. |
-
+- The event `bridge.tabScope` (the event table above), fields `"tabId"`, `"scope"`: sent when the
+  receiver sets a scope itself (a popup, a replaced tab), as soon as it is in the map. Not for a tab
+  of `tabs.create` or `windows.create`: the relay named that scope. For a popup it comes before the
+  popup's `tabs.onCreated`: `webNavigation.onCreatedNavigationTarget` comes 0 to 1 ms after Chrome
+  creates the tab, before the eager attach ends; while the eager attach is off, the receiver sends
+  a new tab's `tabs.onCreated` after that event, or after 50 ms when none comes (a tab that no page
+  opened). For a replaced tab it comes right before the receiver's `tabs.onReplaced` event, so the
+  relay knows the added tab's scope when it swaps the tabs.
 - The retry. A popup's first request often starts before its rule is in force (measured: a
   `noopener` popup, a `target=_blank` link and a form with a target in every trial; a popup with an
-  opener in a few). DNR blocks it (C5's target). The trigger: the tab's first main-frame
+  opener in a few). DNR blocks it (C5). The trigger: the tab's first main-frame
   `webNavigation.onErrorOccurred` with `net::ERR_BLOCKED_BY_CLIENT`, whose URL's host the tab's list
   covers when the rule update that put the tab under its list ends (a covered host is blocked only
   when its rule was late). The receiver then calls `tabs.reload` on the tab once, at the later of
@@ -925,9 +970,10 @@ daemon's `allowlist` line above. The rest of C10 stays.
   second `ERR_BLOCKED_BY_CLIENT` of the reload's own navigation, not of a later one.
 - How often a popup with an opener needs the retry (it depends on load): in the probe 1 of 60 with
   no hold and 2 of 60 with the hold; in ab-lead's reviewer's runs 3 to 4 of 20 with the hold, 2 of
-  10 for the sign-in pattern, and 8 of 10 with one window per page (agent-browser PR #43) behind
-  another window. The time of one assignment grows with the tabs open under the rules (the
-  reviewer: median 9 ms with none, 13 ms with 50, 25 ms with 100).
+  10 for the sign-in pattern, and 8 of 10 with one window per page (the plan of agent-browser PR
+  #43, the research, before its build in PR #44) behind another window. The time of one assignment
+  grows with the tabs open under the rules (the reviewer: median 9 ms with none, 13 ms with 50,
+  25 ms with 100).
 - The hold stays. The retry's request is a document request of the tab, so the hold keeps it until
   the release, while the hold is still on (`HOLD_MAX_MS`; the retry comes about 70 ms after the
   block). While the eager attach is on, the receiver also holds the `tabs.onCreated` event of a
@@ -952,15 +998,6 @@ daemon's `allowlist` line above. The rest of C10 stays.
   the relay drops the `bridge.tabScope` that it kept for it. So a client attaches to a popup whose
   real document is still to come, and does not see Chrome's error page as the popup's page through
   CDP (the error page still shows in the window for 60 to 100 ms).
-- `contentDetails`: `<host>` must be covered by a list of the last applied `set_scopes` (any list).
-- No op changes a list or a rule's entries. `tabs.create` and `windows.create` put the new tab under
-  its scope's rules.
-- The daemon's line `{"t":"allowlist","domains":[...]}` becomes
-  `{"t":"allowlist","lists":{"<list>":["a.example"]},"scopes":{"<scope>":"<list>"},"default":"<list>"}`
-  (with `"default":null` when there is none): the object of the `set_scopes` that the receiver
-  confirmed on the current connection. It comes after each such answer. With the design's choice 1 b
-  it also carries `"keys":{"<scope>":"<sha-256 hex of the token>"}` (C11's target); the receiver
-  never sees the keys.
 
 ### C11. The endpoint (agent-browser's relay)
 
@@ -981,28 +1018,69 @@ vectors: `test/vectors/endpoint.json`.
   `/run/user/<uid>/agentwatch/browser-cdp.sock` on Linux, `~/.cache/agentwatch/run/browser-cdp.sock`
   on the Mac. A path is at most 103 bytes. There is no TCP port.
 - The URL is `ws+unix://<socket path>:/devtools/browser/<scope>`. Playwright's `connectOverCDP` and
-  the Playwright MCP (`PLAYWRIGHT_MCP_CDP_ENDPOINT`) take it as it is (measured). The URL contains no
-  secret.
-- `agentwatch browser endpoint` prints the URL, with the calling session's name as the scope.
-  `agentwatch browser env` prints `PLAYWRIGHT_MCP_CDP_ENDPOINT=<url>`. With `browser.control: false`
-  there is no relay and no socket.
+  the Playwright MCP (`PLAYWRIGHT_MCP_CDP_ENDPOINT`) take it as it is (measured). Without keys the
+  URL contains no secret. With keys on (the scope's key, below) a client adds the key to the URL's
+  query at the connect call, or sends it in a header: the URL with its key is a secret.
+- `agentwatch browser endpoint` prints the URL, with the session's scope (below) and no key.
+  Without keys, `agentwatch browser env` prints `PLAYWRIGHT_MCP_CDP_ENDPOINT=<url>`; with keys on it
+  prints two comment lines and no key (the scope's key, below). With `browser.control: false` there
+  is no relay and no socket.
 - A scope matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`. Every agentwatch session name matches it.
-- Every process of the daemon's OS user that can open the socket may connect, as with
-  `agentwatch browser` today. The scope is advisory (agent-browser #14).
+  agentwatch picks each session's scope at its launch (the session's name then) and keeps it for
+  the session's life, with or without keys: a rename does not change it, and no two live sessions
+  share one scope. `agentwatch browser endpoint` and `agentwatch browser env` print that scope, not
+  the calling session's current name.
+- Without keys, every process of the daemon's OS user that can open the socket may connect, with
+  any scope, as with `agentwatch browser` today: the scope is advisory (agent-browser #14). With
+  keys on, a connection needs its scope's key (below).
 
 **Before the upgrade.** The relay serves only the WebSocket upgrade of
-`GET /devtools/browser/<scope>`. Its other answers have a `text/plain` body:
+`GET /devtools/browser/<scope>` (the path: a query does not change it). Its other answers have a
+`text/plain` body:
 
 - Another path, or a scope that does not match: 404 `Not found. Connect a CDP client to /devtools/browser/<scope>.`
 - A request with an `Origin` header: 403 `A web page cannot connect to the agent browser.`
+- With keys on, a request with no valid key, or with a key that does not match its scope's entry:
+  403 `The agent browser needs this session's key. A session that started before the key existed has no key; only a new session gets one.`
 - The relay is not ready: 503 with one of these bodies.
   - 503 `The agent browser is not ready: its extension is not connected.`
   - 503 `The agent browser is not ready: its extension has not confirmed the allowlist.`
   - 503 `The agent browser is not ready: its extension is too old for agent mode.`
+  - 503 `The agent browser is not ready: the allowlist has keys, but the relay was started without --keys.`
+- A scope with no list: 503 `The agent browser is not ready: the allowlist has no list for this scope.`
 - The relay is ready while the link is up (C10 `link`), an `allowlist` line came after that, and
   `bridge.info` answered with `bridge` 1 or more. A receiver before stage 2 answers `unknown op` to
-  `bridge.info`: it is too old. So the endpoint fails closed: no connection before the extension
-  confirmed the operator's list (two-modes design, section 10).
+  `bridge.info`: it is too old. The relay admits a connection of a scope while it is ready and the
+  last `allowlist` line gives the scope a list (the scope's list, below). A scope whose list is
+  empty is admitted; it can open `about:blank` only. So the endpoint fails closed: no connection
+  before the extension confirmed the operator's lists (two-modes design, section 10; per-scope
+  design, section 8.4).
+- The order of the checks. The relay sends the answer of the first check that fails, at once:
+  1. A request with an `Origin` header: its 403.
+  2. A path or scope that does not match: the 404.
+  3. With keys on, a request with no valid key (the scope's key, below): the key's 403, also while
+     the relay is not ready.
+  4. The relay is not ready, in this order: the link is down (`its extension is not connected`);
+     `bridge.info` answered `unknown op` or `bridge` below 1 (`its extension is too old for agent
+     mode`); no `allowlist` line came since the link came up (`its extension has not confirmed the
+     allowlist`); `bridge.info` has not answered yet (`its extension is not connected`); a relay
+     without `--keys` whose last `allowlist` line has a `keys` field (`the allowlist has keys, but
+     the relay was started without --keys`).
+  5. With keys on, a scope that the last `allowlist` line does not name: the no-list 503.
+  6. With keys on, the hash check: a named scope whose `keys` entry does not match the key, or that
+     has no entry in `keys` (also a line with no `keys` field), gets the key's 403.
+  7. A scope with no list: the no-list 503. With keys on, that is a named scope whose entry is
+     `null` (also an entry that applies as `null`, C4) or names a list that is not in `lists`;
+     without keys, also a scope that the line does not name while `default` gives no list.
+
+  The relay never holds an upgrade, and no side retries for the client: the client gets the
+  answer's text (agent-browser's `src/cdp.ts` passes the body on in its error), and the agent
+  connects again. So a just-launched session, whose scope the daemon has not sent yet, gets the
+  no-list 503 until an `allowlist` line names its scope. Step 5 shows whether a scope is named. A
+  scope is a session's name at its launch, and `agentwatch session list` shows the session names
+  anyway (the same names, unless a session was renamed). A session that is live before the deploy
+  (it has no key) gets the key's 403 at step 3: fail closed. The shared vector: `upgradeChecks` in
+  `test/vectors/endpoint.json`.
 - A client message is at most `MAX_REQUEST` bytes (C10). A longer one closes the connection (code
   1009). A command whose bridge request would be longer gets an error (the refusals, below).
 
@@ -1011,10 +1089,21 @@ vectors: `test/vectors/endpoint.json`.
 - `Browser.close` ends that connection only. The agent browser keeps running. Close code
   1000, `Browser.close ends this connection; the agent browser keeps running`.
 - `end_scope` (C10): the relay closes the scope's connections with
-  1000, `The agentwatch session ended`, and removes the scope's tabs.
+  1000, `The agentwatch session ended`, and removes the scope's tabs. An `end_scope` whose name is
+  no scope of the relay (for example a name of the session other than its launch scope,
+  `AGENTWATCH_SESSION_ID`; C4) does nothing. agentwatch writes no `end_scope` for a name that is the
+  launch scope of another live session: a rename into a former name can make one session's alias
+  another session's scope.
 - A link drop (C10 `link` down): every connection closes with
   1011, `The agent browser's link went down`. The model starts again at the next `link` up.
 - The relay stops: every connection closes with 1001, `The agent browser stopped`.
+- At each `allowlist` line, the relay closes every connection of a scope that has no list any more,
+  with 1008, `The allowlist has no list for this scope any more`.
+- With keys on, at each `allowlist` line, the relay closes every connection of a scope that still
+  has a list (the same list or another one) but whose `keys` entry is gone, or holds another hash
+  than at the connection's upgrade (also a line with no `keys` field),
+  with 1008, `The key of this session is no longer valid`. The shared vector: `lineCloses` in
+  `test/vectors/endpoint.json`.
 
 **Where each call goes.** The model answers the calls of its set (two-modes design, section 4.3) on
 the root session and on a browser session (`Target.attachToBrowserTarget`). Every other call there
@@ -1063,14 +1152,23 @@ below.
 **The scope, and one connection per tab.**
 
 - A connection sees and attaches only the tabs of its scope. A tab joins a scope when a connection
-  of that scope opens it (`Target.createTarget`), or as a popup of a tab of that scope. The opener of
-  a popup comes from Chrome's `openerId`, not from `chrome.tabs`' `openerTabId` (measured). Every
+  of that scope opens it (`Target.createTarget`: the relay names the scope in C10's `tabs.create`
+  or `windows.create`), or when the receiver reports it (C10's `bridge.tabScope`: a popup takes its
+  opener's scope, a replaced tab its old scope). The relay never puts a tab in a scope that the
+  receiver did not report; its own `tabs.onReplaced` handling follows `bridge.tabScope` too. Every
   other tab is in no scope, and no connection sees it: the operator's tabs, the restore tab of an
   import, a tab from before the relay started.
+- A new tab that the relay did not create, and whose `bridge.tabScope` has not come: the relay keeps
+  it in its model with no scope, attached and held as the receiver reported it, for up to
+  `TAB_SCOPE_WAIT_MS = 500`. On `bridge.tabScope` it announces the tab to the scope, as a popup. At
+  the end of the wait it releases and detaches the tab, as a tab of no scope; a later
+  `bridge.tabScope` still puts the tab in its scope, as a free tab. At the tab's `tabs.onRemoved`
+  the relay drops a `bridge.tabScope` that it kept for it.
 - A tab belongs to one connection at a time, its owner. The owner is the connection that opened it,
-  the owner of its opener (for a popup), or the first connection of the scope that attaches the free
-  tab. The reason: all sessions of a tab share its one `chrome.debugger` attachment and its domain
-  state.
+  the owner of its opener (for a popup whose opener is in the same scope; the opener comes from
+  Chrome's `openerId`, not from `chrome.tabs`' `openerTabId`, measured), or the first connection of
+  the scope that attaches the free tab. The reason: all sessions of a tab share its one
+  `chrome.debugger` attachment and its domain state.
 - One connection can have several sessions on its tab (auto-attach, `Target.attachToTarget`,
   Playwright's `newCDPSession`).
 - Another connection of the same scope sees the tab in `Target.getTargets` with `attached: true`.
@@ -1081,12 +1179,13 @@ below.
   owner stays the same. When that connection has auto-attach on, the model attaches the tab again at
   once and announces it with a new `Target.attachedToTarget`. Playwright then gets a new page object
   for the same tab. Without auto-attach, the tab is free for the scope.
-- For a tab that it creates (`Target.createTarget`), the relay asks for `about:blank`: on Linux
-  always C10's `newWindow` (a window of its own), on the Mac C10's `newTab` (`newWindow` only for
-  `"newWindow":true`; one window per page, below). It holds the tab there (C10's hold), and
-  navigates it to the client's `url` after the client's `Runtime.runIfWaitingForDebugger` has
-  released the hold. A tab that the relay creates with the client's URL at once would load that URL
-  before the hold.
+- For a tab that it creates (`Target.createTarget`), the relay asks for `about:blank`, with the
+  connection's scope as the second arg: on Linux always C10's `windows.create` (a window of its
+  own), on the Mac C10's `tabs.create` (`windows.create` only for `"newWindow":true`; one window per
+  page, below). It holds the tab there (C10's hold), and navigates it to the client's `url` after
+  the client's `Runtime.runIfWaitingForDebugger` has released the hold. C10 opens a new tab at
+  `about:blank` only: a tab that opened the client's URL at once would load that URL before the
+  hold, and before its scope rule is in force (C5).
 - There is one browser context. Every target has `"browserContextId":"agentwatch-default"`, also in
   the answers and events from Chrome that the model passes on. `Target.getBrowserContexts` answers
   `{"browserContextIds":[]}`.
@@ -1099,13 +1198,15 @@ draws nothing. With focus emulation, a page reports the focus while another page
 the relay keeps its tabs until board task ab-v16.27 measures the Mac.
 
 - `Target.createTarget`. On Linux the relay sends C10's `windows.create` with
-  `{"url":"about:blank","focused":false}`, and never `tabs.create`, also when the client asks for a
-  tab (no `newWindow`, or `"newWindow":false`) or a background tab (`"background":true`). The hold
-  and the navigation after it stay the same (above). So a new page never takes the focus from
-  another window, and Playwright's `newPage` and agent-browser's `open --tab` with `--cdp-url` each
-  get a window. On the Mac the relay sends `tabs.create` with
-  `{"url":"about:blank","active":<boolean>}` (`active` is false for `"background":true`), and
-  `windows.create` as on Linux only for `"newWindow":true`.
+  `[{"url":"about:blank","focused":false}, "<scope>"]` (the connection's scope), and never
+  `tabs.create`, also when the client asks for a tab (no `newWindow`, or `"newWindow":false`) or a
+  background tab (`"background":true`). The hold and the navigation after it stay the same (above).
+  So a new page never takes the focus from another window, and Playwright's `newPage` and
+  agent-browser's `open --tab` with `--cdp-url` each get a window. On the Mac the relay sends
+  `tabs.create` with `[{"url":"about:blank","active":<boolean>}, "<scope>"]` (`active` is false for
+  `"background":true`), and `windows.create` as on Linux only for `"newWindow":true`. A
+  `Target.createTarget` with a `url` off the scope's list gets its refusal (below) before the relay
+  opens a window or a tab.
 - Focus emulation. On Linux the model answers `Emulation.setFocusEmulationEnabled` on a page session
   with `{}` (above), also for `"enabled":false`. A page in a window of its own draws without focus
   emulation, with the agent unit's Chrome flags (agentwatch's part). Playwright sends the call for
@@ -1169,14 +1270,19 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
 - The model grants these permissions (the CDP name, then the content setting of C10's
   `contentSettings.set`): `geolocation` (`location`), `notifications` (`notifications`),
   `videoCapture` (`camera`), `audioCapture` (`microphone`), `clipboardReadWrite` and
-  `clipboardSanitizedWrite` (`clipboard`). A grant with no origin covers the allowlisted domains. It
-  refuses every other name.
+  `clipboardSanitizedWrite` (`clipboard`). A grant with an origin needs a host that the
+  connection's scope's list covers. A grant with no origin covers the scope's list. It refuses every
+  other name.
 - Content settings act on the whole profile and stay after a restart. So at its first `link` up the
   relay clears the six content-setting types (`contentSettings.clear`). Then no grant of an earlier
   run stays.
 - At each `allowlist` line, the relay sets the content settings again: the grants of the open
-  connections that the new list still covers, and `automaticDownloads` to `allow` for each
-  allowlisted domain (two-modes design, section 4.5).
+  connections that their own scope's list still covers, and `automaticDownloads` to `allow` for each
+  entry of every list (two-modes design, section 4.5; per-scope design, section 8.4).
+- What one profile shares between scopes, stated plainly: a content setting is per origin pattern
+  and acts on the whole profile, so a grant of one scope applies to another scope's tab on the same
+  host; the sent sign-ins (cookies, storage, workers) are in the profile for every scope; only
+  navigation is guarded per scope.
 
 **Refusals.** The model answers each refused call itself, before any bridge request, with the CDP
 error `{"code":-32000,"message":"<text>"}`. So the text is the same on every Chrome version, and the
@@ -1210,9 +1316,10 @@ to 39). Agent mode never opens that path: no prompt and no debugging port.
 
 - `about:` URLs other than `about:blank` are refused, because Chrome opens some of them as
   `chrome://` pages. `file:` URLs are refused in the model; DNR blocks them in Chrome too (measured).
-- An empty or missing `url` of `Target.createTarget` is `about:blank`. A new tab opens only
-  `about:blank` or an `http:` or `https:` URL, as C10's `newTab` and `newWindow` allow; a client
-  navigates it to a `data:` or `blob:` URL after.
+- An empty or missing `url` of `Target.createTarget` is `about:blank`. A new tab opens at
+  `about:blank` (C10's `newTab` and `newWindow`), and the relay navigates it to an `http:` or
+  `https:` `url` of the scope's list after the hold (the scope, and one connection per tab, above);
+  a client navigates it to a `data:` or `blob:` URL after.
 - A `blob:` URL passes only as `blob:http://<origin>/<id>` or `blob:https://<origin>/<id>`, the form
   that a page's `URL.createObjectURL` makes. `blob:chrome-extension://...`, `blob:null/...` and
   `blob:file://...` are refused: the first would open a page of an extension, and the others have no
@@ -1287,11 +1394,13 @@ so sites work. Programs cannot read, set or remove cookies through the endpoint.
 - A later cookie grant, for a use that needs cookie access, can lift these refusals for the granted
   sites and add `cookies.*` ops to C10. The relay's code marks the place.
 
-The allowlist, the scope and the size (two-modes design, sections 4.3, 4.4 and 8):
+The allowlist, the scope and the size (two-modes design, sections 4.3, 4.4 and 8; per-scope design,
+sections 6 and 8.4):
 
 | What | The call | The text |
 | --- | --- | --- |
-| A permission for an origin off the allowlist | `Browser.grantPermissions` with such an `origin` | `Not allowed: <host> is not on the allowlist` |
+| A permission for an origin off the scope's list | `Browser.grantPermissions` with such an `origin` | `Not allowed: <host> is not on the allowlist` |
+| A navigation off the scope's list | `Page.navigate` of a tab's main frame with an `http:` or `https:` URL whose host the scope's list does not cover, or a `blob:` URL whose inner origin has such a host; `Target.createTarget` with such a `url` | `Not allowed: <host> is not on the allowlist` |
 | A permission that `chrome.contentSettings` cannot grant | `Browser.grantPermissions` with another name | `Not available in the agent browser: the permission <name>` |
 | A tab of the scope that another connection owns | `Target.attachToTarget` | `The tab is in use by another connection of this scope` |
 | A tab of another scope, or no such tab | `Target.attachToTarget`, `Target.closeTarget`, `Target.activateTarget`, `Target.getTargetInfo`, `Browser.getWindowForTarget` | `No target with given id found` |
@@ -1301,140 +1410,116 @@ The allowlist, the scope and the size (two-modes design, sections 4.3, 4.4 and 8
 | A command whose bridge request is above `MAX_REQUEST` | Any | `The command is too large for the agent browser: <method>.` |
 | A deadline (C10) | The receiver or the daemon answered `timeout` | `The agent browser did not answer <method> in <seconds> s.` |
 
+- A tab's main frame: a `Page.navigate` with no `frameId`, or with the `frameId` of the tab's own
+  target (Playwright's `goto` sends the main frame's id). A frame's navigation is not refused (O11).
+  So a client's `Page.navigate` or `Target.createTarget` never reaches a service worker of a site off
+  its list (C5, the guard), and Chrome commits no error page for it. Other client actions still
+  navigate as the page does (`Runtime.evaluate`, input on a link, `Page.reload`,
+  `Page.navigateToHistoryEntry`); DNR and C5's guard cover them.
 - After a `timeout`, the model acts as C10 says: no detach for a command that waits for a promise;
   for any other `debugger.sendCommand`, and for a `debugger.attach`, it detaches the tab, sends
   `Target.detachedFromTarget` to the tab's sessions, and announces the tab again (above).
 - The text for another scope's tab is Chrome's own text for a target that does not exist. So a
   connection cannot tell another scope's tab from no tab.
 
-**Target (board ab-v16.23): the scope's list.** It changes the readiness, the scope, the content
-settings and the allowlist refusals above. The rest of C11 stays.
+**The scope's list (board ab-v16.23).** The relay applies C4's `set_scopes` rules to the `allowlist`
+line (C10), as the receiver applies them to `set_scopes` (the shared vector
+`test/vectors/scopes.json` checks both). A scope's list: the list that its `scopes` entry names,
+when it has an entry (no fall-back when that list is absent), else the `default` list. With keys
+on, a scope that the line does not name has no list, whatever `default` says (it has no key). The
+relay ignores the line's `operator` field. The readiness per scope and the order of the checks are
+under "Before the upgrade", the 1008 closes under "When a connection ends", and the refusals off
+the scope's list under "Refusals".
 
-- The relay applies C4's `set_scopes` rules to the `allowlist` line, as the receiver does (a shared
-  vector checks both). A scope's list: the list that its `scopes` entry names, when it has an entry
-  (no fall-back when that list is absent), else the `default` list.
-- Readiness per scope: the relay admits a connection of a scope while the link is up, `bridge.info`
-  answered with `bridge` 1 or more, an `allowlist` line came after the link came up (today's rule),
-  and that line gives the scope a list. Else 503 with the text above, or, when only the list is
-  missing:
-  503 `The agent browser is not ready: the allowlist has no list for this scope.` A scope whose
-  list is empty is admitted; it can open `about:blank` only.
-- At each `allowlist` line, the relay closes every connection of a scope that has no list any more,
-  with 1008, `The allowlist has no list for this scope any more`.
-- The scope of a tab: a tab joins a scope when a connection of that scope opens it (the relay names
-  the scope in C10's `tabs.create` or `windows.create`), or when the receiver reports it
-  (`bridge.tabScope`: a popup takes its opener's scope, a replaced tab its old scope). The relay
-  never puts a tab in a scope that the receiver did not report; its own `tabs.onReplaced` handling
-  follows `bridge.tabScope` too. Chrome's `openerId` still names a popup's owner, when the opener is
-  in the same scope.
-- A new tab that the relay did not create, and whose `bridge.tabScope` has not come: the relay keeps
-  it in its model with no scope, attached and held as the receiver reported it, for up to
-  `TAB_SCOPE_WAIT_MS = 500`. On `bridge.tabScope` it announces the tab to the scope, as a popup. At
-  the end of the wait it releases and detaches the tab, as a tab of no scope; a later
-  `bridge.tabScope` still puts the tab in its scope, as a free tab.
-- New refusals, before any bridge request: `Page.navigate` of a tab's main frame (no `frameId`, or
-  the `frameId` of the tab's own target; Playwright's `goto` sends the main frame's id) with an
-  `http:` or `https:` URL whose host the scope's list does not cover, or a `blob:` URL whose inner
-  origin has such a host; `Target.createTarget` with such a `url`: `Not allowed: <host> is not on
-  the allowlist`. A frame's navigation is not refused (O11). So a client's `Page.navigate` or
-  `Target.createTarget` never reaches a service worker of a site off its list (C5's target, the
-  guard), and Chrome commits no error page for it. Other client actions still navigate as the page
-  does (`Runtime.evaluate`, input on a link, `Page.reload`, `Page.navigateToHistoryEntry`); DNR and
-  C5's guard cover them.
-- Permissions and content settings per scope: `Browser.grantPermissions` with an origin needs a host
-  that the connection's scope's list covers, else `Not allowed: <host> is not on the allowlist`; a
-  grant with no origin covers the scope's list. At each `allowlist` line the relay sets again the
-  grants of the open connections that their own scope's list still covers, and `automaticDownloads`
-  to `allow` for each entry of every list.
-- What one profile shares between scopes, stated plainly: a content setting is per origin pattern
-  and acts on the whole profile, so a grant of one scope applies to another scope's tab on the same
-  host; the sent sign-ins (cookies, storage, workers) are in the profile for every scope; only
-  navigation is guarded per scope.
-- The scope stays advisory unless the operator chooses a scope token (the design's choice 1,
-  aw-lead's "key"): any process of the daemon's OS user can connect with any scope and get that
-  scope's list. Choice 1 b changes two rules of "The socket and the URL" above: "The URL contains no
-  secret" (the URL then holds the key), and "Every process of the daemon's OS user ... may connect"
-  (only with the scope's key). With a token, `default` is `null`: a scope that `scopes` does not
-  name has no token. The same OS user can read `/proc/<pid>/environ`, so the token guards against
-  mistakes and against an injected instruction that only names another scope. It does not guard
-  against a process of that user that reads another process's environment, a token file, a
-  transcript or a pane.
-  The agent's own shell commands inherit the key: an `env` writes it into the transcript.
-  - The token: 64 lowercase hex digits (32 random bytes; `ws` cuts a `ws+unix:` URL at each `:`, and
-    a `#` is an error, so hex is safe). Its hash: SHA-256 of those 64 ASCII characters, in lowercase
-    hex.
-  - Where it lives: only in its token file and in the session's environment, where the launch line
-    puts it at the session's launch, in one variable, `AGENTWATCH_BROWSER_CRED` (its name keeps
-    `KEY`, `SECRET` and `TOKEN` out: Codex's default policy removes such names from the commands
-    that the model runs). Never in an argv, never in the output of `agentwatch browser endpoint` or
-    `agentwatch browser env`, never in a log, and never in a URL that a tool gets as an argument.
-    agent-browser and a script read it from their environment and add it to the URL at the connect
-    call only (agent-browser never puts it into its `Settings.cdpUrl`: `agent-browser status` prints
-    that). The daemon keeps each session's key in a token file under `~/.config/agentwatch/tokens/`
-    (0600 files in 0700 folders, the modes applied again at each write), never in the browser state
-    folder.
-  - The session's environment is the agent's process environment. The launch line reads the key
-    from the token file. agentwatch never sets the key with `tmux -e` or `set-environment`: both put
-    the value into tmux's argv.
-  - Only the daemon, and the launch line that it writes, read the token files. No agentwatch command
-    reads a key from them: the CLI cannot tell which session calls (agentwatch #563).
-  - The operator's answer age-4ks ("env: no", 2026-11-04) stands. Without a key, agentwatch puts no
-    endpoint URL into a session's environment; only `agentwatch browser endpoint` and `agentwatch
-    browser env` print it, on request. With a key, agentwatch puts only the key variable into the
-    environment. `PLAYWRIGHT_MCP_CDP_ENDPOINT` with the key goes into it only after the operator
-    answers that question again: it sends each session's Playwright MCP to the signed-in agent
-    browser. (ab-dm6's options do not offer that variable, so a yes there does not answer age-4ks
-    again.)
-  - With keys on, `agentwatch browser env` prints the keyless URL and one line that names the key
-    variable, never the key. Both lines are comments, not assignments, so an `eval` of the output
-    sets nothing (it can neither empty `AGENTWATCH_BROWSER_CRED` nor give an MCP the keyless URL,
-    which gets the 403): `# PLAYWRIGHT_MCP_CDP_ENDPOINT without its key: ws+unix://<socket
-    path>:/devtools/browser/<scope>` and `# The key is in AGENTWATCH_BROWSER_CRED. Set
-    PLAYWRIGHT_MCP_CDP_ENDPOINT in the MCP server's environment (never on a command line) to this
-    URL with ?key=, or use agentwatch browser <command>, which passes it for you.` `agentwatch
-    browser <command>` passes the key to agent-browser only in that one variable, from its own
-    environment, never in a URL or an argv.
-  - `agentwatch browser endpoint` and `agentwatch browser env` print the scope that agentwatch fixed
-    at the session's launch (below), not the calling session's current name.
-  - The URL form: the token goes in the query, `ws+unix://<socket
-    path>:/devtools/browser/<scope>?key=<token>`, or in an upgrade header `X-Agentwatch-Key:
-    <token>` for a client that can send one. Never in the path: playwright-core 1.61.1 and 1.63.0
-    put the full path of a failed `connectOverCDP` into the error (six times for a 503), and the
-    Playwright MCP gives that error to the agent, so it goes into a transcript; a `?key=` query, and
-    the header, reached the relay, and no error held the key (measured by ab-lead's reviewers,
-    review-42e and review-42f). A client that prints the URL itself removes the `key` query first:
-    agent-browser's own errors and logs (its `cdpUrl` `UsageError` prints the full URL today), and
-    agentwatch's logs. No side logs the URL's query or the `X-Agentwatch-Key` header: not the relay,
-    not the daemon, not `agentwatch browser <command>`. A limit: with `DEBUG=pw:channel` (or
-    `pw:*`), playwright-core 1.61.1 and 1.63.0 write the endpoint URL with its `?key=` and the
-    header's value to standard error; clients do not run with that value.
-  - Where the relay learns that keys are on: from its start, `agent-browser relay --socket <path>
-    --keys`, not from an `allowlist` line (the relay drops the line at each link change). The
-    daemon's `allowlist` line then carries `"keys":{"<scope>":"<hash>"}`. With keys on, a line with
-    no `keys` field, and a scope with no entry in `keys`, both get the 403 below.
-  - The order of the checks before the upgrade, with keys on: a request with an `Origin` header gets
-    its 403; a path or scope that does not match gets the 404; a request with no key, or with a key
-    in both the query and the header, gets 403 `The agent browser needs this session's key. A
-    session that started before the key existed gets one when agentwatch launches it again.` at
-    once, also while the relay is not ready; then the three "not ready" 503s (`its extension is not
-    connected`, `its extension has not confirmed the allowlist`, `its extension is too old for agent
-    mode`); then a scope that the `allowlist` line does not name gets the 503 `the allowlist has no
-    list for this scope` (so a just-launched session, whose scope the daemon has not sent yet, waits
-    as the launch rule below says); last the hash check: a named scope with a wrong key, or with no
-    entry in `keys` (or a line with no `keys`), gets the same 403. The 503 of that step shows
-    whether a scope is named; scopes are session names, which `agentwatch session list` shows
-    anyway. So a session that is live before the deploy (it has no key until its next launch) gets
-    the 403, fail closed.
-  - The key's life: the daemon makes a new key at each launch of a session and keeps it over a
-    restart of the session's agent. At the session's end it removes the token file and drops the
-    scope's entry from `keys`, in the line that drops the scope. A later session of the same name
-    never gets an old key. Over a daemon restart the daemon keeps each live session's key in its
-    token file (the session's environment still holds it) and sends the hashes again in its next
-    `allowlist` line. Only a new launch makes a key: a restart of the session's agent reads the
-    existing token file, and with no token file the agent gets no key, so its session gets the 403
-    until agentwatch launches it again.
-  - agentwatch picks each session's scope at its launch and keeps it for the session's life. A
-    rename does not change it. No two live sessions share one scope.
-  - A launch never waits for the agent browser. The daemon adds the scope to its map before the
-    launch and sends `set_scopes` when the link is up. With `default` `null`, an earlier connection
-    gets the 503 `the allowlist has no list for this scope`.
+**The scope's key (the design's choice 1, aw-lead's "key").** Without keys the scope is advisory:
+any process of the daemon's OS user can connect with any scope and get that scope's list. With the
+design's choice 1 b (asked in ab-dm6) keys are on: the relay admits a connection only with its
+scope's key. That changes two rules of "The socket and the URL" above: the URL with its key is a
+secret, and a process of the daemon's OS user may connect only with the scope's key. With keys on,
+`default` is `null`: a scope that `scopes` does not name has no key. The same OS user can read
+`/proc/<pid>/environ`, so the key guards against mistakes and against an injected instruction that
+only names another scope. It does not guard against a process of that user that reads another
+process's environment, a token file, a transcript or a pane. The agent's own shell commands inherit
+the key: an `env` writes it into the transcript.
+
+- The token (the key): 64 lowercase hex digits (32 random bytes; `ws` cuts a `ws+unix:` URL at each
+  `:`, and a `#` is an error, so hex is safe). Its hash: SHA-256 of those 64 ASCII characters, in
+  lowercase hex.
+- Where it lives: only in its token file and in the session's environment, where the launch line
+  puts it at the session's launch, in one variable, `AGENTWATCH_BROWSER_CRED` (its name keeps `KEY`,
+  `SECRET` and `TOKEN` out: Codex's default policy removes such names from the commands that the
+  model runs). Never in an argv, never in the output of `agentwatch browser endpoint` or
+  `agentwatch browser env`, never in a log, and never in a URL that a tool gets as an argument.
+  agent-browser and a script read it from their environment and add it to the URL at the connect
+  call only (agent-browser never puts it into its `Settings.cdpUrl`: `agent-browser status` prints
+  that). The daemon keeps each session's key in a token file under `~/.config/agentwatch/tokens/`
+  (0600 files in 0700 folders, the modes applied again at each write), never in the browser state
+  folder.
+- The session's environment is the agent's process environment. The launch line reads the key from
+  the token file, and so does each line that starts the session's agent again (a restart, an
+  account swap, a Codex resume). agentwatch never sets the key with `tmux -e` or `set-environment`:
+  both put the value into tmux's argv.
+- Only the daemon, and the launch lines that it writes, read the token files. No agentwatch command
+  reads a key from them: the CLI cannot tell which session calls (agentwatch #563).
+- The operator's answer age-4ks ("env: no", 2026-11-04) stands. Without a key, agentwatch puts no
+  endpoint URL into a session's environment; only `agentwatch browser endpoint` and `agentwatch
+  browser env` print it, on request. With a key, agentwatch puts only the key variable into the
+  environment. `PLAYWRIGHT_MCP_CDP_ENDPOINT` with the key goes into it only after the operator
+  answers that question again: it sends each session's Playwright MCP to the signed-in agent
+  browser. (ab-dm6's options do not offer that variable, so a yes there does not answer age-4ks
+  again.)
+- With keys on, `agentwatch browser env` prints the keyless URL and one line that names the key
+  variable, never the key. Both lines are comments, not assignments, so an `eval` of the output
+  sets nothing (it can neither empty `AGENTWATCH_BROWSER_CRED` nor give an MCP the keyless URL,
+  which gets the 403): `# PLAYWRIGHT_MCP_CDP_ENDPOINT without its key: ws+unix://<socket
+  path>:/devtools/browser/<scope>` and `# The key is in AGENTWATCH_BROWSER_CRED. Set
+  PLAYWRIGHT_MCP_CDP_ENDPOINT in the MCP server's environment (never on a command line) to this
+  URL with ?key=, or use agentwatch browser <command>, which passes it for you.` In zsh without the
+  `interactive_comments` option, an `eval` of the output prints an error for each line and still
+  sets nothing (the Mac stage). `agentwatch browser <command>` passes the key to agent-browser only
+  in that one variable, from its own environment, never in a URL or an argv.
+- The URL form: the token goes in the query, `ws+unix://<socket
+  path>:/devtools/browser/<scope>?key=<token>`, or in an upgrade header `X-Agentwatch-Key:
+  <token>` for a client that can send one. Never in the path: playwright-core 1.61.1 and 1.63.0
+  put the full path of a failed `connectOverCDP` into the error (six times for a 503), and the
+  Playwright MCP gives that error to the agent, so it goes into a transcript; a `?key=` query, and
+  the header, reached the relay, and no error held the key (measured by ab-lead's reviewers,
+  review-42e and review-42f). A client that prints the URL itself removes the `key` query first:
+  agent-browser's own errors and logs (its `cdpUrl` `UsageError` prints the full URL today), and
+  agentwatch's logs. No side logs the URL's query or the `X-Agentwatch-Key` header: not the relay,
+  not the daemon, not `agentwatch browser <command>`. A limit: with `DEBUG=pw:channel` (or
+  `pw:*`), playwright-core 1.61.1 and 1.63.0 write the endpoint URL with its `?key=` and the
+  header's value to standard error; clients do not run with that value.
+- A valid key: 64 lowercase hex digits, once, in the `key` query or in the `X-Agentwatch-Key`
+  header. An empty key, a key of another form, a `key` query or an `X-Agentwatch-Key` header that
+  comes more than once, and a key in both the query and the header are no valid key: the key's 403
+  at step 3 (before the upgrade, above). A relay without `--keys` ignores a key in the request.
+- The hash check (step 6): the relay compares the SHA-256 of the request's key with the scope's
+  `keys` entry in constant time (for example `crypto.timingSafeEqual` on the two 32-byte digests).
+- Where the relay learns that keys are on: from its start, `agent-browser relay --socket <path>
+  --keys`, not from an `allowlist` line (the relay drops the line at each link change). The daemon's
+  `allowlist` line then carries `"keys":{"<scope>":"<hash>"}`. With keys on, for a named scope, a
+  line with no `keys` field and a scope with no entry in `keys` both get the key's 403 (step 6). A
+  `keys` that is not an object applies as an empty object, and an entry whose scope does not match
+  the scope pattern, or whose value is not 64 lowercase hex digits, applies as absent. A relay
+  started without `--keys` that gets a line with a `keys` field (any value) applies no list of that
+  line, as if no line had come: it closes the open connections (1008, no list any more) and answers
+  each upgrade with the 503 `the allowlist has keys, but the relay was started without --keys`,
+  until a line without `keys` comes. So a daemon and a relay that disagree fail closed, with a
+  clear text. The shared vector: `lines` in
+  `test/vectors/scopes.json`.
+- The key's life: the daemon makes a new key at each launch of a new session, before it adds the
+  scope to its map, so the first `allowlist` line that names a scope carries its `keys` entry (else
+  step 6 would give the new session the key's 403 in place of the no-list 503 of step 5). It keeps
+  the key over a restart of the session's agent. At the session's end it removes the token file and
+  drops the scope's entry from `keys`, in the line that drops the scope. A later session of the
+  same name never gets an old key. Over a daemon restart the daemon keeps each live session's key in
+  its token file (the session's environment still holds it) and sends the hashes again in its next
+  `allowlist` line. Only a new session gets a key: a restart, an account swap or a Codex resume of
+  the session's agent reads the existing token file, and with no token file the agent gets no key,
+  so its session gets the 403 until the operator starts a new session. A lost token file refuses its
+  session only at the next restart: of the session's agent (its launch line finds no key) or of the
+  daemon (it sends no hash for the scope).
+- A launch never waits for the agent browser. The daemon adds the scope to its map before the launch
+  and sends `set_scopes` when the link is up. With `default` `null`, an earlier connection gets the
+  no-list 503 (step 5), and the agent connects again.

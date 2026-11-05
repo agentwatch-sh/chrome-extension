@@ -1,18 +1,23 @@
-// Contracts C10 (the bridge) and C11 (the endpoint): docs/protocol.md is the
-// master, and test/vectors/bridge.json and test/vectors/endpoint.json are its
-// shared vectors. The stage-2 receiver, the stage-3 relay and the stage-4
-// daemon check their code against the same vectors. These tests keep the
-// vectors and the text in step; the small reference rules below follow the
-// text, so a vector that breaks a rule fails here first.
+// Contracts C4 (the allowlists and the hello), C10 (the bridge) and C11 (the
+// endpoint): docs/protocol.md is the master, and test/vectors/bridge.json,
+// endpoint.json, scopes.json and hello.json are its shared vectors. The
+// receiver, the relay and the daemon check their code against the same
+// vectors. These tests keep the vectors and the text in step; the small
+// reference rules below follow the text, so a vector that breaks a rule fails
+// here first.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { CHANNELS, MAX_TO_DAEMON, PART_BYTES, ChannelJoiner, splitParts } from "../agent/wire.js";
+import { normalizeEntry } from "../shared/domains.js";
 
 const read = (p) => readFileSync(new URL("../" + p, import.meta.url), "utf8");
 const protocol = read("docs/protocol.md");
 const bridge = JSON.parse(read("test/vectors/bridge.json"));
 const endpoint = JSON.parse(read("test/vectors/endpoint.json"));
+const scopesV = JSON.parse(read("test/vectors/scopes.json"));
+const helloV = JSON.parse(read("test/vectors/hello.json"));
 
 // The text of one contract: from its "### Cn." heading to the next "### ".
 function section(name) {
@@ -22,6 +27,7 @@ function section(name) {
   return protocol.slice(start, next < 0 ? undefined : next);
 }
 const C4 = section("C4");
+const C5 = section("C5");
 const C10 = section("C10");
 const C11 = section("C11");
 
@@ -45,6 +51,166 @@ const isObj = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
 const opByName = new Map(bridge.ops.map((o) => [o.op, o]));
 const evByName = new Map(bridge.events.map((e) => [e.ev, e]));
 const K = bridge.constants;
+
+// ---- C4: the allowlists (set_scopes) and the hello ----
+
+// C4's rules for set_scopes. The relay applies the same rules to its allowlist line (C10, C11).
+const NAME = new RegExp(scopesV.pattern);
+const HEX64 = /^[0-9a-f]{64}$/;
+// A valid name (C4): a string that matches the scope pattern. A field that must name a list and
+// holds neither a valid name nor null (nor "*" for operator) counts 1 in refused and applies as null.
+const validName = (v) => typeof v === "string" && NAME.test(v);
+const normalized = (e) => {
+  const r = normalizeEntry(e);
+  return r.ok && r.entry === e;
+};
+function applySetScopes(msg) {
+  let refused = 0;
+  const lists = {};
+  if (isObj(msg.lists)) {
+    for (const [name, v] of Object.entries(msg.lists)) {
+      if (!NAME.test(name) || !Array.isArray(v)) {
+        refused += 1 + (Array.isArray(v) ? v.length : 0); // the list, and each of its entries
+        continue;
+      }
+      const ok = v.filter(normalized);
+      refused += v.length - ok.length;
+      lists[name] = ok;
+    }
+  } else refused += 1;
+  const scopes = {};
+  if (isObj(msg.scopes)) {
+    for (const [scope, v] of Object.entries(msg.scopes)) {
+      if (!NAME.test(scope)) refused += 1; // applies as absent
+      else if (!(v === null || validName(v))) {
+        refused += 1;
+        scopes[scope] = null; // no list, no fall-back to default
+      } else scopes[scope] = v;
+    }
+  } else refused += 1;
+  let def = null;
+  if (validName(msg.default)) def = msg.default;
+  else if (msg.default !== null) refused += 1; // also a missing default
+  if (!isObj(msg.scopes)) def = null; // no scope gets default while the scopes are not known
+  let operator = null;
+  if (Object.hasOwn(msg, "operator") && msg.operator !== null) {
+    const o = msg.operator;
+    if (o === "*") operator = "*";
+    else if (validName(o)) operator = Object.hasOwn(lists, o) ? o : null;
+    else refused += 1;
+  }
+  // A scope's list: its scopes entry when it has one (no fall-back), else default.
+  const listOf = (scope) => {
+    const name = Object.hasOwn(scopes, scope) ? scopes[scope] : def;
+    return name !== null && Object.hasOwn(lists, name) ? name : null;
+  };
+  return { lists, scopes, default: def, operator, refused, listOf };
+}
+// The relay's allowlist line (C11): C4's rules, the keys with --keys, and a line with a keys
+// field that a relay without --keys applies as no line at all.
+function applyLine(line, keysOn) {
+  if (!keysOn && Object.hasOwn(line, "keys")) return { failClosed: true };
+  const a = applySetScopes(line);
+  let keys = null;
+  if (keysOn) {
+    keys = {};
+    if (isObj(line.keys)) {
+      for (const [scope, h] of Object.entries(line.keys)) if (NAME.test(scope) && typeof h === "string" && HEX64.test(h)) keys[scope] = h;
+    }
+  }
+  return { ...a, keys };
+}
+const applied = (a) => ({ lists: a.lists, scopes: a.scopes, default: a.default, operator: a.operator });
+
+test("C4 states the set_scopes request and answer, and the receiver's hello with features", () => {
+  assert.ok(C4.includes('`{"t":"req","id":"<id>","op":"set_scopes","lists":{"<list>":["a.example"]},"scopes":{"<scope>":"<list>"},"default":"<list>"}`'));
+  assert.ok(C4.includes('`{"rules":<scope rules in force>,"closed":<tabs closed>,"refused":<entries, list names and scopes refused>}`'));
+  assert.ok(C4.includes("The daemon waits 10 s for `ping` and `set_scopes`"));
+  assert.ok(C4.includes("`" + JSON.stringify({ ...helloV.hello, version: "<manifest version>" }) + "`"), "C4 shows the hello");
+  assert.deepEqual(helloV.hello.features, ["scopes"]);
+  assert.deepEqual(helloV.hello.channels, CHANNELS);
+  assert.ok(C4.includes("`test/vectors/hello.json`") && C4.includes("`test/vectors/scopes.json`"), "C4 names the vectors");
+});
+
+test("the rollout: each side meets the other's old form and fails closed, with C4's texts", () => {
+  for (const { hello } of helloV.oldHellos) assert.ok(!(hello.features ?? []).includes("scopes"), "an old receiver's hello names no scopes");
+  const old = helloV.toOldReceiver;
+  assert.deepEqual(old.req.domains, [], "an empty list: the old receiver blocks every site");
+  assert.ok(C4.includes("`" + JSON.stringify({ ...old.req, id: "<id>" }) + "`"), "C4 shows the old request");
+  assert.ok(C4.includes(`"${old.browserPage}"`), "C4 shows the Browser page text");
+  const { req, res } = helloV.fromOldDaemon;
+  assert.equal(req.op, "set_allowlist");
+  assert.deepEqual(Object.keys(res).sort(), ["error", "id", "ok", "t"], "channel main: no ch");
+  assert.equal(res.id, req.id);
+  assert.equal(res.ok, false);
+  assert.ok(C4.includes("`" + JSON.stringify({ ...res, id: "<id>" }) + "`"), "C4 shows the answer");
+});
+
+test("each set_scopes vector applies by C4's rules, with its count in refused", () => {
+  assert.equal(scopesV.pattern, endpoint.scope.pattern, "list names and scopes share C11's pattern");
+  assert.ok(C4.includes("`" + scopesV.pattern + "`"));
+  const vectors = [...scopesV.cases, ...scopesV.raw.map((r) => ({ ...r, in: JSON.parse(r.json) }))];
+  for (const v of vectors) {
+    const a = applySetScopes(v.in);
+    assert.deepEqual(applied(a), v.applies, v.note);
+    assert.equal(a.refused, v.refused, `${v.note}: refused`);
+    for (const [scope, list] of Object.entries(v.listOf ?? {})) assert.equal(a.listOf(scope), list, `${v.note}: the list of ${scope}`);
+  }
+  // Each rule of C4 has a vector.
+  const has = (f) => scopesV.cases.some(f);
+  const lists = (v) => (isObj(v.in.lists) ? v.in.lists : {});
+  const scopes = (v) => (isObj(v.in.scopes) ? v.in.scopes : {});
+  assert.ok(has((v) => Object.values(lists(v)).some((l) => Array.isArray(l) && l.some((e) => !normalized(e)))), "an entry that is not normalized");
+  assert.ok(has((v) => Object.keys(lists(v)).some((n) => !NAME.test(n))), "a list name that does not match");
+  assert.ok(has((v) => Object.values(lists(v)).some((l) => !Array.isArray(l))), "a list that is not an array");
+  assert.ok(has((v) => Object.values(lists(v)).some((l) => Array.isArray(l) && l.length === 0)), "an empty list");
+  assert.ok(has((v) => Object.values(scopes(v)).includes(null)), "a scope with null");
+  assert.ok(has((v) => Object.entries(scopes(v)).some(([s, l]) => !NAME.test(s) || !(typeof l === "string" || l === null))), "a scope that applies as absent (a bad name) or as null (a bad value)");
+  assert.ok(has((v) => Object.hasOwn(v.in, "lists") && !isObj(v.in.lists)), "lists that is not an object");
+  assert.ok(has((v) => Object.hasOwn(v.in, "scopes") && !isObj(v.in.scopes)), "scopes that is not an object");
+  assert.ok(has((v) => !Object.hasOwn(v.in, "default")), "a missing default");
+  assert.ok(has((v) => Object.hasOwn(v.in, "default") && v.in.default !== null && typeof v.in.default !== "string"), "a bad default");
+  assert.ok(has((v) => typeof v.in.default === "string" && !NAME.test(v.in.default)), "a default that is a string but not a valid name");
+  assert.ok(has((v) => Object.entries(scopes(v)).some(([s, l]) => NAME.test(s) && l !== null && !validName(l))), "a scope value that is not a valid name");
+  assert.ok(has((v) => Object.hasOwn(v.in, "scopes") && !isObj(v.in.scopes) && typeof v.in.default === "string" && v.applies.default === null), "scopes not an object: default applies as null");
+  assert.ok(has((v) => [...Object.keys(lists(v)), ...Object.keys(scopes(v))].some((n) => n in Object.prototype)), "names that are properties of a JavaScript object");
+  assert.ok(has((v) => typeof v.in.default === "string" && v.listOf && Object.values(v.listOf).includes(v.in.default)), "a scope that gets the default list");
+  for (const o of ["*", null]) assert.ok(has((v) => Object.hasOwn(v.in, "operator") && v.in.operator === o), `the operator ${o}`);
+  assert.ok(has((v) => typeof v.in.operator === "string" && NAME.test(v.in.operator) && v.applies.operator === null && v.refused === 0), "an operator name that is not in lists");
+  assert.ok(has((v) => Object.hasOwn(v.in, "operator") && v.in.operator !== "*" && v.in.operator !== null && !(typeof v.in.operator === "string" && NAME.test(v.in.operator))), "a bad operator");
+});
+
+test("each allowlist line vector applies by C4's rules and C11's keys", () => {
+  for (const v of scopesV.lines) {
+    const a = applyLine(v.line, v.keysOn);
+    if (v.failClosed) {
+      assert.deepEqual(a, { failClosed: true }, v.note);
+      continue;
+    }
+    assert.equal(a.failClosed, undefined, v.note);
+    assert.deepEqual(a.keys, v.keys, v.note);
+  }
+  const has = (f) => scopesV.lines.some(f);
+  assert.ok(has((v) => v.keysOn && !Object.hasOwn(v.line, "keys")), "keys on, a line with no keys field");
+  assert.ok(has((v) => v.keysOn && Object.hasOwn(v.line, "keys") && !isObj(v.line.keys)), "keys that is not an object");
+  assert.ok(has((v) => v.keysOn && isObj(v.line.keys) && Object.values(v.line.keys).some((h) => !(typeof h === "string" && HEX64.test(h)))), "a bad hash");
+  assert.ok(has((v) => !v.keysOn && v.failClosed), "a relay without --keys and a line with keys");
+  assert.ok(has((v) => Object.hasOwn(v.line, "operator")), "the relay ignores the operator field");
+});
+
+// ---- C5: the list per scope ----
+
+test("C5 holds the per-scope block: a tab's list, the scope rules, rules 6 to 8, and no rule 2 or 4", () => {
+  for (const s of ["**tab's list**", "**scope rules**", "`updateSessionRules`", "session rule id 6", "session rule id 7", "session rule id 8", "Dynamic rules 2 and 4 are gone", "`MAX_NUMBER_OF_SESSION_RULES`"]) {
+    assert.ok(C5.includes(s), `C5 says ${s}`);
+  }
+});
+
+test("the per-scope rules are the contract in force: no target block and no set_allowlist rule is left", () => {
+  assert.ok(!protocol.includes("Target (board ab-v16.23)"), "no target block");
+  assert.ok(!/\bC(4|5|6|10|11)'s target\b/.test(protocol), "no reference to a target block");
+  for (const [name, text] of [["C5", C5], ["C10", C10], ["C11", C11]]) assert.ok(!text.includes("set_allowlist"), `${name} names no set_allowlist`);
+});
 
 // ---- C10: the constants ----
 
@@ -92,7 +258,7 @@ test("C10's op table names exactly the ops of the vector, with the same args, re
 test("no op reads or writes cookies, the allowlist, the DNR rules or the import", () => {
   for (const name of opByName.keys()) {
     assert.ok(!/^(cookies|declarativeNetRequest|dnr|browsingData|scripting|storage)\./.test(name), name);
-    assert.ok(!["import", "set_allowlist", "ping"].includes(name), name);
+    assert.ok(!["import", "set_allowlist", "set_scopes", "ping"].includes(name), name);
   }
 });
 
@@ -119,7 +285,9 @@ test("each op names only arg kinds that C10 defines; a name with ? is an optiona
 const int = (x) => Number.isInteger(x);
 const onlyKeys = (o, keys) => Object.keys(o).every((k) => keys.includes(k));
 const covered = (host) => bridge.allowlist.some((d) => host === d || host.endsWith("." + d));
-const webUrl = (u) => u === "about:blank" || (typeof u === "string" && /^https?:\/\/[^/?#\s]+/i.test(u) && URL.canParse(u));
+// A new tab or window opens at about:blank only (C10, each tab's scope).
+const newUrl = (u) => u === "about:blank";
+const SCOPE = new RegExp(endpoint.scope.pattern);
 function patternFits(p) {
   const m = /^(\*|https?):\/\/(\*\.)?([a-z0-9.-]+)(:\d{1,5})?\/\*$/.exec(String(p));
   return m !== null && covered(m[3]);
@@ -134,13 +302,14 @@ function kindFits(kind, a) {
       return isObj(a) && int(a.tabId) && a.tabId >= 0 && onlyKeys(a, ["tabId", "sessionId"]) &&
         (!Object.hasOwn(a, "sessionId") || (typeof a.sessionId === "string" && a.sessionId.length > 0));
     case "contentType": return bridge.contentTypes.includes(a);
+    case "scope": return typeof a === "string" && SCOPE.test(a);
     case "newTab":
-      return isObj(a) && onlyKeys(a, ["url", "active", "windowId", "index"]) && webUrl(a.url) &&
+      return isObj(a) && onlyKeys(a, ["url", "active", "windowId", "index"]) && newUrl(a.url) &&
         (!Object.hasOwn(a, "active") || typeof a.active === "boolean") &&
         ["windowId", "index"].every((k) => !Object.hasOwn(a, k) || (int(a[k]) && a[k] >= 0));
     case "tabUpdate": return isObj(a) && onlyKeys(a, ["active"]) && typeof a.active === "boolean";
     case "newWindow":
-      return isObj(a) && onlyKeys(a, ["url", "focused", "left", "top", "width", "height", "state"]) && webUrl(a.url) &&
+      return isObj(a) && onlyKeys(a, ["url", "focused", "left", "top", "width", "height", "state"]) && newUrl(a.url) &&
         (!Object.hasOwn(a, "focused") || typeof a.focused === "boolean") &&
         ["left", "top", "width", "height"].every((k) => !Object.hasOwn(a, k) || int(a[k]));
     case "windowUpdate":
@@ -283,6 +452,51 @@ test("the daemon's answers and lines to the relay are in C10, with their full sh
   }
 });
 
+// ---- C10: each tab's scope ----
+
+test("tabs.create and windows.create take the scope arg, and a new tab opens at about:blank only", () => {
+  const SCOPED = ["tabs.create", "windows.create"];
+  for (const name of SCOPED) {
+    const o = opByName.get(name);
+    assert.deepEqual([o.kinds.at(-1), o.required, o.args.length], ["scope", 2, 2], `${name}: the scope arg is required`);
+  }
+  assert.ok(SCOPE.test(bridge.scope));
+  for (const v of bridge.requests.filter((x) => SCOPED.includes(x.req.op))) {
+    assert.equal(v.req.args[1], bridge.scope, v.req.id);
+    assert.deepEqual(v.chrome[1], [v.req.args[0]], `${v.req.id}: the scope goes to the map, not to Chrome`);
+  }
+  const bad = bridge.badRequests.filter((v) => SCOPED.includes(v.req.op));
+  assert.ok(bad.some((v) => v.req.args.length === 1), "no scope arg (an old relay)");
+  assert.ok(bad.some((v) => v.req.args.length === 2 && /^https?:/.test(v.req.args[0].url ?? "")), "a site's URL");
+  assert.ok(bad.some((v) => v.req.args.length === 2 && !kindFits("scope", v.req.args[1])), "a bad scope");
+  assert.ok(bad.some((v) => v.req.op === "windows.create" && Object.hasOwn(v.req.args[0], "tabId")), "no op moves a tab");
+  assert.ok(C10.includes("`[createProperties, scope]`") && C10.includes("`[createData, scope]`"));
+});
+
+test("bridge.tabScope: its vectors name a tab and a scope, and C10 gives its order", () => {
+  const evs = bridge.eventVectors.filter((v) => v.ev.ev === "bridge.tabScope");
+  assert.ok(evs.length >= 2, "a popup and a replaced tab");
+  for (const v of evs) {
+    assert.equal(v.chrome, null, "the receiver's own event");
+    assert.ok(int(v.ev.tabId) && v.ev.tabId >= 0);
+    assert.ok(SCOPE.test(v.ev.scope));
+  }
+  assert.ok(C10.includes("Before the popup's `tabs.onCreated`, and before the replaced tab's `tabs.onReplaced`"));
+});
+
+test("the daemon's allowlist line is the confirmed set_scopes object; keys only for the relay", () => {
+  const lines = bridge.daemonLines.filter((l) => l.t === "allowlist");
+  assert.ok(lines.length >= 2);
+  for (const l of lines) {
+    assert.ok(!Object.hasOwn(l, "domains"), "the one list is gone");
+    for (const k of ["lists", "scopes", "default"]) assert.ok(Object.hasOwn(l, k), k);
+    assert.equal(applySetScopes(l).refused, 0, "the daemon sends only valid objects");
+    if (isObj(l.keys)) for (const [scope, h] of Object.entries(l.keys)) assert.ok(NAME.test(scope) && HEX64.test(h), scope);
+  }
+  assert.ok(lines.some((l) => isObj(l.keys)) && lines.some((l) => !Object.hasOwn(l, "keys")), "a line with keys and one without");
+  assert.ok(C10.includes("the\n    receiver never sees the keys") || C10.includes("the receiver never sees the keys"));
+});
+
 test("the bridge vector names all three sides", () => {
   for (const stage of ["stage 2", "stage 3", "stage 4"]) assert.ok(bridge.contract.includes(stage), stage);
 });
@@ -305,6 +519,80 @@ test("C11 states every answer of the endpoint before the upgrade", () => {
     assert.ok(C11.includes(`${a.status} \`${a.body}\``), `${a.status} ${a.body}`);
   }
   for (const c of endpoint.closes) assert.ok(C11.includes(`${c.code}, \`${c.reason}\``), `${c.code} ${c.reason}`);
+});
+
+test("C11 states the relay's constants", () => {
+  for (const [name, value] of Object.entries(endpoint.constants)) assert.ok(C11.includes(`\`${name} = ${value}\``), `C11 has \`${name} = ${value}\``);
+});
+
+// Before the upgrade (C11): the order of the checks, with and without keys.
+const answerById = Object.fromEntries(endpoint.upgradeAnswers.map((a) => [a.id, a]));
+const closeById = Object.fromEntries(endpoint.closes.filter((c) => c.id).map((c) => [c.id, c]));
+const sha256 = (text) => createHash("sha256").update(text, "ascii").digest("hex");
+// A valid key: 64 lowercase hex digits, once, in the key query or in the X-Agentwatch-Key header.
+function validKey(url, headers) {
+  const q = url.searchParams.getAll("key");
+  const h = headers["x-agentwatch-key"];
+  const hs = h === undefined ? [] : Array.isArray(h) ? h : [h];
+  if (q.length + hs.length !== 1) return null;
+  const k = q.length === 1 ? q[0] : hs[0];
+  return HEX64.test(k) ? k : null;
+}
+function admit({ keys: keysOn, relay, request }) {
+  const headers = request.headers ?? {};
+  if (Object.hasOwn(headers, "origin")) return "fromPage"; // 1
+  const url = new URL(request.path, "http://relay");
+  const m = /^\/devtools\/browser\/([^/]*)$/.exec(url.pathname);
+  if (!m || !SCOPE.test(m[1])) return "notFound"; // 2
+  const scope = m[1];
+  const key = keysOn ? validKey(url, headers) : null;
+  if (keysOn && key === null) return "key"; // 3
+  if (!relay.link) return "notConnected"; // 4
+  if (relay.bridge === 0) return "tooOld";
+  if (relay.line === null) return "notConfirmed";
+  if (relay.bridge === null) return "notConnected";
+  const a = applyLine(endpoint.lines[relay.line], keysOn);
+  if (a.failClosed) return "keysWithout";
+  if (keysOn && !Object.hasOwn(a.scopes, scope)) return "noList"; // 5
+  if (keysOn && a.keys[scope] !== sha256(key)) return "key"; // 6
+  if (a.listOf(scope) === null) return "noList"; // 7
+  return 101;
+}
+
+test("before the upgrade: each check vector gets the answer of C11's order", () => {
+  for (const [scope, token] of Object.entries(endpoint.keys.tokens)) {
+    assert.ok(HEX64.test(token), scope);
+    assert.equal(endpoint.keys.hashes[scope], sha256(token), `${scope}: the hash is SHA-256 of the 64 ASCII characters`);
+  }
+  const seen = new Set();
+  for (const c of endpoint.upgradeChecks) {
+    const want = c.answer?.status === 101 ? 101 : c.answer;
+    assert.ok(want === 101 || Object.hasOwn(answerById, want), `${c.note}: a known answer`);
+    assert.equal(admit(c), want, c.note);
+    seen.add(want);
+  }
+  for (const a of endpoint.upgradeAnswers) assert.ok(seen.has(a.id), `a check vector for ${a.id}`);
+  assert.ok(seen.has(101), "a vector of an upgrade");
+  const steps = ["1. A request with an `Origin` header", "2. A path or scope that does not match", "3. With keys on, a request with no valid key", "4. The relay is not ready", "5. With keys on, a scope that the last `allowlist` line does not name", "6. With keys on, the hash check", "7. A scope with no list"];
+  for (const s of steps) assert.ok(C11.includes(s), `C11 has the step ${s}`);
+  assert.ok(C11.includes("in constant time"), "the hash check compares in constant time");
+  assert.ok(C11.includes("`upgradeChecks`") && C11.includes("`lineCloses`"), "C11 names the vectors");
+});
+
+test("at each allowlist line: each close vector follows C11", () => {
+  for (const c of endpoint.lineCloses) {
+    const scope = c.connection.scope;
+    const a = applyLine(endpoint.lines[c.line], c.keys);
+    let got = null;
+    if (a.failClosed || (c.keys && !Object.hasOwn(a.scopes, scope)) || a.listOf(scope) === null) got = "noList";
+    else if (c.keys && a.keys[scope] !== c.connection.hash) got = "key";
+    assert.equal(got, c.close, c.note);
+  }
+  for (const id of ["noList", "key"]) {
+    assert.equal(closeById[id]?.code, 1008, id);
+    assert.ok(endpoint.lineCloses.some((c) => c.close === id), `a vector for ${id}`);
+  }
+  assert.ok(endpoint.lineCloses.some((c) => c.close === null), "a vector of a connection that stays");
 });
 
 // Where a call goes (C11's table): the model, Chrome, or a refusal.
@@ -357,6 +645,20 @@ const binaryNamed = (b64, re) => {
 };
 const COOKIE = /^cookie$/i;
 const SET_COOKIE = /^set-cookie$/i;
+// The scope's list of the samples (C11, the refusals): a navigation of the main frame, a new tab, a
+// grant with an origin, off the list.
+const onList = (host) => endpoint.scopeList.some((d) => host === d || host.endsWith("." + d));
+const webHost = (url) => {
+  const u = /^blob:/i.test(String(url)) ? String(url).slice(5) : String(url);
+  if (!URL.canParse(u)) return null;
+  const p = new URL(u);
+  return /^https?:$/.test(p.protocol) ? p.hostname : null;
+};
+const offList = (url) => {
+  const h = webHost(url);
+  return h !== null && !onList(h);
+};
+const mainFrame = (params) => params.frameId === undefined || params.frameId === endpoint.mainFrameId;
 function paramRefusal(method, params = {}) {
   switch (method) {
     case "Page.addScriptToEvaluateOnNewDocument": return MAIN_WORLD(params.worldName);
@@ -369,11 +671,12 @@ function paramRefusal(method, params = {}) {
     case "Fetch.fulfillRequest":
     case "Fetch.continueResponse":
       return named(params.responseHeaders, SET_COOKIE) || binaryNamed(params.binaryResponseHeaders, SET_COOKIE);
-    case "Page.navigate": return !NAVIGATE_OK(params.url ?? "");
+    case "Page.navigate": return !NAVIGATE_OK(params.url ?? "") || (mainFrame(params) && offList(params.url ?? ""));
     case "Target.createTarget": {
       const ctx = params.browserContextId;
-      return (ctx !== undefined && ctx !== endpoint.defaultContext) || !NEW_TAB_OK(params.url);
+      return (ctx !== undefined && ctx !== endpoint.defaultContext) || !NEW_TAB_OK(params.url) || offList(params.url ?? "");
     }
+    case "Browser.grantPermissions": return params.origin === undefined ? null : offList(params.origin);
     default: return null;
   }
 }
@@ -384,6 +687,8 @@ test("the refusals and passes that depend on the params follow C11's rules", () 
     if (hit !== null) assert.equal(hit, true, `refused: ${r.method} ${JSON.stringify(r.params)}`);
     // A URL refusal names the URL's scheme, or "relative".
     if (/ URLs \(/.test(r.error)) assert.ok(r.error.includes(`browser: ${schemeOf(r.params.url)} URLs (${r.method})`), r.error);
+    // A refusal off the scope's list names the host.
+    if (r.error.startsWith("Not allowed: ")) assert.equal(r.error, `Not allowed: ${webHost(r.params.url ?? r.params.origin)} is not on the allowlist`, r.method);
   }
   for (const p of endpoint.passes) {
     assert.notEqual(paramRefusal(p.method, p.params), true, `passes: ${p.method} ${JSON.stringify(p.params)}`);
@@ -391,6 +696,13 @@ test("the refusals and passes that depend on the params follow C11's rules", () 
   assert.ok(endpoint.refusals.some((r) => /^file:/.test(r.params?.url ?? "")), "S12: a file: URL is refused");
   assert.ok(endpoint.refusals.some((r) => schemeOf(r.params?.url ?? "x:") === "relative"), "a relative URL is refused");
   assert.ok(endpoint.passes.some((p) => p.method === "Target.createTarget" && p.params.url === ""), "an empty url is about:blank");
+  // The refusals per scope (C11): the main frame, a blob: inner origin, a new tab, and a frame passes.
+  const offRefused = endpoint.refusals.filter((r) => r.error.startsWith("Not allowed: "));
+  assert.ok(offRefused.some((r) => r.method === "Page.navigate" && r.params.frameId === undefined), "the main frame with no frameId");
+  assert.ok(offRefused.some((r) => r.method === "Page.navigate" && r.params.frameId === endpoint.mainFrameId), "the main frame by its frameId");
+  assert.ok(offRefused.some((r) => r.method === "Page.navigate" && /^blob:/.test(r.params.url)), "a blob: URL");
+  assert.ok(offRefused.some((r) => r.method === "Target.createTarget"), "a new tab");
+  assert.ok(endpoint.passes.some((p) => p.method === "Page.navigate" && p.params.frameId !== undefined && !mainFrame(p.params) && offList(p.params.url)), "a frame's navigation passes (O11)");
 });
 
 test("every cookie call of C11 is a refusal vector", () => {
