@@ -9,6 +9,15 @@
 //
 // For the bridge (C10): fake.targets_ is what debugger.getTargets returns,
 // and runtime.id is the agent package's ID in the bridge vector.
+//
+// For the removals (C10): tabs.remove of a tab of fake.tabs_ removes it and
+// fires tabs.onRemoved before it answers; Target.closeTarget of a target of
+// fake.targets_ does the same for its tab (Chrome closes it with no
+// beforeunload). With fake.trackNewTabs, a tab of tabs.create gets a target
+// ("T<id>") and closes the same way. fake.sessionRules_ and fake.dynamicRules_
+// hold the DNR rules.
+// When fake.autoNavigate is true, the import's last script (leaveRestorePage)
+// fires webNavigation.onCommitted for its URL.
 
 function makeEvent() {
   const listeners = [];
@@ -56,6 +65,10 @@ export function makeFakeChrome() {
     pageResult: { local: 0, session: 0, idb_databases: 0, idb_records: 0, cache_entries: 0, errors: [] },
     manifest: { version: "0.1.0" },
     targets_: [],
+    sessionRules_: [],
+    dynamicRules_: [],
+    trackNewTabs: false,
+    created_: new Map(), // tabId -> windowId: the tabs of tabs.create, with trackNewTabs
     chrome: null,
   };
   const rec = (path, impl) => (...args) => {
@@ -137,7 +150,13 @@ export function makeFakeChrome() {
       onMessage: makeEvent(),
     },
     declarativeNetRequest: {
-      updateDynamicRules: rec("declarativeNetRequest.updateDynamicRules", async () => {}),
+      updateDynamicRules: rec("declarativeNetRequest.updateDynamicRules", async (d) => {
+        fake.dynamicRules_ = applyRules(fake.dynamicRules_, d);
+      }),
+      updateSessionRules: rec("declarativeNetRequest.updateSessionRules", async (d) => {
+        fake.sessionRules_ = applyRules(fake.sessionRules_, d);
+      }),
+      getSessionRules: rec("declarativeNetRequest.getSessionRules", async () => structuredClone(fake.sessionRules_)),
     },
     browsingData: {
       remove: rec("browsingData.remove", async () => {}),
@@ -149,8 +168,17 @@ export function makeFakeChrome() {
         if (!t) throw new Error("No tab with id: " + tabId);
         return { ...t };
       }),
-      remove: rec("tabs.remove", async () => {}),
-      create: rec("tabs.create", async (props) => ({ id: 900 + calls.length, ...props })),
+      remove: rec("tabs.remove", async (tabId) => {
+        fake.closeTab(tabId);
+      }),
+      create: rec("tabs.create", async (props) => {
+        const tab = { id: 900 + calls.length, ...props };
+        if (fake.trackNewTabs) {
+          fake.created_.set(tab.id, props.windowId ?? 1);
+          fake.targets_.push({ id: "T" + tab.id, tabId: tab.id, type: "page", attached: false });
+        }
+        return tab;
+      }),
       update: rec("tabs.update", async (tabId, props) => {
         if (fake.autoNavigate) fake.pauseRequest(tabId, props.url);
         return { id: tabId, ...props };
@@ -192,6 +220,12 @@ export function makeFakeChrome() {
       detach: rec("debugger.detach", async () => {}),
       getTargets: rec("debugger.getTargets", async () => fake.targets_.map((t) => ({ ...t }))),
       sendCommand: rec("debugger.sendCommand", async (target, method, params) => {
+        if (method === "Target.closeTarget") {
+          const t = fake.targets_.find((x) => x.id === params.targetId);
+          if (!t) throw new Error("No target with given id found");
+          fake.closeTab(t.tabId);
+          return { success: true };
+        }
         if (method === "Fetch.fulfillRequest" && fake.paused.has(params.requestId)) {
           const { tabId, url } = fake.paused.get(params.requestId);
           later(() => chrome.webNavigation.onCompleted.fire({ tabId, frameId: 0, url }));
@@ -225,12 +259,19 @@ export function makeFakeChrome() {
           const read = Object.hasOwn(fake.pageRead, "origin") ? fake.pageRead : { origin: injection.args?.[1], ...fake.pageRead };
           return [{ frameId: 0, result: chromeResult(JSON.stringify(read)) }];
         }
+        if (fake.autoNavigate && typeof injection.func === "function" && injection.func.name === "leaveRestorePage") {
+          const { tabId } = injection.target;
+          const url = injection.args?.[0];
+          later(() => chrome.webNavigation.onCommitted.fire({ tabId, frameId: 0, url }));
+        }
         return [{ frameId: 0, result: isPageState ? chromeResult(structuredClone(fake.pageResult)) : undefined }];
       }),
     },
     webNavigation: {
       onErrorOccurred: makeEvent(),
       onCompleted: makeEvent(),
+      onCommitted: makeEvent(),
+      onBeforeNavigate: makeEvent(),
       onCreatedNavigationTarget: makeEvent(),
     },
   };
@@ -252,5 +293,25 @@ export function makeFakeChrome() {
     return requestId;
   };
   fake.callsTo = (path) => calls.filter(([p]) => p === path).map(([, a]) => a);
+  // A tab of fake.tabs_ closes: it goes, with its targets, and tabs.onRemoved fires.
+  fake.closeTab = (tabId) => {
+    const t = fake.tabs_.find((x) => x.id === tabId) ?? (fake.created_.has(tabId) ? { id: tabId, windowId: fake.created_.get(tabId) } : null);
+    if (!t) return;
+    fake.tabs_ = fake.tabs_.filter((x) => x.id !== tabId);
+    fake.created_.delete(tabId);
+    fake.targets_ = fake.targets_.filter((x) => x.tabId !== tabId);
+    chrome.tabs.onRemoved.fire(tabId, { windowId: t.windowId, isWindowClosing: false });
+  };
   return fake;
+}
+
+// A DNR update as Chrome makes it: all or nothing, the removals first; an id
+// that is still in use refuses the whole call.
+function applyRules(rules, { removeRuleIds = [], addRules = [] } = {}) {
+  const kept = rules.filter((r) => !removeRuleIds.includes(r.id));
+  for (const r of addRules) {
+    if (kept.some((k) => k.id === r.id)) throw new Error(`Rule with id ${r.id} does not have a unique ID.`);
+    kept.push(structuredClone(r));
+  }
+  return kept;
 }

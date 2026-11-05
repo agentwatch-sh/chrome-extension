@@ -11,6 +11,10 @@
 // count of resets) when it arrives. After a link change (reset) no bridge tab
 // is left: an op from before it attaches nothing, and an attach that was
 // still running then detaches its tab, as a tab of no connection.
+//
+// The receiver's close (removals.js) is one op of the tab's chain too: it
+// uses the bridge's attachment when the tab has one, else an attach for the
+// close only, which makes no bridge tab (no hold, no event to the relay).
 
 import { Holds } from "./hold.js";
 
@@ -28,6 +32,8 @@ const message = (e) => String(e && e.message ? e.message : e);
 export class Attachments {
   #chrome;
   #tabs = new Set(); // the bridge tabs
+  #live = new Set(); // the tabs that the bridge's attachment holds (a bridge tab, or one whose detach still waits in its chain)
+  #closing = new Set(); // the tabs that an attach for a receiver's close holds
   #chains = new Map(); // tabId -> {kind, epoch, run, done}: the last op of the tab that has not ended
   #epoch = 0; // counts the resets
   #restore = null; // the restore tab of the running import
@@ -45,6 +51,11 @@ export class Attachments {
 
   isBridgeTab(tabId) {
     return this.#tabs.has(tabId);
+  }
+
+  // The tab has an attachment of this worker that a receiver's close can use.
+  isAttached(tabId) {
+    return this.#live.has(tabId) || this.#closing.has(tabId);
   }
 
   isRestoreTab(tabId) {
@@ -70,11 +81,18 @@ export class Attachments {
     return run;
   }
 
+  // Runs fn() as one op of the tab's chain (the receiver's close). Joins the
+  // chain at once; gives fn's promise.
+  inChain(tabId, fn) {
+    return this.#queue(tabId, "close", () => fn());
+  }
+
   // C10 debugger.attach: {already: true} for a bridge tab. A second attach
   // while one runs (with no op of the tab between them) joins it: both get
   // its answer, the second with already true. precheck() runs in the op,
-  // before Chrome's attach; it throws to refuse the tab.
-  attach(tabId, precheck = () => {}) {
+  // before Chrome's attach; it throws to refuse the tab. refuse() runs right
+  // before Chrome's attach, with no await between: a text refuses the tab.
+  attach(tabId, precheck = () => {}, refuse = () => null) {
     const last = this.#chains.get(tabId);
     if (last && last.kind === "attach" && last.epoch === this.#epoch) return last.run.then(() => ({ already: true }));
     return this.#queue(tabId, "attach", async (epoch) => {
@@ -82,15 +100,35 @@ export class Attachments {
       if (this.#tabs.has(tabId)) return { already: true };
       await precheck();
       if (epoch !== this.#epoch) throw stale();
+      const no = refuse();
+      if (no) throw new Error(no);
       await call(() => this.#chrome.debugger.attach({ tabId }, PROTOCOL_VERSION));
+      this.#live.add(tabId);
       if (epoch !== this.#epoch) {
         // A link change came while the attach ran: no connection owns the tab.
-        await call(() => this.#chrome.debugger.detach({ tabId })).catch(() => {});
+        await this.#detachNow(tabId).catch(() => {});
         throw stale();
       }
       this.#tabs.add(tabId);
       return { already: false };
     });
+  }
+
+  #detachNow(tabId) {
+    return call(() => this.#chrome.debugger.detach({ tabId })).finally(() => this.#live.delete(tabId));
+  }
+
+  // The receiver's close of a tab that has no attachment of this worker: an
+  // attach for this close only, and its end (removals.js; in the tab's chain).
+  attachForClose(tabId) {
+    return call(() => this.#chrome.debugger.attach({ tabId }, PROTOCOL_VERSION)).then(() => {
+      this.#closing.add(tabId);
+    });
+  }
+
+  detachForClose(tabId) {
+    this.#closing.delete(tabId);
+    return call(() => this.#chrome.debugger.detach({ tabId }));
   }
 
   // C10's eager attach of a new tab, one op of the tab's chain: the attach and
@@ -122,6 +160,7 @@ export class Attachments {
           this.holds.drop(tabId);
           return { ...no, error: message(e) };
         }
+        if (!this.#gone.has(tabId)) this.#live.add(tabId);
         const held = await holding;
         if (this.#gone.has(tabId)) {
           this.holds.drop(tabId);
@@ -130,7 +169,7 @@ export class Attachments {
         if (epoch !== this.#epoch) {
           // A link change came while the attach ran: no connection owns the tab.
           this.holds.drop(tabId);
-          await call(() => this.#chrome.debugger.detach({ tabId })).catch(() => {});
+          await this.#detachNow(tabId).catch(() => {});
           return no;
         }
         this.#tabs.add(tabId);
@@ -156,7 +195,7 @@ export class Attachments {
       if (!this.#tabs.has(tabId)) return null;
       this.#tabs.delete(tabId);
       await this.holds.release(tabId, false); // the relay takes no request of a tab that it detaches
-      await call(() => this.#chrome.debugger.detach({ tabId }));
+      await this.#detachNow(tabId);
       return null;
     });
   }
@@ -166,6 +205,8 @@ export class Attachments {
   dropped(tabId) {
     if (this.#eager.has(tabId)) this.#gone.add(tabId);
     this.holds.drop(tabId);
+    this.#live.delete(tabId);
+    this.#closing.delete(tabId);
     return this.#tabs.delete(tabId);
   }
 
@@ -175,14 +216,16 @@ export class Attachments {
   // that started again knows no bridge tabs), except the restore tab of a
   // running import. Errors are ignored. The detaches go in the tabs' chains,
   // so an attach of the new connection runs after them; a tab that the new
-  // connection attaches, or whose op still runs, keeps its state.
+  // connection attaches, or whose op still runs, keeps its state. So the
+  // attach of a receiver's close that runs is never detached: the detach of
+  // a bridge tab goes into the chain after the close.
   async reset() {
     this.#epoch += 1;
     this.attachNew = false;
     this.holds.releaseAll();
     const known = [...this.#tabs];
     this.#tabs.clear();
-    const quiet = (tabId) => this.#queue(tabId, "detach", () => call(() => this.#chrome.debugger.detach({ tabId }))).catch(() => {});
+    const quiet = (tabId) => this.#queue(tabId, "detach", () => this.#detachNow(tabId)).catch(() => {});
     const detaching = known.map(quiet);
     let targets = [];
     try {

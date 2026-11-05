@@ -9,7 +9,10 @@ import { Bridge, BRIDGE_VERSION, CONTENT_TYPES, OPS, WAIT_DEFAULT_MS, WAIT_MAX_M
 import { attachments } from "../agent/attach.js";
 import { HOLD_MAX_MS, HOLD_FORCE_MS } from "../agent/hold.js";
 import { ReceiverLink } from "../agent/link.js";
-import { applyAllowlist } from "../agent/dnr.js";
+import { mainOps, setScopes } from "../agent/allowlist.js";
+import { receiver } from "../agent/receiver.js";
+import { REMOVAL_WAIT_MS } from "../agent/removals.js";
+import { RESTORE_MAX_MS, TOMBSTONE_MS } from "../agent/tabmap.js";
 import { MAX_RESULT, MAX_TO_DAEMON, PART_BYTES, RESULT_PART_BYTES, splitParts } from "../agent/wire.js";
 import { makeFakeChrome } from "./fake-chrome.mjs";
 
@@ -26,10 +29,15 @@ const NAV = {
   },
 };
 
-async function setup({ navigator = NAV, allowlist = V.allowlist, tabs = [] } = {}) {
+// Wired as agent/sw.js wires it: the worker's start (the cleanup, the removal of every session rule
+// and the restore of the map from its copy) before the native port connects. scopes: the receiver's
+// last applied set_scopes (the vector's setScopes by default; null for none). copy: the
+// chrome.storage.session copy of the map that the worker restores.
+async function setup({ navigator = NAV, scopes = V.setScopes, tabs = [], copy = null } = {}) {
   const f = makeFakeChrome();
   f.manifest = { version: "0.2.0" };
   f.setTabs(tabs);
+  if (copy) f.storage_.session = structuredClone(copy);
   const timers = [];
   const setTimer = (fn, ms) => {
     const t = { fn, ms, cleared: false };
@@ -39,13 +47,14 @@ async function setup({ navigator = NAV, allowlist = V.allowlist, tabs = [] } = {
   const clearTimer = (t) => {
     if (t) t.cleared = true;
   };
-  const link = new ReceiverLink(f.chrome, { main: {}, bridge: (req) => bridge.handle(req) }, { onLinkChange: () => bridge.reset() });
+  const link = new ReceiverLink(f.chrome, { main: mainOps(f.chrome), bridge: (req) => bridge.handle(req) }, { onLinkChange: () => bridge.reset() });
   const bridge = new Bridge(f.chrome, link, { setTimer, clearTimer, navigator });
   await bridge.reset(); // the worker's start
+  await receiver(f.chrome).startup();
   link.start();
   const port = () => f.ports.at(-1);
   port().fireMessage({ t: "link", up: true });
-  if (allowlist) await applyAllowlist(f.chrome, allowlist);
+  if (scopes) await setScopes(f.chrome, scopes);
   await flush();
   const send = (req) => {
     for (const p of splitParts(req.id, req, PART_BYTES, "bridge")) port().fireMessage(p);
@@ -60,47 +69,45 @@ async function setup({ navigator = NAV, allowlist = V.allowlist, tabs = [] } = {
   };
   const evs = () => port().posted.filter((m) => m.t === "ev");
   const errorOf = (req) => bridge.handle(req).then(() => null, (e) => e.message);
-  return { f, link, bridge, timers, port, send, answer, resOf, evs, errorOf, att: attachments(f.chrome) };
+  return { f, link, bridge, timers, port, send, answer, resOf, evs, errorOf, att: attachments(f.chrome), r: receiver(f.chrome) };
 }
 // The chrome calls since mark, without the port's posts.
 const callsSince = (f, mark) => f.calls.slice(mark).filter(([p]) => p !== "port.postMessage");
 // The CDP commands since mark, as [method, params].
 const cmds = (f, mark) => callsSince(f, mark).filter(([p]) => p === "debugger.sendCommand").map(([, a]) => [a[1], a[2]]);
 
-// Since board ab-v16.30 the vectors hold the per-scope contract (docs/protocol.md, the intro and
-// C10's "Each tab's scope"): tabs.create and windows.create take the scope arg. The receiver meets
-// that from part 1a (board ab-v16.31) on. Until then the vectors of these two ops run as todo tests:
-// they report, and they do not fail the run. When OPS gives tabs.create the kind scope, PENDING_1A
-// is false and they are plain tests. Part 1a then removes PENDING_1A, and it also changes the
-// one-arg tabs.create and windows.create cases of the kinds test below.
-const PENDING_1A = OPS["tabs.create"].kinds.includes("scope") ? false : "board ab-v16.31 (part 1a): tabs.create and windows.create take the scope arg";
+// The vectors hold the per-scope contract (docs/protocol.md, the intro and C10's "Each tab's scope"):
+// tabs.create and windows.create take the scope arg, bridge.tabScopes is an op, tabs.remove is the
+// receiver's close, and a tab of the orphan set gets not an agent tab. The receiver meets them from
+// part 1a (board ab-v16.31) on.
 const SCOPED_OPS = new Set(["tabs.create", "windows.create"]);
 const scoped = (v) => SCOPED_OPS.has(v.req.op);
-// Since board ab-v16.41 the vectors also hold the op bridge.tabScopes (C10, the orphan-tabs rules), which the
-// receiver gets in part 1a too. Until then its vectors run as todo tests in the same way: when OPS has the op,
-// PENDING_TAB_SCOPES is false. Part 1a then removes PENDING_TAB_SCOPES, and its test puts the vector's tabs
-// (9 and 12, scope ab-lead) into the map first.
-// The no-list vectors (b38 to b40, no list for this scope) are scoped ones. Today's setup applies no setScopes,
-// so they would also pass for a receiver that ignores it: part 1a's setup must apply the vector's setScopes,
-// and keep a positive tabs.create of a scope with a list (ab-lead) in the same setup (review-17 L8).
-// The request vector of tabs.remove holds the receiver's close of the per-scope build (Target.closeTarget
-// through chrome.debugger, board ab-v16.41): it runs with the scoped ones, under PENDING_1A. Part 1a's setup
-// for it: debugger.getTargets gives the target id D8E9F0 for tab 8, tab 8 is open with one other tab (so the
-// window rule opens no about:blank), and a tabs.onRemoved of tab 8 comes (the fake timers never fire, so the
-// item would wait for ever). Until part 1a the plain test runs the same vector with today's chrome call,
-// its chromeToday (chrome.tabs.remove), so today's good path of the op keeps a plain test (review-17b N5).
-// The bad request vectors with "perScope": true (b41 to b44: an op of a tab of the orphan set gets not an agent
-// tab) run with the scoped ones too. Part 1a's setup for them puts tab 13 into the receiver's orphan set.
-// The request vectors with "perScope": true (board ab-v16.48, review-17f note 7: debugger.detach, tabs.get and
-// bridge.release of tab 13 stay allowed) run with the scoped ones under PENDING_1A, with the same setup of tab 13.
-// Today's receiver has no orphan set and meets them too, so until part 1a the plain test runs them as well.
-// Tab 13 of the debugger.detach vector ("bridgeTab": true) is still a bridge tab: requestVectors attaches it first, and
-// part 1a's setup attaches it before it puts the tab into the orphan set.
-const PENDING_TAB_SCOPES = Object.hasOwn(OPS, "bridge.tabScopes") ? false : "board ab-v16.31 (part 1a): the op bridge.tabScopes";
 const NEW_OPS = new Set(["bridge.tabScopes"]);
 const newOp = (v) => NEW_OPS.has(v.req.op);
 const PER_SCOPE_REQUESTS = new Set(["tabs.remove"]);
 const perScopeRequest = (v) => scoped(v) || PER_SCOPE_REQUESTS.has(v.req.op) || v.perScope === true;
+// Tab 13 of the vectors is in the receiver's orphan set: a tab that a sweep item did not close. The
+// setup makes it so: tab 13 has scope md-gone in the map (from the copy), and its close fails (no
+// target, and the fallback's chrome.tabs.remove is refused) at the vector's setScopes, which gives
+// md-gone no list. withAttach: tab 13 is attached first (an attach from before it joined the set).
+async function orphanSetup({ withAttach = false, tabs = [] } = {}) {
+  const s = await setup({
+    scopes: null,
+    tabs: [{ id: 7, windowId: 1, url: "https://a.example/" }, { id: 13, windowId: 1, url: "https://a.example/old" }, ...tabs],
+    copy: { "tab:13": "md-gone" },
+  });
+  if (withAttach) assert.equal((await s.answer({ t: "req", id: "attach-13", op: "debugger.attach", args: [13] })).ok, true, "the attach of tab 13");
+  s.f.impl["debugger.getTargets"] = async () => [];
+  s.f.impl["tabs.remove"] = async (id) => {
+    if (id === 13) throw new Error("Tab 13 holds a dialog");
+  };
+  await setScopes(s.f.chrome, V.setScopes);
+  delete s.f.impl["debugger.getTargets"];
+  delete s.f.impl["tabs.remove"];
+  assert.equal(s.r.map.isOrphan(13), true, "tab 13 is in the orphan set");
+  assert.equal(s.r.map.has(13), false, "and not in the map");
+  return s;
+}
 
 test("the bridge's constants and ops are C10's", () => {
   const K = V.constants;
@@ -110,9 +117,8 @@ test("the bridge's constants and ops are C10's", () => {
   assert.equal(MAX_RESULT, K.MAX_RESULT);
   assert.equal(RESULT_PART_BYTES, K.RESULT_PART_BYTES);
   assert.deepEqual(CONTENT_TYPES, V.contentTypes);
-  const known = V.ops.filter((o) => !(PENDING_TAB_SCOPES && NEW_OPS.has(o.op)));
-  assert.deepEqual(Object.keys(OPS).sort(), known.map((o) => o.op).sort(), "the ops of C10 and no other (no cookie op)");
-  for (const o of known.filter((x) => !SCOPED_OPS.has(x.op))) {
+  assert.deepEqual(Object.keys(OPS).sort(), V.ops.map((o) => o.op).sort(), "the ops of C10 and no other (no cookie op)");
+  for (const o of V.ops) {
     const spec = OPS[o.op];
     assert.deepEqual(spec.kinds, o.kinds, o.op);
     assert.equal(spec.required, o.required, o.op);
@@ -121,24 +127,18 @@ test("the bridge's constants and ops are C10's", () => {
   }
 });
 
-test("tabs.create and windows.create are C10's: the scope arg", { todo: PENDING_1A }, () => {
-  for (const o of V.ops.filter((x) => SCOPED_OPS.has(x.op))) {
-    const spec = OPS[o.op];
-    assert.deepEqual(spec.kinds, o.kinds, o.op);
-    assert.equal(spec.required, o.required, o.op);
-  }
-});
-
-async function requestVectors(vectors) {
-  const s = await setup({ tabs: [{ id: 7, windowId: 1, url: "https://a.example/" }, { id: 13, windowId: 1, url: "https://a.example/old" }] });
-  // A vector with "bridgeTab": true needs its tab attached first: tab 13's attach from before it joined the orphan set.
-  for (const tabId of new Set(vectors.filter((v) => v.bridgeTab).map((v) => v.req.args[0]))) {
-    assert.equal((await s.answer({ t: "req", id: `attach-${tabId}`, op: "debugger.attach", args: [tabId] })).ok, true, `the attach of tab ${tabId} before its vectors`);
-  }
+// Each vector in one setup: its chrome call answers the vector's data, and the vector's res comes.
+// before(v, s) and during(v, s) prepare a vector and act while its request runs.
+async function requestVectors(s, vectors, { before = () => {}, during = async () => {} } = {}) {
   for (const v of vectors) {
+    await before(v, s);
     if (v.chrome) s.f.impl[v.chrome[0]] = async () => structuredClone(v.res.data);
     const mark = s.f.calls.length;
-    assert.deepEqual(await s.answer(v.req), v.res, v.req.id);
+    s.send(v.req);
+    await flush();
+    await during(v, s);
+    await flush();
+    assert.deepEqual(s.resOf(v.req.id), [v.res], v.req.id);
     if (v.chrome) {
       assert.ok(callsSince(s.f, mark).some(([p, a]) => p === v.chrome[0] && isDeepStrictEqual(a, v.chrome[1])), `${v.req.id}: ${v.chrome[0]}`);
       delete s.f.impl[v.chrome[0]];
@@ -146,30 +146,43 @@ async function requestVectors(vectors) {
   }
 }
 
-const today = (v) => (PENDING_1A && v.chromeToday ? { ...v, chrome: v.chromeToday } : v);
-test("each request vector makes its chrome call and gets the vector's res", () =>
-  requestVectors(V.requests.filter((v) => !scoped(v) && !newOp(v) && (PENDING_1A ? true : !perScopeRequest(v))).map(today)));
+test("each request vector makes its chrome call and gets the vector's res", async () => {
+  const s = await setup({ tabs: [{ id: 7, windowId: 1, url: "https://a.example/" }] });
+  await requestVectors(s, V.requests.filter((v) => !newOp(v) && !perScopeRequest(v)));
+});
 
-test("bridge.tabScopes is C10's op, and its request vector gets the vector's res", { todo: PENDING_TAB_SCOPES }, async () => {
+test("bridge.tabScopes is C10's op, and its request vector gets the vector's res: tabs 9 and 12 of the map (restored from the copy)", async () => {
   const o = V.ops.find((x) => x.op === "bridge.tabScopes");
   assert.ok(Object.hasOwn(OPS, o.op), "the receiver has the op");
   assert.deepEqual(OPS[o.op].kinds, o.kinds);
   assert.equal(OPS[o.op].required, o.required);
   assert.equal(OPS[o.op].wait, V.constants[o.defaultWait]);
-  await requestVectors(V.requests.filter(newOp));
+  const s = await setup({ tabs: [{ id: 9, windowId: 2, url: "about:blank" }, { id: 12, windowId: 2, url: "about:blank" }], copy: { "tab:9": "ab-lead", "tab:12": "ab-lead" } });
+  await requestVectors(s, V.requests.filter(newOp));
 });
 
-test("each request vector of the per-scope build: tabs.create and windows.create (the scope arg), tabs.remove (the receiver's close), the allowed ops of the orphan set", { todo: PENDING_1A }, () => requestVectors(V.requests.filter(perScopeRequest)));
-
-async function badRequestVectors(vectors) {
-  const s = await setup({
-    tabs: [
-      { id: 5, windowId: 1, url: "https://a.example/__agentwatch_restore_0123456789abcdef__" },
-      { id: 6, windowId: 1, url: "chrome-extension://abcdefghijklmnopabcdefghijklmnop/page.html" },
-      { id: 7, windowId: 1, url: "https://a.example/" },
-      { id: 9, windowId: 1, url: "https://a.example/b" },
-    ],
+// tabs.create of tab 8 and windows.create of tab 9 (scope ab-lead); tabs.remove of tab 8 by the
+// receiver's close (debugger.getTargets gives target D8E9F0 for tab 8; tab 8 is open with tab 7, so
+// the window rule opens no about:blank; a tabs.onRemoved of tab 8 comes, as the fake timers never
+// fire); debugger.detach, tabs.get and bridge.release of tab 13 of the orphan set.
+test("each request vector of the per-scope build: tabs.create and windows.create (the scope arg), tabs.remove (the receiver's close), the allowed ops of the orphan set", async () => {
+  const s = await orphanSetup({ withAttach: true, tabs: [{ id: 8, windowId: 1, url: "about:blank" }] });
+  s.f.targets_ = [{ id: "D8E9F0", tabId: 8, type: "page", attached: false }];
+  await requestVectors(s, V.requests.filter(perScopeRequest), {
+    during: async (v) => {
+      if (v.req.op === "tabs.remove") {
+        assert.deepEqual(s.resOf(v.req.id), [], "the close ends at the tab's tabs.onRemoved");
+        assert.equal(s.r.removals.isPending(8), true, "a pending close");
+        s.f.chrome.tabs.onRemoved.fire(8, { windowId: 1, isWindowClosing: false });
+      }
+    },
   });
+  assert.ok(!s.f.callsTo("tabs.remove").some(([id]) => id === 8), "no chrome.tabs.remove of tab 8: the receiver's close");
+  assert.deepEqual(s.r.map.list(), [{ tabId: 9, scope: "ab-lead" }], "tab 8 left the map at its close; tab 9 has its scope");
+  assert.deepEqual(s.f.storage_.session, { "tab:9": "ab-lead" }, "the copy");
+});
+
+async function badRequestVectors(s, vectors) {
   s.att.markRestore(5); // the restore tab of a running import
   for (const v of vectors) {
     const mark = s.f.calls.length;
@@ -179,9 +192,25 @@ async function badRequestVectors(vectors) {
   }
 }
 
-test("each bad request vector gets its error, and its op never reaches Chrome", () => badRequestVectors(V.badRequests.filter((v) => !scoped(v) && !v.perScope)));
+const BAD_TABS = [
+  { id: 5, windowId: 1, url: "https://a.example/__agentwatch_restore_0123456789abcdef__" },
+  { id: 6, windowId: 1, url: "chrome-extension://abcdefghijklmnopabcdefghijklmnop/page.html" },
+  { id: 9, windowId: 1, url: "https://a.example/b" },
+];
 
-test("each bad request vector of the per-scope build: tabs.create and windows.create (the scope arg, no list), the orphan set", { todo: PENDING_1A }, () => badRequestVectors(V.badRequests.filter((v) => scoped(v) || v.perScope)));
+test("each bad request vector gets its error, and its op never reaches Chrome", async () =>
+  badRequestVectors(await setup({ tabs: [{ id: 7, windowId: 1, url: "https://a.example/" }, ...BAD_TABS] }), V.badRequests.filter((v) => !scoped(v) && !v.perScope)));
+
+// The setup applies the vector's setScopes (md-gone has no list, ab-lead has md) and keeps a positive
+// tabs.create of ab-lead, so a receiver that ignored set_scopes would fail (review-17 L8). Tab 13 is in
+// the orphan set.
+test("each bad request vector of the per-scope build: tabs.create and windows.create (the scope arg, no list), the orphan set", async () => {
+  const s = await orphanSetup({ tabs: BAD_TABS });
+  await badRequestVectors(s, V.badRequests.filter((v) => scoped(v) || v.perScope));
+  const ok = await s.answer({ t: "req", id: "good", op: "tabs.create", args: [{ url: "about:blank" }, V.scope] });
+  assert.equal(ok.ok, true, "a scope with a list gets its tab");
+  assert.equal(s.r.map.scopeOf(ok.data.id), V.scope);
+});
 
 test("the checks run in C10's order: the op, the args, the wait, the tab", async () => {
   const s = await setup();
@@ -195,17 +224,28 @@ test("the checks run in C10's order: the op, the args, the wait, the tab", async
   assert.equal(await s.errorOf({ op: "tabs.remove", args: [5], wait: 10 }), "not an agent tab");
   assert.equal(await s.errorOf({ op: "debugger.sendCommand", args: [{ tabId: 9 }, "Page.enable"], wait: null }), "bad wait");
   assert.equal(await s.errorOf({ op: "debugger.sendCommand", args: [{ tabId: 9 }, "Page.enable"] }), "not attached");
+  // The scope comes after the args and the wait: a bad scope is bad args, a scope with no list never reaches Chrome.
+  assert.equal(await s.errorOf({ op: "tabs.create", args: [{ url: "about:blank" }, "md-gone"], wait: 0 }), "bad wait");
+  assert.equal(await s.errorOf({ op: "tabs.create", args: [{ url: "about:blank" }, "md-gone"] }), "no list for this scope");
+});
+
+test("not an agent tab comes before not attached: a command of a tab of the orphan set that is not a bridge tab (vector b42)", async () => {
+  const s = await orphanSetup();
+  assert.equal(s.att.isBridgeTab(13), false);
+  assert.equal(await s.errorOf({ op: "debugger.sendCommand", args: [{ tabId: 13, sessionId: "S1" }, "Runtime.enable"] }), "not an agent tab", "a child session too");
+  assert.equal(await s.errorOf({ op: "debugger.detach", args: [13] }), null, "debugger.detach stays allowed");
 });
 
 test("the kinds of args: each case fits or gets bad args", async () => {
   const s = await setup({ tabs: [{ id: 1, url: "about:blank" }] });
   const fits = [
     ["debugger.getTargets", undefined],
-    ["tabs.create", [{ url: "HTTPS://A.example/x?y#z", active: true, windowId: 0, index: 2 }]],
-    ["tabs.create", [{ url: "about:blank" }]],
+    ["tabs.create", [{ url: "about:blank", active: true, windowId: 0, index: 2 }, "ab-lead"]],
+    ["tabs.create", [{ url: "about:blank" }, "ab-lead"]],
     ["tabs.query", [{ active: true, anything: [1] }]],
     ["windows.get", [1, { populate: true }]],
-    ["windows.create", [{ url: "http://a.example:8080/", left: -10, top: 0, width: 800, height: 600, state: "normal", focused: false }]],
+    ["windows.create", [{ url: "about:blank", left: -10, top: 0, width: 800, height: 600, state: "normal", focused: false }, "ab-lead"]],
+    ["windows.create", [{ url: "about:blank" }, "A.b_c-9"]],
     ["windows.update", [1, { state: "maximized" }]],
     ["contentSettings.set", ["camera", { primaryPattern: "*://*.a.example/*", setting: "block" }]],
     ["contentSettings.set", ["clipboard", { primaryPattern: "https://sub.a.example:8443/*", setting: "allow" }]],
@@ -225,17 +265,26 @@ test("the kinds of args: each case fits or gets bad args", async () => {
     ["debugger.sendCommand", [{ tabId: 1 }, ""]],
     ["debugger.sendCommand", [{ tabId: 1 }, "Page.enable", []]],
     ["debugger.sendCommand", [{ tabId: 1 }, "Page.enable", null]],
-    ["tabs.create", [{ url: "about:blank#x" }]],
-    ["tabs.create", [{ url: "about:newtab" }]],
-    ["tabs.create", [{ url: "data:text/html,x" }]],
-    ["tabs.create", [{ url: "file:///etc/passwd" }]],
-    ["tabs.create", [{ url: "https:a.example" }]],
-    ["tabs.create", [{ url: "https://a.example/", windowId: -2 }]],
-    ["tabs.create", [{ url: "https://a.example/", active: 1 }]],
+    // A new tab or window opens at about:blank only, and names its scope (C10).
+    ["tabs.create", [{ url: "about:blank" }]],
+    ["tabs.create", [{ url: "about:blank#x" }, "ab-lead"]],
+    ["tabs.create", [{ url: "about:newtab" }, "ab-lead"]],
+    ["tabs.create", [{ url: "data:text/html,x" }, "ab-lead"]],
+    ["tabs.create", [{ url: "file:///etc/passwd" }, "ab-lead"]],
+    ["tabs.create", [{ url: "https:a.example" }, "ab-lead"]],
+    ["tabs.create", [{ url: "HTTPS://A.example/x?y#z" }, "ab-lead"]],
+    ["tabs.create", [{ url: "about:blank", windowId: -2 }, "ab-lead"]],
+    ["tabs.create", [{ url: "about:blank", active: 1 }, "ab-lead"]],
+    ["tabs.create", [{ url: "about:blank" }, "-ab"]],
+    ["tabs.create", [{ url: "about:blank" }, "x".repeat(65)]],
+    ["tabs.create", [{ url: "about:blank" }, null]],
     ["tabs.query", [null]],
     ["tabs.update", [1, { active: "yes" }]],
     ["tabs.update", [1, { active: true, muted: true }]],
-    ["windows.create", [{ url: "https://a.example/", width: "800" }]],
+    ["windows.create", [{ url: "about:blank" }]],
+    ["windows.create", [{ url: "http://a.example:8080/" }, "ab-lead"]],
+    ["windows.create", [{ url: "about:blank", width: "800" }, "ab-lead"]],
+    ["windows.create", [{ url: "about:blank" }, "ab lead"]],
     ["windows.update", [1, { focused: 1 }]],
     ["windows.update", [1, { type: "popup" }]],
     ["contentSettings.set", ["location", { primaryPattern: "https://*.example/*", setting: "allow" }]],
@@ -255,18 +304,26 @@ test("the kinds of args: each case fits or gets bad args", async () => {
   for (const [op, args] of bad) assert.equal(await s.errorOf({ op, args }), "bad args", `${op} ${JSON.stringify(args)}`);
 });
 
-test("contentDetails is checked against the applied allowlist: none before a set_allowlist, a shrink at once", async () => {
-  const s = await setup({ allowlist: null });
+test("contentDetails is checked against the union of the lists of the last applied set_scopes: none before one, a shrink at once", async () => {
+  const s = await setup({ scopes: null });
   const req = (host) => ({ op: "contentSettings.set", args: ["location", { primaryPattern: `https://${host}/*`, setting: "allow" }] });
-  assert.equal(await s.errorOf(req("a.example")), "bad args", "no list applied since the worker started");
-  await applyAllowlist(s.f.chrome, ["a.example", "b.example"]);
-  assert.equal(await s.errorOf(req("b.example")), null);
+  assert.equal(await s.errorOf(req("a.example")), "bad args", "no set_scopes applied since the worker started");
+  // Any list counts, also one that no scope names: the receiver does not know which scope calls.
+  await setScopes(s.f.chrome, { lists: { md: ["a.example", "z.example"], other: ["b.example"], unused: ["c.example"] }, scopes: { "md-lead": "md" }, default: null });
+  for (const h of ["a.example", "b.example", "c.example", "x.c.example", "z.example"]) assert.equal(await s.errorOf(req(h)), null, h);
+  assert.equal(await s.errorOf(req("d.example")), "bad args");
+  // A refused list counts not. (md loses z.example, so the workers go, and that fails here.)
   s.f.impl["browsingData.remove"] = async () => {
     throw new Error("busy");
   };
-  await assert.rejects(applyAllowlist(s.f.chrome, ["a.example"]));
-  assert.equal(await s.errorOf(req("b.example")), "bad args", "the rule in force counts, also when the call then failed");
+  await assert.rejects(setScopes(s.f.chrome, { lists: { md: ["a.example"], "bad name": ["b.example"] }, scopes: { "md-lead": "md" }, default: null }), /service worker removal failed/);
+  assert.equal(await s.errorOf(req("b.example")), "bad args", "the new lists count at once, also when the call then failed");
   assert.equal(await s.errorOf(req("a.example")), null);
+  // A set_scopes that is not applied (scopes is not an object) is no reference: the last applied one stays.
+  delete s.f.impl["browsingData.remove"];
+  await setScopes(s.f.chrome, { lists: { md: ["e.example"] }, scopes: [], default: null });
+  assert.equal(await s.errorOf(req("a.example")), null);
+  assert.equal(await s.errorOf(req("e.example")), "bad args");
 });
 
 test("the wait: each op's default, a request's own wait, and timeout when it runs out; a late result is dropped", async () => {

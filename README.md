@@ -225,31 +225,41 @@ and no prompt showed.
   subdomains, writes the sent ones, writes the page storage on a restore page
   that the site never receives, and then opens the site. The site's first script
   sees the sent state. The answer holds counts and names only.
-- **The allowlist block:** a static rule blocks every top-level navigation,
-  and one dynamic rule allows the allowlist's domains and their subdomains. So
-  the block holds from Chrome's first moment. In the same way, a second
-  static rule blocks every frame, `<object>` and `<embed>` document, and a
-  dynamic rule allows them in a tab whose top-level page is on the list. So a
-  page of an allowlisted site still loads frames and subresources from any
-  host, and a tab whose top-level page is not on the list (for example
-  `about:blank` with content that a CDP client wrote) loads none. When the
-  list changes, the receiver closes the tabs whose
-  site left it, and it reports each blocked navigation (the host only) to the
-  daemon. An entry that is not a valid host is refused and counted in the
-  answer; the valid entries of the same list still apply. A site's service
-  worker answers a navigation before the block sees it (measured), so when
-  the list loses a site, the receiver removes every service worker of the
-  profile before it closes the tabs; the sites that stay register theirs
-  again on their next visit.
+- **The allowlist block, one list per scope (contract C4 `set_scopes`, C5):**
+  a static rule blocks every top-level navigation, so the block holds from
+  Chrome's first moment. Each agentwatch session is a scope, and each scope
+  has at most one list. The receiver keeps the scope of each tab (a map, with
+  a copy in `chrome.storage.session` that a restarted service worker reads
+  back), and for each list in use two session rules allow its domains and
+  their subdomains in the tabs of that list only. In the same way, a second
+  static rule blocks every frame, `<object>` and `<embed>` document, and the
+  list's frame rule allows them in its tabs whose top-level page is on the
+  list. So a page of a listed site still loads frames and subresources from
+  any host, and a tab whose top-level page is not on its list (for example
+  `about:blank` with content that a CDP client wrote) loads none. A tab of no
+  scope, and a tab whose scope has no list, matches no rule. When the lists
+  change, the receiver closes each tab whose site left its list, and every tab
+  of a scope that has no list any more (a session that ended), in one removal
+  queue that never closes the browser's last window; it reports each blocked
+  navigation (the host only) to the daemon. An entry that is not a valid host
+  is refused and counted in the answer; the valid entries of the same list
+  still apply. A site's service worker answers a navigation before the block
+  sees it (measured), so when a scope's list loses a site, the receiver
+  removes every service worker of the profile before it closes the tabs; the
+  sites that stay register theirs again on their next visit. A send's restore
+  tab gets two rules of its own for the sent domain, so a send works also for
+  a site that is on no list.
 - **The bridge (agent mode, contract C10):** on a second channel of the same
-  native link, agent-browser's relay calls a fixed list of 19 `chrome.*`
-  operations (attach, CDP commands, tabs, windows, downloads, content
-  settings) and gets a fixed list of Chrome events. The bridge checks each
-  request before it reaches Chrome: a new tab or window opens only
-  `about:blank` or an `http:` or `https:` URL (never a `chrome:`, `file:` or
-  `javascript:` URL); it never touches the restore tab of a running send,
-  sets content settings only for allowlisted hosts, and has no cookie
-  operation. A navigation is a CDP command (`Page.navigate`), which the
+  native link, agent-browser's relay calls a fixed list of 20 operations
+  (attach, CDP commands, tabs, windows, downloads, content settings, the
+  tab-to-scope map) and gets a fixed list of Chrome events. The bridge checks
+  each request before it reaches Chrome: a new tab or window opens only
+  `about:blank` and names its scope (never a site, a `chrome:`, `file:` or
+  `javascript:` URL); it never touches the restore tab of a running send or a
+  tab of an ended session, sets content settings only for hosts that a list
+  covers, and has no cookie operation. A close of a tab is the receiver's
+  own (`Target.closeTarget`, no "Leave site?" dialog), except a client's
+  `Page.close`. A navigation is a CDP command (`Page.navigate`), which the
   bridge passes on: the relay refuses a navigation to such a URL before it
   reaches the bridge (contract C11). A top-level navigation that the agent
   package starts sends `Sec-Fetch-Site: none`, as a typed URL does (a third
@@ -269,6 +279,7 @@ and no prompt showed.
 | `cookies` | to remove the site's old cookies and write the sent ones |
 | `scripting` | to write the page storage on the restore page and then open the site |
 | `tabs` | to open the restore tab and to close the tabs that a send or a list change makes stale |
+| `storage` | to keep the copy of the tab-to-scope map in `chrome.storage.session` (only for this browser run), so a restarted service worker knows each tab's scope |
 | `webNavigation` | to know when the restore page has loaded, and to report a blocked navigation |
 | `declarativeNetRequest` | the allowlist block, the frame rule and the navigation header |
 | `nativeMessaging` | the link to the agentwatch daemon |

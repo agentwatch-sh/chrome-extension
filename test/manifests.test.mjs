@@ -82,17 +82,18 @@ test("the operator package has no control permission, no debugger and no inbound
 
 test("agent manifest", () => {
   assert.equal(receiver.manifest_version, 3);
-  assert.equal(receiver.version, "0.2.0");
+  assert.equal(receiver.version, "0.3.0");
   assert.equal(receiver.name, "agentwatch \u2014 agent mode (agent browser only)");
   // The frame rule's topDomains (C5 rule 4) needs Chrome 141; 145 is the safe minimum.
   assert.equal(receiver.minimum_chrome_version, "145");
   assert.equal(typeof receiver.description, "string");
   assert.ok(receiver.description.length <= 132, "Chrome's description limit");
-  // Two-modes design, section 3.1; downloads and contentSettings for the bridge (C10).
+  // Two-modes design, section 3.1; downloads and contentSettings for the bridge (C10); storage for
+  // the copy of the tab-to-scope map in chrome.storage.session (C10, each tab's scope).
   assert.deepEqual(receiver.permissions, [
     "cookies", "scripting", "tabs", "webNavigation",
     "declarativeNetRequest", "nativeMessaging", "debugger", "browsingData",
-    "downloads", "contentSettings",
+    "downloads", "contentSettings", "storage",
   ]);
   assert.equal("optional_permissions" in receiver, false);
   assert.deepEqual(receiver.host_permissions, ["<all_urls>"]);

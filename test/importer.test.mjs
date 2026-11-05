@@ -3,8 +3,25 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { importState } from "../agent/importer.js";
 import { attachments } from "../agent/attach.js";
+import { importRules } from "../agent/dnr.js";
 import { replacePageState } from "../agent/page-state.js";
-import { makeFakeChrome } from "./fake-chrome.mjs";
+import { makeFakeChrome as makeFake } from "./fake-chrome.mjs";
+
+// The fake chrome, where a tab of tabs.create has a target: the receiver's close (C10) of the
+// restore tab is Target.closeTarget, and the tab's tabs.onRemoved comes.
+function makeFakeChrome() {
+  const f = makeFake();
+  f.trackNewTabs = true;
+  return f;
+}
+// The tabs that the receiver's close closed: by Target.closeTarget (its tab), or by its fallback,
+// chrome.tabs.remove.
+const closesOf = (f) => [
+  ...f.callsTo("debugger.sendCommand").filter((a) => a[1] === "Target.closeTarget").map((a) => a[0].tabId),
+  ...f.callsTo("tabs.remove").map((a) => a[0]),
+];
+// The session rules of the import (C5 rules 6 and 7) that each updateSessionRules call adds or removes.
+const ruleCalls = (f) => f.callsTo("declarativeNetRequest.updateSessionRules").map(([d]) => d);
 
 // Made-up values only. No error text or rejection may ever hold SECRET.
 const SECRET = "SENTINEL-not-a-real-value-7f3a";
@@ -119,11 +136,13 @@ test("the import follows C6 in order and sums the counts", async () => {
 
   const relevant = f.calls.filter(([p]) => !p.startsWith("runtime.") && !p.startsWith("port."));
   assert.deepEqual(relevant.map(describeCall), [
-    "tabs.query",
+    "tabs.query", // the removal queue's item
+    "tabs.query", // the step's second read: no tab of the origin is open
     "cookies.getAll", "cookies.getAll",
     "cookies.remove", "cookies.remove",
     "cookies.set", "cookies.set",
     "tabs.create",
+    "declarativeNetRequest.updateSessionRules",
     "debugger.attach",
     "debugger.sendCommand Network.enable",
     "debugger.sendCommand Network.setBypassServiceWorker",
@@ -135,6 +154,7 @@ test("the import follows C6 in order and sums the counts", async () => {
     "debugger.sendCommand Fetch.disable",
     "debugger.detach",
     "scripting.executeScript func",
+    "declarativeNetRequest.updateSessionRules",
   ]);
 
   // Cookie reads: the domain, then every partition.
@@ -156,6 +176,10 @@ test("the import follows C6 in order and sums the counts", async () => {
   assert.deepEqual(createArgs, [{ url: "about:blank", active: true }]);
   const tabId = f.callsTo("tabs.update")[0][0];
   assert.equal(typeof tabId, "number");
+  // C6: the import's rules allow its domain in the restore tab from before its navigation, and they
+  // end after the tab's commit of the site's page (the fake commits state.url after the last script).
+  assert.deepEqual(ruleCalls(f), [{ removeRuleIds: [6, 7], addRules: importRules("app.localhost", tabId) }, { removeRuleIds: [6, 7] }]);
+  assert.deepEqual(f.sessionRules_, [], "no rule of the import is left");
   assert.deepEqual(f.callsTo("debugger.attach"), [[{ tabId }, "1.3"]]);
   assert.deepEqual(f.callsTo("tabs.update"), [[tabId, { url: R }]]);
 
@@ -205,9 +229,10 @@ test("the import follows C6 in order and sums the counts", async () => {
   }
 
   // The tab stays open on the site, and every listener is gone.
-  assert.equal(f.callsTo("tabs.remove").length, 0);
+  assert.deepEqual(closesOf(f), []);
   assert.equal(f.chrome.debugger.onEvent.listeners.length, 0);
   assert.equal(f.chrome.webNavigation.onCompleted.listeners.length, 0);
+  assert.equal(f.chrome.webNavigation.onCommitted.listeners.length, 0);
   assert.equal(f.chrome.webNavigation.onErrorOccurred.listeners.length, 0);
 });
 
@@ -217,7 +242,8 @@ test("every timer of an import is cleared when it ends", async () => {
   await importState(f.chrome, makeState(), opts(timers));
   assert.ok(timers.list.length > 0);
   assert.deepEqual(timers.list.filter((h) => !h.cleared), []);
-  assert.deepEqual([...new Set(timers.list.map((h) => h.ms))].sort((a, b) => a - b), [20000, 60000, 100000]);
+  // 4 s: the wait for the restore tab's commit, and the end of the import's rules.
+  assert.deepEqual([...new Set(timers.list.map((h) => h.ms))].sort((a, b) => a - b), [4000, 20000, 60000, 100000]);
 });
 
 test("the default nonce is 16 hex characters and differs per import", async () => {
@@ -303,16 +329,26 @@ test("a failing attach detaches nothing, closes the tab and rejects with attach"
   const [created] = f.calls.filter(([p]) => p === "tabs.create");
   assert.ok(created);
   assert.equal(f.callsTo("debugger.detach").length, 0);
+  // The receiver's close cannot attach either: its fallback removes the tab.
   assert.equal(f.callsTo("tabs.remove").length, 1);
   assert.equal(f.callsTo("debugger.sendCommand").length, 0);
   assert.equal(f.callsTo("tabs.update").length, 0);
+  assert.deepEqual(f.sessionRules_, [], "the cleanup removed the import's rules");
 });
 
 test("each later step names itself when it fails, and the tab is closed after a detach", async () => {
+  // A command that fails; the receiver's close of the restore tab (Target.closeTarget) still closes it.
+  const failing = (method) => (f) => {
+    f.impl["debugger.sendCommand"] = async (t, m) => {
+      if (m === method) throw new Error(SECRET);
+      if (m === "Target.closeTarget") f.closeTab(t.tabId);
+      return {};
+    };
+  };
   const cases = [
-    ["fetch enable", (f) => { f.impl["debugger.sendCommand"] = async (t, m) => { if (m === "Fetch.enable") throw new Error(SECRET); return {}; }; }],
-    ["fetch enable", (f) => { f.impl["debugger.sendCommand"] = async (t, m) => { if (m === "Network.setBypassServiceWorker") throw new Error(SECRET); return {}; }; }],
-    ["fetch enable", (f) => { f.impl["debugger.sendCommand"] = async (t, m) => { if (m === "Network.enable") throw new Error(SECRET); return {}; }; }],
+    ["fetch enable", failing("Fetch.enable")],
+    ["fetch enable", failing("Network.setBypassServiceWorker")],
+    ["fetch enable", failing("Network.enable")],
     ["restore page", (f) => { f.pageResult = { fatal: "not the restore page" }; }],
     ["codec", (f) => { f.impl["scripting.executeScript"] = async (inj) => { if (inj.files) throw new Error(SECRET); return [{ result: undefined }]; }; }],
     ["write storage", (f) => { f.impl["scripting.executeScript"] = async (inj) => { if (inj.args) throw new Error("x " + inj.args[0]); return [{ result: undefined }]; }; }],
@@ -324,7 +360,8 @@ test("each later step names itself when it fails, and the tab is closed after a 
     const tabIdOf = () => f.callsTo("debugger.attach")[0][0].tabId;
     await rejectsWith(importState(f.chrome, makeState(), opts()), step);
     assert.deepEqual(f.callsTo("debugger.detach"), [[{ tabId: tabIdOf() }]], step);
-    assert.deepEqual(f.callsTo("tabs.remove"), [[tabIdOf()]], step);
+    assert.deepEqual(closesOf(f), [tabIdOf()], step);
+    assert.deepEqual(f.sessionRules_, [], step);
     assert.equal(f.chrome.debugger.onEvent.listeners.length, 0, step);
     assert.equal(f.chrome.webNavigation.onCompleted.listeners.length, 0, step);
   }
@@ -339,7 +376,7 @@ test("a failing detach or navigate rejects with its name and closes the tab", as
     await rejectsWith(importState(f.chrome, makeState(), opts()), "detach");
     // The step's detach and the cleanup's detach both ran; the tab is closed.
     assert.equal(f.callsTo("debugger.detach").length, 2);
-    assert.equal(f.callsTo("tabs.remove").length, 1);
+    assert.equal(closesOf(f).length, 1);
   }
   {
     const f = makeFakeChrome();
@@ -350,7 +387,8 @@ test("a failing detach or navigate rejects with its name and closes the tab", as
     await rejectsWith(importState(f.chrome, makeState(), opts()), "navigate");
     // Already detached: the cleanup closes the tab only.
     assert.equal(f.callsTo("debugger.detach").length, 1);
-    assert.equal(f.callsTo("tabs.remove").length, 1);
+    assert.equal(closesOf(f).length, 1);
+    assert.deepEqual(f.sessionRules_, []);
   }
 });
 
@@ -362,7 +400,7 @@ test("a navigation error on the restore page rejects with restore page", async (
   };
   await rejectsWith(importState(f.chrome, makeState(), opts()), "restore page");
   assert.equal(f.callsTo("debugger.detach").length, 1);
-  assert.equal(f.callsTo("tabs.remove").length, 1);
+  assert.equal(closesOf(f).length, 1);
   assert.equal(f.chrome.webNavigation.onErrorOccurred.listeners.length, 0);
 });
 
@@ -383,6 +421,11 @@ test("other tabs, other frames and other URLs do not complete the restore page",
       setTimeout(() => f.pauseRequest(tabId, props.url), 0);
     }, 0);
     return { id: tabId };
+  };
+  // The restore tab's commit after the last step ends the rules (autoNavigate is off here).
+  f.impl["scripting.executeScript"] = async (inj) => {
+    if (inj.func && inj.func.name === "leaveRestorePage") setTimeout(() => f.chrome.webNavigation.onCommitted.fire({ tabId: inj.target.tabId, frameId: 0, url: inj.args[0] }), 0);
+    return [{ frameId: 0, result: inj.func && inj.func.name === "replacePageState" ? structuredClone(f.pageResult) : undefined }];
   };
   const result = await importState(f.chrome, makeState(), opts());
   assert.equal(result.errors.length, 0);
@@ -409,10 +452,12 @@ test("a step that passes its 20 s deadline fails with its name; a late tab is cl
   assert.ok(stepTimer);
   stepTimer.fn();
   await rejectsWith(p, "open tab");
-  assert.equal(f.callsTo("tabs.remove").length, 0);
+  assert.deepEqual(closesOf(f), []);
+  f.targets_.push({ id: "T77", tabId: 77, type: "page", attached: false });
+  f.created_.set(77, 1);
   resolveCreate({ id: 77 });
   await settle();
-  assert.deepEqual(f.callsTo("tabs.remove"), [[77]]);
+  assert.deepEqual(closesOf(f), [77], "the late tab closes in the removal queue, by the receiver's close");
   assert.equal(attachments(f.chrome).isRestoreTab(77), false, "the late tab is no restore tab of a running import");
 });
 
@@ -426,7 +471,9 @@ test("the import's flag is set from before its tabs.create until it knows the ta
     seen.push(["create", att.restoreOpening]);
     return { id: 41, ...props };
   };
-  f.impl["debugger.attach"] = async ({ tabId }) => seen.push(["attach", att.restoreOpening, att.isRestoreTab(tabId)]);
+  f.impl["debugger.attach"] = async ({ tabId }) => {
+    seen.push(["attach", att.restoreOpening, att.isRestoreTab(tabId)]);
+  };
   assert.equal(att.restoreOpening, false);
   await importState(f.chrome, makeState(), opts());
   assert.deepEqual(seen, [["create", true], ["attach", false, true]], "the tab is marked when the flag clears");
@@ -462,7 +509,7 @@ test("the whole import has one deadline; the running step is named", async () =>
   whole.fn();
   await rejectsWith(p, "restore page");
   assert.equal(f.callsTo("debugger.detach").length, 1);
-  assert.equal(f.callsTo("tabs.remove").length, 1);
+  assert.equal(closesOf(f).length, 1);
 });
 
 test("a cleanup call that hangs does not hang the import", async () => {
@@ -479,7 +526,7 @@ test("a cleanup call that hangs does not hang the import", async () => {
   assert.ok(cleanupTimer.ms <= 5000);
   cleanupTimer.fn();
   await rejectsWith(p, "codec");
-  assert.equal(f.callsTo("tabs.remove").length, 1);
+  assert.equal(closesOf(f).length, 1);
 });
 
 test("a second import waits until the first ends, success or failure", async () => {
@@ -509,7 +556,7 @@ test("a second import waits until the first ends, success or failure", async () 
   assert.ok(f3.callsTo("debugger.detach").length === 1);
 });
 
-test("the origin's tabs close before the cookie swap and before the restore tab opens; a window keeps a tab", async () => {
+test("the origin's tabs close before the cookie swap and before the restore tab opens; only the browser's last window keeps a tab", async () => {
   const f = makeFakeChrome();
   f.setTabs([
     { id: 1, windowId: 1, url: ORIGIN + "/a" },
@@ -518,23 +565,40 @@ test("the origin's tabs close before the cookie swap and before the restore tab 
     { id: 4, windowId: 2, url: "http://www.app.localhost/" }, // another origin: another scheme
     { id: 5, windowId: 2, url: "https://app.localhost/" }, // another origin: another host
   ]);
+  f.targets_ = [1, 2].map((id) => ({ id: "T" + id, tabId: id, type: "page", attached: false }));
   const result = await importState(f.chrome, makeState(), opts());
   assert.equal(result.tabs_closed, 2);
-  assert.deepEqual(f.callsTo("tabs.query"), [[{}]]);
+  assert.deepEqual(f.callsTo("tabs.query"), [[{}], [{}]], "the item's query, then the step's second read");
+  // The closes run in the removal queue, by the receiver's close: an attach for the close,
+  // Target.closeTarget (no beforeunload), and the tab's tabs.onRemoved.
   const order = f.calls
-    .filter(([p]) => ["tabs.create", "tabs.remove", "debugger.attach", "cookies.getAll", "cookies.set"].includes(p))
-    .map(([p, a]) => [p, p.startsWith("cookies.") ? "" : a[0]]);
+    .filter(([p, a]) => ["tabs.create", "tabs.remove", "debugger.attach", "cookies.getAll", "cookies.set"].includes(p) || (p === "debugger.sendCommand" && a[1] === "Target.closeTarget"))
+    .map(([p, a]) => [p, p.startsWith("cookies.") ? "" : p === "debugger.sendCommand" ? a[2] : a[0]]);
+  const restoreTab = f.callsTo("tabs.update")[0][0];
   assert.deepEqual(order, [
-    ["tabs.create", { windowId: 1, url: "about:blank", active: false }],
-    ["tabs.remove", 1],
-    ["tabs.remove", 2],
+    // The window rule (C10): other tabs stay open (in window 2), so window 1 closes with its last tab.
+    ["debugger.attach", { tabId: 1 }],
+    ["debugger.attach", { tabId: 2 }],
+    ["debugger.sendCommand", { targetId: "T1" }],
+    ["debugger.sendCommand", { targetId: "T2" }],
     ["cookies.getAll", ""],
     ["cookies.getAll", ""],
     ["cookies.set", ""],
     ["cookies.set", ""],
     ["tabs.create", { url: "about:blank", active: true }],
-    ["debugger.attach", { tabId: f.callsTo("debugger.attach")[0][0].tabId }],
+    ["debugger.attach", { tabId: restoreTab }],
   ]);
+});
+
+test("the browser's last window gets an about:blank first", async () => {
+  const f = makeFakeChrome();
+  f.setTabs([{ id: 1, windowId: 3, url: ORIGIN + "/a" }, { id: 2, windowId: 3, url: ORIGIN + "/b" }]);
+  f.targets_ = [1, 2].map((id) => ({ id: "T" + id, tabId: id, type: "page", attached: false }));
+  const result = await importState(f.chrome, makeState(), opts());
+  assert.equal(result.tabs_closed, 2);
+  assert.deepEqual(f.callsTo("tabs.create")[0], [{ windowId: 3, url: "about:blank", active: false }]);
+  const order = f.calls.map(([p, a]) => (p === "debugger.sendCommand" ? a[1] : p));
+  assert.ok(order.indexOf("tabs.create") < order.indexOf("Target.closeTarget"));
 });
 
 test("a window with other tabs gets no about:blank; a tab already gone does not count", async () => {
@@ -544,12 +608,106 @@ test("a window with other tabs gets no about:blank; a tab already gone does not 
     { id: 2, windowId: 1, url: ORIGIN + "/b" },
     { id: 3, windowId: 1, url: "https://other.localhost/" },
   ]);
+  // Tab 2 closed by itself after the item's query: it has no target, and the fallback finds no tab.
+  // It does not count, and the step's second read finds no tab of the origin open.
+  f.targets_ = [{ id: "T1", tabId: 1, type: "page", attached: false }];
   f.impl["tabs.remove"] = async (id) => {
-    if (id === 2) throw new Error("No tab with id");
+    if (id === 2) {
+      f.tabs_ = f.tabs_.filter((t) => t.id !== 2);
+      throw new Error("No tab with id: 2.");
+    }
   };
   const result = await importState(f.chrome, makeState(), opts());
   assert.equal(result.tabs_closed, 1);
   assert.deepEqual(f.callsTo("tabs.create").map((a) => a[0]), [{ url: "about:blank", active: true }]);
+});
+
+test("a window rule that fails closes no tab of the origin and fails close tabs", async () => {
+  const f = makeFakeChrome();
+  f.setTabs([{ id: 1, windowId: 1, url: ORIGIN + "/a" }]);
+  f.impl["tabs.create"] = async () => {
+    throw new Error("no window");
+  };
+  await rejectsWith(importState(f.chrome, makeState(), opts()), "close tabs");
+  assert.deepEqual(closesOf(f), []);
+  assert.equal(f.callsTo("cookies.getAll").length, 0, "no cookie swap while a page of the origin is open");
+});
+
+// review-20 note 5 (C6 step 1): a close that has not ended at the end of the item's wait (a page that a
+// dialog holds) fails the step: no cookie swap while a page of the origin can still write a cookie.
+// review-20b (probe N2, C6 step 1): a close can end with an error and leave the tab open (the attach
+// fails, and the fallback's chrome.tabs.remove is refused). The step reads the tabs again after the
+// item and fails while a tab of the origin is open: no cookie swap, and no ok with tabs_closed 0.
+test("a close of the origin's tab that ends with an error and leaves the tab open fails close tabs", { timeout: 5000 }, async () => {
+  const f = makeFakeChrome();
+  f.setTabs([{ id: 1, windowId: 1, url: ORIGIN + "/a" }, { id: 3, windowId: 1, url: "https://other.localhost/" }]);
+  f.impl["debugger.attach"] = async () => {
+    throw new Error("Another debugger is already attached to the tab");
+  };
+  f.impl["tabs.remove"] = async () => {
+    throw new Error("Tabs cannot be edited right now (user may be dragging a tab).");
+  };
+  await rejectsWith(importState(f.chrome, makeState(), opts()), "close tabs");
+  assert.equal(f.callsTo("cookies.getAll").length, 0, "no cookie swap");
+  assert.deepEqual(f.callsTo("tabs.query"), [[{}], [{}]], "the item's query, then the step's second read");
+});
+
+test("a close of the origin's tab that has not ended in the item's wait fails close tabs", { timeout: 5000 }, async () => {
+  const { receiver } = await import("../agent/receiver.js");
+  const { REMOVAL_WAIT_MS } = await import("../agent/removals.js");
+  const f = makeFakeChrome();
+  f.setTabs([{ id: 1, windowId: 1, url: ORIGIN + "/a" }, { id: 3, windowId: 1, url: "https://other.localhost/" }]);
+  f.targets_ = [{ id: "T1", tabId: 1, type: "page", attached: false }];
+  f.impl["debugger.sendCommand"] = async () => ({}); // the command answers; no tabs.onRemoved comes
+  const qt = fakeTimers();
+  Object.assign(receiver(f.chrome).clock, { setTimer: qt.setTimer, clearTimer: qt.clearTimer });
+  const p = importState(f.chrome, makeState(), opts());
+  for (let i = 0; i < 50 && qt.pending(REMOVAL_WAIT_MS).length === 0; i++) await settle(1);
+  qt.pending(REMOVAL_WAIT_MS).forEach((h) => h.fn());
+  await rejectsWith(p, "close tabs");
+  assert.equal(f.callsTo("cookies.getAll").length, 0);
+});
+
+// The import's finding (board ab-v16.31, from PR #53): a send to a domain on no list is normal (ab-dm6:
+// a sent site joins no list). The import's rules let the restore page and the site's page load in the
+// restore tab with no list, so the import answers ok after it set the cookies.
+test("an import of a domain on no list loads under the import's rules and answers ok; the rules end at the tab's first commit after the last step, at most 4 s later", async () => {
+  const f = makeFakeChrome();
+  f.autoNavigate = true;
+  const timers = fakeTimers();
+  const p = importState(f.chrome, makeState(), opts(timers));
+  const result = await p;
+  assert.equal(result.cookies_set, 2);
+  const tabId = f.callsTo("tabs.update")[0][0];
+  const order = f.calls.map(([path, a]) => (path === "declarativeNetRequest.updateSessionRules" ? (a[0].addRules ? "rules on" : "rules off") : path)).filter((x) => ["rules on", "rules off", "tabs.create", "tabs.update", "scripting.executeScript"].includes(x));
+  assert.deepEqual(order, ["tabs.create", "rules on", "tabs.update", "scripting.executeScript", "scripting.executeScript", "scripting.executeScript", "rules off"]);
+  assert.deepEqual(importRules("app.localhost", tabId).map((r) => r.condition.tabIds), [[tabId], [tabId]], "the restore tab only");
+  // No commit comes: the rules end after RULES_END_MS anyway.
+  const g = makeFakeChrome();
+  g.autoNavigate = false;
+  g.impl["tabs.update"] = async (id, props) => {
+    g.pauseRequest(id, props.url);
+    return { id, ...props };
+  };
+  const t2 = fakeTimers();
+  const q = importState(g.chrome, makeState(), opts(t2));
+  for (let i = 0; i < 50 && t2.pending(4000).length === 0; i++) await settle(1);
+  assert.equal(ruleCalls(g).length, 1, "the rules wait for the commit");
+  t2.pending(4000)[0].fn();
+  await q;
+  assert.deepEqual(ruleCalls(g).at(-1), { removeRuleIds: [6, 7] });
+});
+
+test("a failed end of the import's rules fails the import and closes its tab", async () => {
+  const f = makeFakeChrome();
+  let n = 0;
+  f.impl["declarativeNetRequest.updateSessionRules"] = async (d) => {
+    n += 1;
+    if (!d.addRules) throw new Error("busy");
+  };
+  await rejectsWith(importState(f.chrome, makeState(), opts()), "end rules");
+  assert.equal(closesOf(f).length, 1);
+  assert.equal(n, 2, "no second removal in the cleanup: the budget of 112 s");
 });
 
 test("a tab query that fails rejects with close tabs and opens no restore tab", async () => {
@@ -575,7 +733,7 @@ test("the write storage step has 60 s; the other steps 20 s", async () => {
   writeTimer.fn();
   await rejectsWith(p, "write storage");
   assert.equal(f.callsTo("debugger.detach").length, 1);
-  assert.equal(f.callsTo("tabs.remove").length, 1);
+  assert.equal(closesOf(f).length, 1);
 });
 
 test("after the cookies step times out, its background work stops", async () => {
@@ -597,7 +755,7 @@ test("after the cookies step times out, its background work stops", async () => 
   await settle();
   assert.equal(f.callsTo("cookies.set").length, 1);
   // The tabs closed before the cookies (M7); no later step runs.
-  assert.equal(f.callsTo("tabs.query").length, 1);
+  assert.equal(f.callsTo("tabs.query").length, 2);
   assert.equal(f.callsTo("tabs.create").length, 0);
 });
 
@@ -645,8 +803,10 @@ test("an invalid state is refused before any chrome call", async () => {
   }
 });
 
-test("agent/sw.js routes import to importState", () => {
-  const src = readFileSync(new URL("../agent/sw.js", import.meta.url), "utf8");
+test("agent/sw.js routes import to importState (the main ops of allowlist.js)", () => {
+  const sw = readFileSync(new URL("../agent/sw.js", import.meta.url), "utf8");
+  assert.match(sw, /main: mainOps\(chrome\)/);
+  const src = readFileSync(new URL("../agent/allowlist.js", import.meta.url), "utf8");
   assert.match(src, /import \{ importState \} from "\.\/importer\.js";/);
   assert.match(src, /import: \(req\) => importState\(chrome, req\.state\)/);
   assert.ok(!src.includes("not available yet"));

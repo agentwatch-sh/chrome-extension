@@ -6,8 +6,10 @@ import { CHANNELS, ChannelJoiner, MAX_RESULT, RESULT_PART_BYTES, jsonTooLarge, s
 
 const HOST_NAME = "sh.agentwatch.browser";
 const MAX_DELAY_MS = 30000;
-// The daemon waits 10 s (ping, set_allowlist) and 120 s (import); answer just before.
-// The bridge sets the wait of each bridge request itself (C10).
+// The daemon waits 10 s (ping, set_scopes) and 120 s (import); answer just before.
+// A set_scopes that runs longer goes on (allowlist.js runs one at a time),
+// and the daemon sends its object again. The bridge sets the wait of each
+// bridge request itself (C10).
 const TIMEOUT_MS = { import: 115000 };
 const DEFAULT_TIMEOUT_MS = 9000;
 // The native host drops a message while its daemon socket is down, and it says
@@ -18,6 +20,9 @@ const DEFAULT_TIMEOUT_MS = 9000;
 // during a daemon outage of a running host still reaches only the host, which
 // drops it.
 const MAX_WAITING = 100;
+// The hello's features (C4): "scopes" says that the receiver speaks
+// set_scopes, so a new daemon never sends it the old set_allowlist.
+export const FEATURES = Object.freeze(["scopes"]);
 
 // The daemon drops the link at a message over MAX_TO_DAEMON (wire.js). So a
 // bridge res over it goes in parts up to maxResult (C10), any other res over
@@ -119,7 +124,7 @@ export class ReceiverLink {
   }
 
   #hello() {
-    this.send({ t: "hello", v: 2, version: this.#chrome.runtime.getManifest().version, channels: [...CHANNELS] });
+    this.send({ t: "hello", v: 2, version: this.#chrome.runtime.getManifest().version, channels: [...CHANNELS], features: [...FEATURES] });
   }
 
   #connect() {

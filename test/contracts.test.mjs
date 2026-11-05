@@ -369,7 +369,7 @@ test("each request vector is a valid bridge request, and its res has the C10 sha
     else if (req.op === "tabs.remove") {
       // The receiver's close of the per-scope build (C10, board ab-v16.41): Target.closeTarget through chrome.debugger.
       assert.deepEqual([v.chrome[0], v.chrome[1][0], v.chrome[1][1], Object.keys(v.chrome[1][2])], ["debugger.sendCommand", { tabId: req.args[0] }, "Target.closeTarget", ["targetId"]], `${req.id}: the receiver's close`);
-      // Today's receiver (before part 1a) calls chrome.tabs.remove: the plain test of test/bridge.test.mjs uses it.
+      // The receiver before part 1a called chrome.tabs.remove (chromeToday); test/bridge.test.mjs no longer uses it.
       assert.deepEqual(v.chromeToday, ["tabs.remove", [req.args[0]]], `${req.id}: today's chrome call`);
     } else assert.ok(Array.isArray(v.chrome) && v.chrome[0].startsWith(req.op.split(".")[0] + "."), `${req.id}: chrome call`);
   }
@@ -1421,4 +1421,34 @@ test("each cookie marker vector follows C11's rule", () => {
     assert.ok(endpoint.cookieHide.some((v) => v.method === m), `a vector for ${m}`);
   }
   assert.ok(endpoint.cookieHide.some((v) => Object.hasOwn(v.in, "redirectResponse")), "a vector for redirectResponse");
+});
+
+// ---- review-20 (board ab-v16.31): the decisions of ab-lead, in the text of C4, C5, C6 and C10 ----
+
+test("review-20's decisions are the contract: the closing rule at a set_scopes that is not applied, the sweep's tabs at a failed query, the owed worker removal, the import's cookies, a failed copy write, the fallback's detach and the limits of the start", () => {
+  const C6 = section("C6");
+  const checks = [
+    // Q2: one bad message closes no live session's page; its scope rules still fail closed.
+    [C4, "Such a `set_scopes` is not applied (C5, the sweep): its scope rules go as this rule says, so each new navigation of an agent tab fails closed, but the receiver sweeps nothing, and its closing rule judges each tab by the last applied `set_scopes`"],
+    [C5, "The lists are those of the last applied `set_scopes` (the sweep, below): at a `set_scopes` that is not applied, the closing rule judges each tab by the last applied one, and with no applied one since the worker's start it closes no tab"],
+    [C5, "its closing rule judges each tab by the last applied one (the closing rule, above)"],
+    // B1: a failed or late query of the sweep's item.
+    [C5, "When its `tabs.query` failed or came late, the item picked no tab: the tabs of the sweep are then the tabs of the map whose scope the new object gives no list"],
+    // B2 and note 3: the worker removal.
+    [C5, "A failed removal, or one that has not ended within `REMOVAL_WAIT_MS` (C10), fails the call (`ok: false`) after the tabs closed, and the receiver logs it; the next call removes again."],
+    [C5, "A call that answers `ok: false` for another reason (a failed rule update, rule 5 or key removal) moves no \"last\" either, but its new rules can be in force: so the next call removes the workers too"],
+    // Q1 and note 5: the import.
+    [C6, "A step that fails after step 1's cookie swap (for example \"write storage\") leaves the swap as it is: the old cookies of `domain` are removed and the sent ones are set, and no cookie goes back."],
+    [C6, "so the daemon's Browser page says that the sign-in was sent but that the named step failed"],
+    [C6, "A close that has not ended within its item's wait (a page that a dialog holds), or a window rule that fails, fails the step (\"close tabs\")"],
+    // Q3, note 2, notes 3 and 4: C10.
+    [C10, "A write of its key in the copy that fails is handled as a failed rule update of that tab: the new tab leaves the map, joins the orphan set and closes, and the op answers with the error"],
+    [C10, "The late part of such a removal removes nothing more, so it never takes the rules of that full replace"],
+    [C6, "after the item the step reads the tabs again (`tabs.query`) and fails too while a tab of the origin is open (a close that ended with an error can leave it open): no cookie is swapped while a page of the origin can be open"],
+    [C10, "the fallback then calls `chrome.tabs.remove` at once and ends its own attach only after the command answered, because a detach makes a running command fail"],
+    [C10, "The removal of every session rule before the read has `RESTORE_MAX_MS` too: one that fails or has not ended by then fails closed, and the receiver logs it; its next full replace removes every rule of the scheme (the scope rules and rule 8, and rules 6 and 7 when no import runs)"],
+  ];
+  for (const [text, s] of checks) assert.ok(says(text, s), s);
+  // The old wordings are gone.
+  assert.ok(!says(C5, "A failed removal fails the call (`ok: false`) after the tabs closed; the next call removes again."));
 });

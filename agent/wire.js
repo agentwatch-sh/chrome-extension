@@ -2,7 +2,7 @@
 // for tests and the shared vectors.
 
 export const PART_BYTES = 700000;
-// "main" carries ping, set_allowlist and import; "bridge" carries the agent-mode
+// "main" carries ping, set_scopes and import; "bridge" carries the agent-mode
 // bridge (C10). A part without "ch" is main.
 export const CHANNELS = Object.freeze(["main", "bridge"]);
 // The daemon reads a line of at most 8 MiB from the native host and drops the

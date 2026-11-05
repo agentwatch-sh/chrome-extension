@@ -262,6 +262,10 @@ held one list for the whole agent browser. The request is above. Its fields and 
 - A `lists` or `scopes` that is not an object (also a missing one) applies as an empty object and
   counts 1 in `refused`. A `scopes` that is not an object also makes `default` apply as `null`
   (with no more count): no scope gets the `default` list while the daemon's scopes are not known.
+  Such a `set_scopes` is not applied (C5, the sweep): its scope rules go as this rule says, so each
+  new navigation of an agent tab fails closed, but the receiver sweeps nothing, and its closing rule
+  judges each tab by the last applied `set_scopes`, so one bad message closes no live session's page
+  (review-20 Q2).
 - A name that comes twice in one object: the last one applies, as `JSON.parse` and Python's `json`
   read it. The daemon never sends one.
 - With the design's choice 3 (the operator's own tabs), `set_scopes` has one more field,
@@ -554,15 +558,20 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
   the workers: their tabs are blocked and close, so no tab of them can reach a worker. The
   `operator` value counts as one more scope's list: a change from `"*"` to a list, or a list that
   loses an entry, removes the workers too. The entries count, not the list names; "the last" is the
-  last `set_scopes` that applied in full. A failed removal fails the call (`ok: false`) after the
-  tabs closed; the next call removes again.
+  last `set_scopes` that applied in full. A failed removal, or one that has not ended within
+  `REMOVAL_WAIT_MS` (C10), fails the call (`ok: false`) after the tabs closed, and the receiver logs
+  it; the next call removes again. A call that answers `ok: false` for another reason (a failed rule
+  update, rule 5 or key removal) moves no "last" either, but its new rules can be in force: so the
+  next call removes the workers too (review-20 B2).
 - The closing rule: on each `set_scopes` the receiver closes every tab whose `http:`/`https:` host
   its list does not cover; for a marked tab, its `operator` value counts (with `"*"` it never
   closes; with a list name, that list; with `null` no list, so its `http:`/`https:` page closes);
   for a tab of no scope, the union of the lists counts (so an unmarked operator's tab and the page
   of a finished import stay while a list covers them); a tab of the orphan set (the sweep, below)
   has no list, so its `http:`/`https:` page closes. It never closes the restore tab of a running
-  import. A window closes with its last tab, except the browser's last window: there the receiver
+  import. The lists are those of the last applied `set_scopes` (the sweep, below): at a `set_scopes`
+  that is not applied, the closing rule judges each tab by the last applied one, and with no applied
+  one since the worker's start it closes no tab (review-20 Q2). A window closes with its last tab, except the browser's last window: there the receiver
   first opens `about:blank`, so that Chrome does not end. (With one window per page, agent-browser
   PR #44, an `about:blank` in place of each closed page would leave an empty window for each.) In
   the per-scope build its closes run in the receiver's one removal queue, by the receiver's close
@@ -583,7 +592,9 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
     two cases. (1) Its close failed, or it is still pending when the item ends: for example the
     fallback's `chrome.tabs.remove`, which a `beforeunload` dialog holds (C10); that needs a failed
     attach, a `beforeunload` handler and a user activation of the page. (2) The item's window rule
-    failed or came late (C10): then no close starts, and no dialog opens. The tab leaves the map,
+    failed or came late (C10): then no close starts, and no dialog opens. When its `tabs.query`
+    failed or came late, the item picked no tab: the tabs of the sweep are then the tabs of the map
+    whose scope the new object gives no list (review-20 B1). The tab leaves the map,
     and its key leaves the copy. The answer waits for that removal, but the queue item does not: a
     removal that fails, or that has not ended within `REMOVAL_WAIT_MS`, makes the answer `ok:
     false`, and the next `set_scopes` removes the key again (C4). The receiver keeps the tab's id in
@@ -610,7 +621,8 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
   - An **applied** `set_scopes` is one whose `scopes` and `lists` are objects. At any other the
     receiver sweeps nothing: C4 applies such a field as an empty object, so every scope would have
     no list, and one bad message would close every agent tab. The rest of it applies as C4 says, so
-    the tabs fail closed until an applied one comes. "The first applied `set_scopes`" after the
+    the tabs fail closed until an applied one comes; its closing rule judges each tab by the last
+    applied one (the closing rule, above). "The first applied `set_scopes`" after the
     worker's start is the first such one (a bad first one does not sweep).
   - A new applied object becomes the receiver's last applied `set_scopes`, the reference of C10's
     checks of a new entry, at its rule update, before the sweep's `tabs.query`. So a `tabs.create`
@@ -653,7 +665,11 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
 1. Close every tab whose origin equals `origin` (they hold the state being replaced, and a page of
    the origin could write a cookie during the swap; C5's rule for the browser's last window applies;
    in the per-scope build these closes, and the closes of the restore tab in step 5, run in the
-   removal queue of C10, by the receiver's close and with its window rule). Then (measured: a
+   removal queue of C10, by the receiver's close and with its window rule). A close that has not
+   ended within its item's wait (a page that a dialog holds), or a window rule that fails, fails the
+   step ("close tabs"); after the item the step reads the tabs again (`tabs.query`) and fails too
+   while a tab of the origin is open (a close that ended with an error can leave it open): no cookie
+   is swapped while a page of the origin can be open (review-20 note 5, review-20b). Then (measured: a
    partitioned cookie of an http secure-context test site, `*.localhost`, does not move with this
    URL rule; https sites are not affected) remove every cookie of `domain` and its subdomains
    (`getAll({domain})` and `getAll({domain, partitionKey: {}})`), then `cookies.set` each sent
@@ -678,7 +694,12 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
 5. Any step that fails: detach, close the restore tab, answer `ok: false` with the step's name. Each
    step has a 20 s deadline, except "write storage", which has 60 s; the whole import has 100 s, and
    each of the two cleanup calls at most 4 s, so an import ends before the link's 115 s answer and
-   the daemon's 120 s wait. One import at a time; a second waits.
+   the daemon's 120 s wait. One import at a time; a second waits. A step that fails after step 1's
+   cookie swap (for example "write storage") leaves the swap as it is: the old cookies of `domain`
+   are removed and the sent ones are set, and no cookie goes back. The answer is `ok: false` with
+   that step's name, so the daemon's Browser page says that the sign-in was sent but that the named
+   step failed (the site's page storage can be missing), not that the send failed (review-20 Q1,
+   option a).
 
 **The import's rules (board ab-v16.23).** In step 2, after `tabs.create` and before
 `tabs.update(tabId, {url: R})`, the receiver adds the import's rules (C5: session rules 6 and 7,
@@ -1215,7 +1236,9 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
     removal queue, by the receiver's close: removals and the last window, below), and the op answers
     `no list for this scope`. When the rule update fails,
     the receiver closes the new tab in the same way, and the op answers with the error (C5: a failed
-    update fails closed).
+    update fails closed). A write of its key in the copy that fails is handled as a failed rule
+    update of that tab: the new tab leaves the map, joins the orphan set and closes, and the op
+    answers with the error (review-20 Q3).
     Measured: the probe's whole assignment (its rule update and the wait for it, small lists, its
     tabs open) took 11 to 15 ms, and the next `Page.navigate` loaded 20 of 20. Chrome's index cost
     alone grows with the entries of all lists in use (about 46 ms to replace one list's rules with
@@ -1282,7 +1305,11 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
     handler would otherwise read the map before the restore ends. When `chrome.storage.session.get`
     or `chrome.tabs.query` fails, or has not answered in `RESTORE_MAX_MS = 2000` ms, the receiver
     starts with an empty map and connects anyway: the tabs of the copy are then tabs of no scope (a
-    limit). The kept tabs fail closed until the next `set_scopes`, which comes soon: a worker's
+    limit). The removal of every session rule before the read has `RESTORE_MAX_MS` too: one that
+    fails or has not ended by then fails closed, and the receiver logs it; its next full replace
+    removes every rule of the scheme (the scope rules and rule 8, and rules 6 and 7 when no import
+    runs) before it adds the new ones (review-20 notes 3 and 4). The late part of such a removal
+    removes nothing more, so it never takes the rules of that full replace (review-20b). The kept tabs fail closed until the next `set_scopes`, which comes soon: a worker's
     start is a link change, and the daemon sends `set_scopes` after each link up (C4).
   - A new entry after the sweep (board ab-v16.41). The receiver checks each new entry against its
     last applied `set_scopes` (C5, the sweep: the last one whose `scopes` and `lists` are objects):
@@ -1436,7 +1463,10 @@ ends).
     makes a second one.
   - The fallback: when the attach fails, when `chrome.debugger.getTargets()` fails or lists no target
     for the tab, or when the command fails and the tab stays, the receiver ends its attach for the
-    close (only when it made one: never the bridge's attachment) and calls `chrome.tabs.remove`. Its
+    close (only when it made one: never the bridge's attachment) and calls `chrome.tabs.remove`. A
+    command that has not answered (it counts as failed after `REMOVAL_WAIT_MS`) still runs: the
+    fallback then calls `chrome.tabs.remove` at once and ends its own attach only after the command
+    answered, because a detach makes a running command fail (review-17b E4b; review-20 note 2). Its
     limit: a `beforeunload` handler can then hold that close (measured, below). A later item tries
     again; the sweep takes such a tab out of its scope into the orphan set (C5, the sweep).
 - The **window rule**. Before an item closes its tabs, the receiver reads every tab (`tabs.query`
