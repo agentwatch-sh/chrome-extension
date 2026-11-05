@@ -57,7 +57,12 @@ function navTargetOf(s, id, source, url = URL_A) {
 }
 
 const nav = (s, event, tabId, url, more = {}) => s.f.chrome.webNavigation[event].fire({ tabId, frameId: 0, url, ...more });
-const block = (s, tabId, url = URL_A) => nav(s, "onErrorOccurred", tabId, url, { error: BLOCKED });
+// webRequest's view of a blocked main-frame request (its method); Chrome sends it before webNavigation's error (measured).
+const requestError = (s, tabId, url, method) => s.f.chrome.webRequest.onErrorOccurred.fire({ tabId, frameId: 0, type: "main_frame", url, method, error: BLOCKED });
+const block = (s, tabId, url = URL_A, method = "GET") => {
+  if (method !== null) requestError(s, tabId, url, method);
+  nav(s, "onErrorOccurred", tabId, url, { error: BLOCKED });
+};
 const closeTab = (s, tabId) => s.f.closeTab(tabId);
 
 // A DNR update as the fake makes it (all or nothing).
@@ -467,7 +472,7 @@ test("the retry once per tab: a retried request that is blocked again sends bloc
   assert.deepEqual(reloads(s), [[9]]);
 });
 
-test("the retry that starts no request sends blocked: no onBeforeNavigate of the URL within 1 s, or another error (a POST); a late onBeforeNavigate changes nothing", async () => {
+test("the retry that starts no request sends blocked: no onBeforeNavigate of the URL within 1 s, or another error; a late onBeforeNavigate changes nothing", async () => {
   const s = await popupSetup({ eager: true });
   const { before } = await heldPopup(s);
   nav(s, "onBeforeNavigate", 9, URL_A);
@@ -537,4 +542,64 @@ test("a page that commits while the retry waits: the first request stays blocked
   await s.fire(RETRY_AFTER_MS);
   assert.deepEqual(reloads(s), []);
   assert.equal(s.notices().length, 1);
+});
+
+// ab-lead's decision on PR #21's question 1: Chrome's tabs.reload of a blocked POST opens its "Confirm
+// Form Resubmission" dialog, which waits for a person. So the retry reloads a GET only (the method from
+// webRequest), and a form that posts into a new tab fails closed with its notice, with no dialog.
+test("the retry reloads a GET only: a blocked POST (a form into a new tab) gets no reload and sends its notice at the decision, which ends the hold", async () => {
+  const s = await popupSetup({ eager: true });
+  const late = lateRules(s);
+  const { before } = await heldPopup(s);
+  nav(s, "onBeforeNavigate", 9, URL_A);
+  block(s, 9, URL_A, "POST");
+  await flush();
+  assert.deepEqual(s.notices(), [], "the notice waits for the decision at the rule's end");
+  await late();
+  assert.deepEqual(s.notices(), [{ t: "blocked", tab: 9, host: "a.example" }]);
+  assert.equal(created(s, 9, before).length, 1, "the decision ends the hold at once");
+  await s.fire(RETRY_AFTER_MS);
+  await s.fire(RETRY_START_MS);
+  assert.deepEqual(reloads(s), [], "no reload: no dialog");
+  assert.equal(s.notices().length, 1);
+  // The GET of a form (or a link, window.open) keeps its retry.
+  openPopup(s, { id: 10 });
+  await flush();
+  block(s, 10, URL_A + "?q=1", "GET");
+  await s.fire(RETRY_AFTER_MS);
+  assert.deepEqual(reloads(s), [[10]]);
+});
+
+test("the method fails closed: a blocked request whose method the receiver did not see by the reload's time, or saw for another URL, gets no reload; a POST seen after the error still stops it", async () => {
+  const s = await popupSetup();
+  openPopup(s);
+  await flush();
+  block(s, 9, URL_A, null); // no webRequest event
+  await s.fire(RETRY_AFTER_MS);
+  assert.deepEqual(reloads(s), []);
+  assert.deepEqual(s.notices(), [{ t: "blocked", tab: 9, host: "a.example" }]);
+  // A webRequest event of another URL of the tab.
+  openPopup(s, { id: 10 });
+  await flush();
+  requestError(s, 10, "https://a.example/other", "GET");
+  block(s, 10, URL_A, null);
+  await s.fire(RETRY_AFTER_MS);
+  assert.deepEqual(reloads(s), []);
+  assert.deepEqual(s.notices().at(-1), { t: "blocked", tab: 10, host: "a.example" });
+  // The webRequest event of a POST that comes after webNavigation's error, before the reload.
+  openPopup(s, { id: 11 });
+  await flush();
+  block(s, 11, URL_A, null);
+  requestError(s, 11, URL_A, "POST");
+  await s.fire(RETRY_AFTER_MS);
+  assert.deepEqual(reloads(s), []);
+  assert.deepEqual(s.notices().at(-1), { t: "blocked", tab: 11, host: "a.example" });
+  // A webRequest event that is not a block, or of a frame, changes nothing.
+  openPopup(s, { id: 12 });
+  await flush();
+  s.f.chrome.webRequest.onErrorOccurred.fire({ tabId: 12, frameId: 0, type: "main_frame", url: URL_A, method: "POST", error: "net::ERR_ABORTED" });
+  s.f.chrome.webRequest.onErrorOccurred.fire({ tabId: 12, frameId: 3, type: "sub_frame", url: URL_A, method: "POST", error: BLOCKED });
+  block(s, 12, URL_A, "GET");
+  await s.fire(RETRY_AFTER_MS);
+  assert.deepEqual(reloads(s), [[12]]);
 });

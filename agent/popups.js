@@ -31,9 +31,14 @@
 //   cover the host (or the update failed), when the tab has no scope, when the
 //   reload's own navigation is blocked again (no second retry), and when the
 //   reload starts no request (no main-frame onBeforeNavigate of the URL within
-//   RETRY_START_MS, or another error). The retry is only for the popup's
-//   first navigation: after its first main-frame commit that is not
-//   about:blank, a block sends its notice at once.
+//   RETRY_START_MS, or another error). The retry reloads a GET only: the
+//   method comes from webRequest.onErrorOccurred of the blocked request, and a
+//   request that is not a GET (a form that posts into a new tab), or whose
+//   method the receiver did not see by the reload's time, gets no reload and
+//   sends its notice (Chrome's reload of a blocked POST opens its "Confirm
+//   Form Resubmission" dialog, which waits for a person). The retry is only
+//   for the popup's first navigation: after its first main-frame commit that
+//   is not about:blank, a block sends its notice at once.
 //
 // No log line holds a URL or a host.
 import { call } from "./attach.js";
@@ -75,6 +80,7 @@ export class Popups {
   #navs = new Set(); // tabs with no Popup yet whose main-frame navigation started
   #waiting = new Map(); // eager attach off: tabId -> {tab, fields, timer}
   #held = new Map(); // eager attach on: tabId -> {tab, fields, max, quiet, ending}
+  #methods = new Map(); // tabId -> {url, method}: the tab's last blocked main-frame request (webRequest)
 
   constructor(receiver) {
     this.#r = receiver;
@@ -127,6 +133,7 @@ export class Popups {
     if (p) this.#clock.clearTimer(p.timer);
     this.#popups.delete(tabId);
     this.#navs.delete(tabId);
+    this.#methods.delete(tabId);
     this.#dropWaiting(tabId);
     this.#dropHeld(tabId);
   }
@@ -264,6 +271,20 @@ export class Popups {
     this.#ended(d.tabId);
   }
 
+  // webRequest.onErrorOccurred of a main-frame request: the method of a
+  // blocked one (it comes before webNavigation's error: measured).
+  requestError(d) {
+    if (!d || d.type !== "main_frame" || d.error !== BLOCKED || !Number.isInteger(d.tabId) || d.tabId < 0) return;
+    this.#methods.set(d.tabId, { url: d.url, method: d.method });
+  }
+
+  // The method of the popup's blocked first request, or undefined when the
+  // receiver has not seen it.
+  #methodOf(p) {
+    const m = this.#methods.get(p.tabId);
+    return m && m.url === p.block.url ? m.method : undefined;
+  }
+
   // A main-frame error that is not ERR_BLOCKED_BY_CLIENT: the reload started
   // no request (a POST that Chrome does not send again).
   error(d) {
@@ -309,6 +330,9 @@ export class Popups {
     const covered = p.entries !== null && p.entries.some((d) => covers(d, host)) &&
       map.scopeOf(p.tabId) === p.scope && !map.isOrphan(p.tabId);
     if (!covered) return this.#notice(p);
+    // A blocked request that is not a GET (a form's POST) gets no reload.
+    const method = this.#methodOf(p);
+    if (method !== undefined && method !== "GET") return this.#notice(p);
     p.phase = "planned";
     const wait = p.block.at + RETRY_AFTER_MS - this.#clock.now();
     if (wait <= 0) this.#reload(p);
@@ -319,8 +343,9 @@ export class Popups {
     p.timer = null;
     if (this.#popups.get(p.tabId) !== p || p.phase !== "planned") return;
     const map = this.#r.map;
-    // The tab left its scope meanwhile (the sweep): no retry.
-    if (map.scopeOf(p.tabId) !== p.scope || map.isOrphan(p.tabId)) return this.#notice(p);
+    // The tab left its scope meanwhile (the sweep): no retry. A GET only; a
+    // method that the receiver has not seen by now fails closed too.
+    if (map.scopeOf(p.tabId) !== p.scope || map.isOrphan(p.tabId) || this.#methodOf(p) !== "GET") return this.#notice(p);
     p.phase = "reloaded";
     p.timer = this.#clock.setTimer(() => {
       p.timer = null;

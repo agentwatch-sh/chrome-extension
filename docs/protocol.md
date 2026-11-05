@@ -764,8 +764,8 @@ first document request of a new tab (below).
   both for a new tab's `tabs.onCreated` (each tab's scope, below): while the eager attach is on,
   the receiver holds the `tabs.onCreated` of a popup whose hold is on; while it is off, the
   receiver sends a new tab's `tabs.onCreated` after the tab's
-  `webNavigation.onCreatedNavigationTarget`, or 50 ms late when none comes. Other events of that
-  tab then go before its `tabs.onCreated`.
+  `webNavigation.onCreatedNavigationTarget`, or `NEW_TAB_WAIT_MS` late when none comes. Other events
+  of that tab then go before its `tabs.onCreated`.
 
 **Requests.** `{"t":"req","id":"<id>","op":"<op>","args":[...],"wait":<ms>}`.
 
@@ -1092,8 +1092,9 @@ hold it; the last bullet gives the numbers and what the relay does about it.
 - An event of the tab that Chrome fires while the receiver attaches it (for example `tabs.onUpdated`)
   can come before the tab's `tabs.onCreated`. While the eager attach is off, the receiver sends a
   new tab's `tabs.onCreated` after the tab's `webNavigation.onCreatedNavigationTarget` (a popup), or
-  50 ms after Chrome's `tabs.onCreated` when none comes (a tab that no page opened): each tab's
-  scope, below.
+  `NEW_TAB_WAIT_MS = 50` after Chrome's `tabs.onCreated` when none comes (a tab that no page opened):
+  each tab's scope, below. A tab that closes while its `tabs.onCreated` waits gets none; its
+  `tabs.onRemoved` goes as usual, as for a popup whose event is held (ab-lead, PR #21 question 3).
 - The receiver never attaches the restore tab of an import. The import sets a flag before it calls
   `tabs.create` for its restore tab, and it clears the flag when it knows that tab's id. A
   `tabs.onCreated` that comes while the flag is set waits until the import knows the id. Then the
@@ -1354,13 +1355,15 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
   tab whose scope has no list, from the first applied `set_scopes` after the worker's start on: it
   joins the orphan set and closes at once (a new entry after the sweep, above). Before that first
   applied `set_scopes` such a tab enters the map with its scope and gets its `bridge.tabScope`, as
-  a live session's popup does (review-17f note 4). Part 1b's
-  live test measures the delay of the event with the write of the copy in place: it must still come
-  before the popup's `tabs.onCreated`. For a popup it comes before the
+  a live session's popup does (review-17f note 4). For a popup it comes before the
   popup's `tabs.onCreated`: `webNavigation.onCreatedNavigationTarget` comes 0 to 1 ms after Chrome
   creates the tab, before the eager attach ends; while the eager attach is off, the receiver sends
-  a new tab's `tabs.onCreated` after that event, or after 50 ms when none comes (a tab that no page
-  opened). For a replaced tab it comes right before the receiver's `tabs.onReplaced` event, so the
+  a new tab's `tabs.onCreated` after that event, or after `NEW_TAB_WAIT_MS` when none comes (a tab
+  that no page opened). Measured with the write of the copy in place (part 1b's live test, Chromium
+  156, 500 popups of every kind, the eager attach off, on, and on with one window per page): the
+  event reached the daemon 2 to 45 ms (median 7) after Chrome's `timeStamp` of the navigation
+  target, and before the popup's `tabs.onCreated` in 500 of 500. For a replaced tab it comes right
+  before the receiver's `tabs.onReplaced` event, so the
   relay knows the added tab's scope when it swaps the tabs.
 - The retry. A popup's first request often starts before its rule is in force (measured: a
   `noopener` popup, a `target=_blank` link and a form with a target in every trial; a popup with an
@@ -1368,25 +1371,48 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
   `webNavigation.onErrorOccurred` with `net::ERR_BLOCKED_BY_CLIENT`, whose URL's host the tab's list
   covers when the rule update that put the tab under its list ends (a covered host is blocked only
   when its rule was late). The receiver then calls `tabs.reload` on the tab once, at the later of
-  the end of that update and the error event plus 50 ms (the error page has committed). Measured:
+  the end of that update and the error event plus `RETRY_AFTER_MS = 50` (the error page has
+  committed). Measured:
   the site got one GET; the page saw `history.length` 1, the same `window.opener` as with no block,
   and its `document.referrer`. What the site sees of the retried request differs by the kind of
   popup: for a `target=_blank` link and a `noopener` `window.open`, the same `Sec-Fetch-*` headers
   and `Referer` as with no retry, and `Cache-Control: max-age=0` more (as any reload); for the
   sign-in pattern (`window.open("")`, then the opener sets `location`), which sends no
   `Sec-Fetch-User` with no retry, also `Sec-Fetch-User: ?1`. A one-shot session rule that removes
-  `Cache-Control` from the retried request did not remove it (20 of 20, ab-lead's reviewer). A POST
-  is not sent again: a form that posts into a new tab fails closed. The `blocked` notice of the
-  first request waits for this decision: none for a retried request; one when the list does not
-  cover the host, or when the tab gets no scope; one when the retried request is blocked again (a
-  second `onErrorOccurred` with `net::ERR_BLOCKED_BY_CLIENT`; no second retry); and one when the
-  retry starts no request (a POST that Chrome does not send again). The packed agent has no
-  `webRequest` and no `declarativeNetRequestFeedback` permission (`onRuleMatchedDebug` works only
-  unpacked), so the signal of "no request" comes from `webNavigation`: no main-frame
-  `onBeforeNavigate` of the URL within 1 s of the `tabs.reload`, or an `onErrorOccurred` with
-  another error (which one a POST gets is not measured). An `onBeforeNavigate` that comes after the
-  1 s gives a false `blocked` notice; the notice does not stop that navigation. "Blocked again" is a
-  second `ERR_BLOCKED_BY_CLIENT` of the reload's own navigation, not of a later one.
+  `Cache-Control` from the retried request did not remove it (20 of 20, ab-lead's reviewer).
+- The retry reloads a GET only (ab-lead, PR #21 question 1). The receiver reads the method of the
+  blocked request from `webRequest.onErrorOccurred` (permission `webRequest`; the receiver only
+  reads it), and a request that is not a GET, or whose method (of the same URL) the receiver has
+  not seen by the reload's time, gets no reload. So a form that posts into a new tab fails closed,
+  with no dialog, and its `blocked` notice goes at the decision. The reason: Chrome's `tabs.reload`
+  of a blocked POST opens its "Confirm Form Resubmission" dialog in the popup, which waits for a
+  person (measured on Chromium 156, the eager attach on and off: no request goes before an answer;
+  with "Continue" the POST went to the site once and the page loaded, 2 of 2; with "Cancel" the
+  error page stayed, 1 of 1). Measured (part 1b's live test, a probe extension with `webRequest`,
+  10 popups of each kind, 41 of them with a first request that DNR blocked):
+  `webRequest.onErrorOccurred` names the method of a request that DNR blocks, and it came before
+  `webNavigation.onErrorOccurred` in 41 of 41; a form's POST is `POST` (10 of 10), and a GET form, a
+  `target=_blank` link, a `noopener` and a plain `window.open` popup are `GET` (each kept its retry
+  and loaded). `webNavigation` gives no
+  transition of a failed navigation (no `onCommitted` for its error page). Chrome shows no install
+  warning for `webRequest`: the permission warnings of the agent manifest
+  (`chrome.management.getPermissionWarningsByManifest`) are the same with it and without it, so it
+  is no privilege increase at an update of the CRX.
+- The retry is only for the popup's first navigation (ab-lead, PR #21 question 4): from its first
+  main-frame commit that is not `about:blank` on, a block sends its notice at once and gets no
+  retry, and a page that commits while the retry waits cancels it (the first request's notice
+  goes).
+- The `blocked` notice of the first request waits for the retry's decision: none for a retried
+  request; one when the list does not cover the host (also when the rule update failed), or when
+  the tab gets no scope; one when the request is not a GET or its method is not known; one when the
+  retried request is blocked again (a second `onErrorOccurred` with `net::ERR_BLOCKED_BY_CLIENT`;
+  no second retry); and one when the retry starts no request. The packed agent has no
+  `declarativeNetRequestFeedback` permission (`onRuleMatchedDebug` works only unpacked), so the
+  signal of "no request" comes from `webNavigation`: no main-frame `onBeforeNavigate` of the URL
+  within `RETRY_START_MS = 1000` of the `tabs.reload`, or an `onErrorOccurred` with another error.
+  An `onBeforeNavigate` that comes after `RETRY_START_MS` gives a false `blocked` notice; the
+  notice does not stop that navigation. "Blocked again" is a second `ERR_BLOCKED_BY_CLIENT` of the
+  reload's own navigation, not of a later one.
 - How often a popup with an opener needs the retry (it depends on load): in the probe 1 of 60 with
   no hold and 2 of 60 with the hold; in ab-lead's reviewer's runs 3 to 4 of 20 with the hold, 2 of
   10 for the sign-in pattern, and 8 of 10 with one window per page (the plan of agent-browser PR
@@ -1399,16 +1425,22 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
   popup whose hold is on (`"held":true`; a popup with `"held":false` gets its event when the eager
   attach ends, as above). That hold ends at the first of: the popup's first document request is
   allowed (the hold pauses it); the retry's request is in the hold; the decision to send `blocked`
-  (a host off the list, a popup of no scope, a retry that is blocked again, a retry that starts no
-  request); a main-frame commit with no network request (a `blob:` URL, a worker's page; not an
+  (a host off the list, a popup of no scope, a request that is not a GET, a retry that is blocked
+  again, a retry that starts no request); a main-frame commit with no network request (a `blob:`
+  URL, a worker's page; not an
   `about:blank` that the opener writes into, which makes no new commit and looks like the first step
-  of the sign-in pattern); 50 ms from the moment the popup's rule is in force, with no main-frame
-  navigation of the popup started (a later navigation is allowed by the rule and needs no retry;
+  of the sign-in pattern); `RULE_QUIET_MS = 50` from the moment the popup's rule is in force, with
+  no main-frame navigation of the popup started (a later navigation is allowed by the rule and needs
+  no retry;
   this ends the hold of a popup that stays at `about:blank`); `HOLD_MAX_MS` after `tabs.onCreated`.
-  The 50 ms timer runs only while the popup has started no main-frame navigation (`about:blank` does
-  not count): a navigation that started before the rule (for example a `noopener` popup's, blocked
-  at 8 to 21 ms while its rule comes at 15 to 47 ms), or a planned retry (its request comes 62 to 95
-  ms after the block), stops the timer, and then only the other conditions end the hold. Chrome
+  The `RULE_QUIET_MS` timer runs only while the popup has started no main-frame navigation
+  (`about:blank` does not count): a navigation that started before the rule (for example a
+  `noopener` popup's, blocked at 8 to 21 ms while its rule comes at 15 to 47 ms), or a planned retry
+  (its request comes 62 to 95 ms after the block), stops the timer, and then only the other
+  conditions end the hold. A popup of no scope or of the orphan set has no rule, so `RULE_QUIET_MS`
+  never ends its hold: when it stays at `about:blank`, its `tabs.onCreated` comes `HOLD_MAX_MS` after
+  Chrome's (or never, when it closes first). No session sees such a tab (C11), so that wait holds
+  no client back (ab-lead, PR #21 question 2). Chrome
   fires `tabs.onCreated` first, and the receiver holds it; other events of the popup (for example
   `tabs.onUpdated`) go to the relay as they come, and the relay keeps `bridge.tabScope` and drops
   the other events of a tab that it does not know yet. So the held `tabs.onCreated` carries the

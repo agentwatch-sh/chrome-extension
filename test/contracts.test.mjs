@@ -9,6 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { CHANNELS, MAX_TO_DAEMON, PART_BYTES, ChannelJoiner, splitParts } from "../agent/wire.js";
+import { NEW_TAB_WAIT_MS, RETRY_AFTER_MS, RETRY_START_MS, RULE_QUIET_MS } from "../agent/popups.js";
 import { normalizeEntry } from "../shared/domains.js";
 
 const read = (p) => readFileSync(new URL("../" + p, import.meta.url), "utf8");
@@ -1451,4 +1452,35 @@ test("review-20's decisions are the contract: the closing rule at a set_scopes t
   for (const [text, s] of checks) assert.ok(says(text, s), s);
   // The old wordings are gone.
   assert.ok(!says(C5, "A failed removal fails the call (`ok: false`) after the tabs closed; the next call removes again."));
+});
+
+test("part 1b's decisions are the contract (ab-v16.32, PR #21 questions 1 to 4): the retry reloads a GET only, the waits of a held or waiting tabs.onCreated, the retry of the first navigation, the four names", () => {
+  const checks = [
+    // Q1: no reload for a request that is not a GET, so a form's POST fails closed with no dialog.
+    "The retry reloads a GET only (ab-lead, PR #21 question 1). The receiver reads the method of the blocked request from `webRequest.onErrorOccurred` (permission `webRequest`; the receiver only reads it), and a request that is not a GET, or whose method (of the same URL) the receiver has not seen by the reload's time, gets no reload.",
+    "So a form that posts into a new tab fails closed, with no dialog, and its `blocked` notice goes at the decision.",
+    "Chrome's `tabs.reload` of a blocked POST opens its \"Confirm Form Resubmission\" dialog in the popup, which waits for a person",
+    "Chrome shows no install warning for `webRequest`",
+    "one when the request is not a GET or its method is not known",
+    "(a host off the list, a popup of no scope, a request that is not a GET, a retry that is blocked again, a retry that starts no request)",
+    // Q2: a popup of no scope or of the orphan set waits HOLD_MAX_MS at about:blank.
+    "A popup of no scope or of the orphan set has no rule, so `RULE_QUIET_MS` never ends its hold: when it stays at `about:blank`, its `tabs.onCreated` comes `HOLD_MAX_MS` after Chrome's (or never, when it closes first). No session sees such a tab (C11), so that wait holds no client back",
+    // Q3: a tab that closes while its tabs.onCreated waits.
+    "A tab that closes while its `tabs.onCreated` waits gets none; its `tabs.onRemoved` goes as usual",
+    // Q4: the first navigation only.
+    "The retry is only for the popup's first navigation (ab-lead, PR #21 question 4): from its first main-frame commit that is not `about:blank` on, a block sends its notice at once and gets no retry, and a page that commits while the retry waits cancels it",
+    // The measured delay of bridge.tabScope.
+    "and before the popup's `tabs.onCreated` in 500 of 500",
+  ];
+  for (const s of checks) assert.ok(says(C10, s), s);
+  // The four waits have names in C10, with the receiver's values.
+  for (const [name, value] of Object.entries({ NEW_TAB_WAIT_MS, RULE_QUIET_MS, RETRY_AFTER_MS, RETRY_START_MS })) {
+    assert.ok(C10.includes(`\`${name} = ${value}\``), `C10 has \`${name} = ${value}\``);
+  }
+  assert.deepEqual([NEW_TAB_WAIT_MS, RULE_QUIET_MS, RETRY_AFTER_MS, RETRY_START_MS], [50, 50, 50, 1000]);
+  // The agent package has the permission that C10 names, and the old wordings are gone.
+  assert.ok(JSON.parse(read("agent/manifest.json")).permissions.includes("webRequest"));
+  for (const old of ["A POST is not sent again", "The packed agent has no `webRequest`", "a POST that Chrome does not send again", "Part 1b's live test measures the delay", "or 50 ms late when none comes"]) {
+    assert.ok(!says(C10, old), `gone: ${old}`);
+  }
 });

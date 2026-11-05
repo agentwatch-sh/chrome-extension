@@ -268,6 +268,10 @@ export function makeFakeChrome() {
         return [{ frameId: 0, result: isPageState ? chromeResult(structuredClone(fake.pageResult)) : undefined }];
       }),
     },
+    webRequest: {
+      onBeforeRequest: makeEvent(),
+      onErrorOccurred: makeEvent(),
+    },
     webNavigation: {
       onErrorOccurred: makeEvent(),
       onCompleted: makeEvent(),

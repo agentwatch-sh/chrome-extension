@@ -328,6 +328,8 @@ export class Bridge {
     // tabs.onCreated (popups.js). No event of them goes to the relay.
     c.webNavigation.onBeforeNavigate.addListener((d) => this.#r.popups.beforeNavigate(d));
     c.webNavigation.onCommitted.addListener((d) => this.#r.popups.committed(d));
+    // The method of a blocked main-frame request: the retry reloads a GET only (popups.js).
+    c.webRequest.onErrorOccurred.addListener((d) => this.#r.popups.requestError(d), { urls: ["<all_urls>"], types: ["main_frame"] });
     c.downloads.onCreated.addListener((item) => this.#emit("downloads.onCreated", { item }));
     c.downloads.onChanged.addListener((delta) => this.#emit("downloads.onChanged", { delta }));
   }

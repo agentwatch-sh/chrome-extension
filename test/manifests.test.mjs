@@ -89,11 +89,12 @@ test("agent manifest", () => {
   assert.equal(typeof receiver.description, "string");
   assert.ok(receiver.description.length <= 132, "Chrome's description limit");
   // Two-modes design, section 3.1; downloads and contentSettings for the bridge (C10); storage for
-  // the copy of the tab-to-scope map in chrome.storage.session (C10, each tab's scope).
+  // the copy of the tab-to-scope map in chrome.storage.session (C10, each tab's scope); webRequest
+  // for the method of a popup's blocked first request (C10, the retry: a GET only; no install warning).
   assert.deepEqual(receiver.permissions, [
     "cookies", "scripting", "tabs", "webNavigation",
     "declarativeNetRequest", "nativeMessaging", "debugger", "browsingData",
-    "downloads", "contentSettings", "storage",
+    "downloads", "contentSettings", "storage", "webRequest",
   ]);
   assert.equal("optional_permissions" in receiver, false);
   assert.deepEqual(receiver.host_permissions, ["<all_urls>"]);
