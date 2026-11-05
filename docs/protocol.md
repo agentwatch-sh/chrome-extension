@@ -469,9 +469,9 @@ its script returns, so the rules cannot go at the end of the step: the receiver 
 restore tab's first main-frame `webNavigation.onCommitted` or `onErrorOccurred` after step 4 (not
 matched to `state.url`: a redirect commits another URL), at most 4 s after step 4, and in every
 failure cleanup (step 5). The import ends (its answer, and the next import of the queue) only after
-the rules are gone, so two imports never share rules 6 and 7; the 4 s fit in the budget (100 s + 4 s
-+ two cleanups of 4 s = 112 s, below 115 s). Until the rules go, C5's guard judges the tab by
-`domain`. The restore tab is in no scope; after the import its page stays while a list covers it
+the rules are gone, so two imports never share rules 6 and 7; the 4 s fit in the budget (100 s,
+plus 4 s, plus two cleanups of 4 s each: 112 s, below 115 s). Until the rules go, C5's guard judges
+the tab by `domain`. The restore tab is in no scope; after the import its page stays while a list covers it
 (C5's closing rule), and it cannot navigate further or load new frames.
 
 ### C9. The two gateway routes, as the sender sees them
