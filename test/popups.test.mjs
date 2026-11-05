@@ -384,8 +384,10 @@ test("the retry: the first request of a covered host that the late rule blocked 
   s.f.chrome.debugger.onEvent.fire({ tabId: 9 }, "Fetch.requestPaused", paused("h1"));
   await flush();
   assert.equal(created(s, 9, before).length, 1, "the retry's request is in the hold");
-  nav(s, "onCommitted", 9, URL_A);
+  // The reload's navigation started: the hold keeps its request, and RETRY_START_MS sends nothing.
   await s.fire(RETRY_START_MS);
+  nav(s, "onCommitted", 9, URL_A);
+  await flush();
   assert.deepEqual(s.notices(), [], "no blocked notice for a retried request");
   assert.deepEqual(reloads(s), [[9]], "one reload");
 });
@@ -519,4 +521,20 @@ test("a popup that closes while its retry waits gets no reload; one that leaves 
   await s.fire(RETRY_AFTER_MS);
   assert.deepEqual(reloads(s), []);
   assert.deepEqual(s.notices(), [{ t: "blocked", tab: 10, host: "a.example" }]);
+});
+
+test("a page that commits while the retry waits: the first request stays blocked, its notice goes, and no reload comes", async () => {
+  const s = await popupSetup();
+  const late = lateRules(s);
+  openPopup(s);
+  await flush();
+  block(s, 9);
+  nav(s, "onBeforeNavigate", 9, "https://a.example/other");
+  nav(s, "onCommitted", 9, "https://a.example/other");
+  await flush();
+  assert.deepEqual(s.notices(), [{ t: "blocked", tab: 9, host: "a.example" }]);
+  await late();
+  await s.fire(RETRY_AFTER_MS);
+  assert.deepEqual(reloads(s), []);
+  assert.equal(s.notices().length, 1);
 });
