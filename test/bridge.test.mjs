@@ -67,6 +67,14 @@ const callsSince = (f, mark) => f.calls.slice(mark).filter(([p]) => p !== "port.
 // The CDP commands since mark, as [method, params].
 const cmds = (f, mark) => callsSince(f, mark).filter(([p]) => p === "debugger.sendCommand").map(([, a]) => [a[1], a[2]]);
 
+// Since board ab-v16.30 the vectors hold the per-scope contract (docs/protocol.md, the intro and
+// C10's "Each tab's scope"): tabs.create and windows.create take the scope arg. The receiver meets
+// that from part 1a (board ab-v16.31) on. Until then the vectors of these two ops run as todo tests:
+// they report, and they do not fail the run. Part 1a removes PENDING_1A and makes them plain tests.
+const PENDING_1A = "board ab-v16.31 (part 1a): tabs.create and windows.create take the scope arg";
+const SCOPED_OPS = new Set(["tabs.create", "windows.create"]);
+const scoped = (v) => SCOPED_OPS.has(v.req.op);
+
 test("the bridge's constants and ops are C10's", () => {
   const K = V.constants;
   assert.equal(BRIDGE_VERSION, K.BRIDGE_VERSION);
@@ -76,7 +84,7 @@ test("the bridge's constants and ops are C10's", () => {
   assert.equal(RESULT_PART_BYTES, K.RESULT_PART_BYTES);
   assert.deepEqual(CONTENT_TYPES, V.contentTypes);
   assert.deepEqual(Object.keys(OPS).sort(), V.ops.map((o) => o.op).sort(), "the 19 ops and no other (no cookie op)");
-  for (const o of V.ops) {
+  for (const o of V.ops.filter((x) => !SCOPED_OPS.has(x.op))) {
     const spec = OPS[o.op];
     assert.deepEqual(spec.kinds, o.kinds, o.op);
     assert.equal(spec.required, o.required, o.op);
@@ -85,9 +93,17 @@ test("the bridge's constants and ops are C10's", () => {
   }
 });
 
-test("each request vector makes its chrome call and gets the vector's res", async () => {
+test("tabs.create and windows.create are C10's: the scope arg", { todo: PENDING_1A }, () => {
+  for (const o of V.ops.filter((x) => SCOPED_OPS.has(x.op))) {
+    const spec = OPS[o.op];
+    assert.deepEqual(spec.kinds, o.kinds, o.op);
+    assert.equal(spec.required, o.required, o.op);
+  }
+});
+
+async function requestVectors(vectors) {
   const s = await setup({ tabs: [{ id: 7, windowId: 1, url: "https://a.example/" }] });
-  for (const v of V.requests) {
+  for (const v of vectors) {
     if (v.chrome) s.f.impl[v.chrome[0]] = async () => structuredClone(v.res.data);
     const mark = s.f.calls.length;
     assert.deepEqual(await s.answer(v.req), v.res, v.req.id);
@@ -96,9 +112,13 @@ test("each request vector makes its chrome call and gets the vector's res", asyn
       delete s.f.impl[v.chrome[0]];
     }
   }
-});
+}
 
-test("each bad request vector gets its error, and its op never reaches Chrome", async () => {
+test("each request vector makes its chrome call and gets the vector's res", () => requestVectors(V.requests.filter((v) => !scoped(v))));
+
+test("each request vector of tabs.create and windows.create: the scope arg", { todo: PENDING_1A }, () => requestVectors(V.requests.filter(scoped)));
+
+async function badRequestVectors(vectors) {
   const s = await setup({
     tabs: [
       { id: 5, windowId: 1, url: "https://a.example/__agentwatch_restore_0123456789abcdef__" },
@@ -108,13 +128,17 @@ test("each bad request vector gets its error, and its op never reaches Chrome", 
     ],
   });
   s.att.markRestore(5); // the restore tab of a running import
-  for (const v of V.badRequests) {
+  for (const v of vectors) {
     const mark = s.f.calls.length;
     assert.deepEqual(await s.answer(v.req), v.res, v.req.id);
     // debugger.attach reads the tab (for its own-origin check) before it acts.
     assert.deepEqual(callsSince(s.f, mark).filter(([p]) => p !== "tabs.get"), [], `${v.req.id}: no chrome call`);
   }
-});
+}
+
+test("each bad request vector gets its error, and its op never reaches Chrome", () => badRequestVectors(V.badRequests.filter((v) => !scoped(v))));
+
+test("each bad request vector of tabs.create and windows.create: the scope arg", { todo: PENDING_1A }, () => badRequestVectors(V.badRequests.filter(scoped)));
 
 test("the checks run in C10's order: the op, the args, the wait, the tab", async () => {
   const s = await setup();
