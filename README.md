@@ -15,9 +15,9 @@ it carries the bridge that lets agent-browser's relay drive the agent's Chrome
 
 This repository holds one source tree and builds two packages from it, one for
 each mode (agent-browser's two-modes design, section 3.1). agentwatch pins a
-tag of it. The design is in agentwatch's agent browser design (sections 5.14
-to 5.16) and the two-modes design; the messages and fixed values are in
-[docs/protocol.md](docs/protocol.md).
+commit of it by its 40-hex ID. The design is in agentwatch's agent browser
+design (sections 5.14 to 5.16) and the two-modes design; the messages and fixed
+values are in [docs/protocol.md](docs/protocol.md).
 
 | Folder | Runs in | Does |
 | --- | --- | --- |
@@ -145,17 +145,46 @@ npm run pack:agent -- --out release # writes release/agent.crx, the committed co
 ```
 
 - **The committed copy:** `release/agent.crx` is in the repository (board
-  task ab-v16.22). agentwatch pins a commit of this repository by its 40-hex
-  ID and installs that commit's `release/agent.crx`; it never runs the
-  script and never opens the key. The CRX holds no secret: only the archive,
-  the public key and the signature. The same files and the same key give
-  the same bytes, so a test (`test/pack-agent.test.mjs`) checks without the
-  key that the committed CRX has the agent ID, a valid signature and exactly
-  the files of `agent/`. So a change of `agent/` fails `npm test` until the
-  key holder repacks on taylor: raise `version` in `agent/manifest.json`
-  (Chrome installs an external CRX again only when its version is higher),
-  run `npm run pack:agent -- --out release`, and commit `release/agent.crx`
-  with the change.
+  task ab-v16.22). agentwatch pins two values: a commit of this repository,
+  by its 40-hex ID, and the SHA-256 of that commit's `release/agent.crx`.
+  It installs that CRX; it never runs the script and never opens the key.
+  So a change of `agent/` reaches the boxes only after agentwatch moves both
+  pins. The CRX holds no secret: only the archive, the public key and the
+  signature.
+- **What goes in:** the script packs only the files that git tracks in
+  `agent/` (`git ls-files`). An ignored or untracked file there, for example
+  `agent/notes.zip` or `agent/attach.js~`, stays out.
+- **The checks** (`test/pack-agent.test.mjs`, board task ab-v16.24). The same
+  files and the same key give the same bytes only with the same Node and zlib
+  build: another zlib build can deflate the same files to other bytes. So the
+  tests compare content, not bytes, and they need no key:
+  - The committed CRX has the agent ID, a valid signature and exactly the
+    tracked files of `agent/`.
+  - `release/versions.json` holds each released version and the content
+    SHA-256 of that version (below). The entry of the manifest version
+    matches `agent/` and the CRX, and that version is the highest in the
+    table, in Chrome's order.
+  - The table keeps each entry of its base. On a push run in CI, the base is
+    the main before the push (`github.event.before`): the workflow fetches
+    that commit and passes it to the test as `VERSIONS_BASE`. On a
+    pull_request run, the base is `HEAD^1`, the main tip of the merge commit
+    (the checkout has `fetch-depth: 2`). Elsewhere, the base is
+    `origin/main`. An entry that the base holds never changes or leaves the
+    table. A branch may correct its own new entry. A base from before the
+    table passes. A base commit that is not in the clone, or an all-zero
+    `github.event.before` (a new branch), fails the test.
+- **The content SHA-256:** take the files of the package (not its folders)
+  and sort them by the UTF-8 bytes of their paths. For each file, write its
+  path, a NUL byte, its size in decimal ASCII digits, a NUL byte and its
+  bytes. The SHA-256 of all of it, in lowercase hex, is the content SHA-256.
+  Each path is printable ASCII (the script refuses other paths), so each ZIP
+  reader (for example Python's `zipfile`) reads the same names.
+- **A change of `agent/`** fails `npm test` until the key holder repacks on
+  taylor: raise `version` in `agent/manifest.json` (Chrome installs an
+  external CRX again only when its version is higher), run `npm run
+  pack:agent -- --out release`, add the entry of the new version to
+  `release/versions.json` (`npm test` prints it), and commit the three
+  changes together.
 
 - **The key:** its working copy lives only on taylor, in
   `~/.config/agentwatch/browser/agent-extension.pem` (mode 0600, in a 0700

@@ -2,11 +2,17 @@
 
 Both repositories implement these contracts. Change them only in the agentwatch plan.
 
-C4, C10 and C11 are the exceptions. Since the two-modes design (agent-browser
-`docs/superpowers/specs/2026-11-03-two-modes-playwright-design.md`, sections 4, 8, 11 and 13), this
-file is the master for them. The agentwatch plan's C4 text is older (`"v":1`, no channels). C10 and
-C11 are only here. They bind three repositories: this one (the receiver), agent-browser (its relay)
-and agentwatch (the daemon).
+C1, C4, C5, C10 and C11 are the exceptions: this file is the master for them. For C4, C10 and C11,
+this holds since the two-modes design (agent-browser
+`docs/superpowers/specs/2026-11-03-two-modes-playwright-design.md`, sections 4, 8, 11 and 13). The
+agentwatch plan's C4 text is older (`"v":1`, no channels). C10 and C11 are only here. They bind three
+repositories: this one (the receiver), agent-browser (its relay) and agentwatch (the daemon).
+
+For C1 and C5, this holds since board task ab-v16.24 (aw-lead agreed, mail m7ccc29b, 2026-11-04), on
+two conditions. A change of C1 or C5 that agentwatch must follow (an ID, a pin rule, an allowlist
+rule) goes to aw-lead by mail, with its commit, before it merges. agentwatch's pins
+(`CHROME_EXTENSION_COMMIT`, `CHROME_EXTENSION_RECEIVER_ID`, `AGENT_CRX_PATH`, `AGENT_CRX_SHA256`)
+move only in an agentwatch tip, so a chrome-extension merge alone never reaches a box.
 
 - Sender extension ID: `bpfkgknpndlpkcffmaaelkfcbpackiip`
 - Receiver extension ID: `ifhfjdmdbgbnmllffiadajepajbcdnai`
@@ -34,12 +40,16 @@ The sender is the operator package (`operator/`, operator mode). The receiver is
   `dofdpnfachcncepdoondkeodcbnhipdc`: E1's key was never kept, so no CRX could have that ID. A lost
   key means a new ID, and every pin of the ID changes again.
 - The committed CRX (board task ab-v16.22): `release/agent.crx` holds the packed `agent/` folder of
-  the same commit, signed with that key. agentwatch pins a commit of this repository (40-hex) and
-  installs its `release/agent.crx`; agentwatch never runs the pack script and never opens the key. A
-  test checks, without the key, that the committed CRX has this ID, a valid signature and exactly
-  the files of `agent/`. A change of `agent/` raises the `version` in `agent/manifest.json` (Chrome
-  installs an external CRX again only for a higher `external_version`) and repacks
-  (`npm run pack:agent -- --out release`) on taylor, in the same commit.
+  the same commit, signed with that key. agentwatch pins a commit of this repository (40-hex), and
+  that commit holds the `release/agent.crx` that agentwatch installs; agentwatch never runs the pack
+  script and never opens the key. A test checks, without the key, that the committed CRX has this
+  ID, a valid signature and exactly the files of `agent/`. agentwatch depends on two rules:
+  - Each new content of `agent/` comes with a higher `version` in `agent/manifest.json`: Chrome
+    installs an external CRX again only for a higher `external_version`. `release/versions.json` and
+    `npm test` enforce this rule. The steps for a change of `agent/` are in the README (The packed
+    CRX).
+  - agentwatch pins only a commit that chrome-extension `main` reaches. A PR head can still change
+    its own unreleased entry of `release/versions.json`.
 - The pins of the receiver ID that agentwatch's stage 4 (board ab-v16.7) changes, in agentwatch main
   `4e483512`:
   - `agentwatch/tools/pins.py:32`: `CHROME_EXTENSION_RECEIVER_ID`.
@@ -49,7 +59,9 @@ The sender is the operator package (`operator/`, operator mode). The receiver is
   - `docs/superpowers/handoff/agent-browser-state.md:99`: a handoff note that names the ID.
 
   Stage 4 also moves `CHROME_EXTENSION_COMMIT` (`agentwatch/tools/pins.py:30`) to a commit of this
-  repository that holds the new `key`.
+  repository that holds the new `key` and `release/agent.crx`, and pins the SHA-256 of that CRX. A
+  change of `agent/` reaches the boxes only after agentwatch moves both pins: the commit and the CRX
+  SHA-256.
 
 ### C2. The send payload (sender -> gateway -> daemon -> receiver)
 
