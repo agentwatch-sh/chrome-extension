@@ -235,10 +235,10 @@ There is no backward compatibility: agentwatch pins both repositories and moves 
   - The new object replaces the last one in full. The daemon sends it after each `link` up, at each
     change of a list, and when a session (a scope) starts or ends. It waits 10 s for the answer.
   - The daemon names a session's scope in `scopes` before it gives the session its endpoint (C11),
-    also through `agentwatch browser env` and an endpoint URL in the session's environment at its
-    launch: else the session could connect in the moment before and get the `default` list, which
-    can be another repo's list. The URL is easy to guess, so with a `default` list any scope that
-    `scopes` does not name gets it.
+    also through `agentwatch browser env` and, only when the operator allowed it (C11's target), an
+    endpoint URL in the session's environment at its launch: else the session could connect in the
+    moment before and get the `default` list, which can be another repo's list. The URL is easy to
+    guess, so with a `default` list any scope that `scopes` does not name gets it.
   - At a session's end the daemon writes `end_scope` to the relay (C10) and drops the scope from
     `scopes` in its next `set_scopes` (agentwatch stage 4, B5). So `scopes` holds only the live
     sessions, and the receiver's map cannot grow without bound. With `default` `null` (the design's
@@ -469,10 +469,10 @@ its script returns, so the rules cannot go at the end of the step: the receiver 
 restore tab's first main-frame `webNavigation.onCommitted` or `onErrorOccurred` after step 4 (not
 matched to `state.url`: a redirect commits another URL), at most 4 s after step 4, and in every
 failure cleanup (step 5). The import ends (its answer, and the next import of the queue) only after
-the rules are gone, so two imports never share rules 6 and 7; the 4 s fit in the budget (100 s,
-plus 4 s, plus two cleanups of 4 s each: 112 s, below 115 s). Until the rules go, C5's guard judges
-the tab by `domain`. The restore tab is in no scope; after the import its page stays while a list covers it
-(C5's closing rule), and it cannot navigate further or load new frames.
+the rules are gone, so two imports never share rules 6 and 7; the 4 s fit in the budget (100 s, plus
+4 s, plus two cleanups of 4 s each: 112 s, below 115 s). Until the rules go, C5's guard judges the
+tab by `domain`. The restore tab is in no scope; after the import its page stays while a list covers
+it (C5's closing rule), and it cannot navigate further or load new frames.
 
 ### C9. The two gateway routes, as the sender sees them
 
@@ -1274,20 +1274,35 @@ settings and the allowlist refusals above. The rest of C11 stays.
   secret" (the URL then holds the key), and "Every process of the daemon's OS user ... may connect"
   (only with the scope's key). With a token, `default` is `null`: a scope that `scopes` does not
   name has no token. The same OS user can read `/proc/<pid>/environ`, so the token guards against
-  mistakes and against another session's prompt injection, not against a hostile process of that
-  user.
+  mistakes and against an injected instruction that only names another scope. It does not guard
+  against a process of that user that reads another process's environment, a transcript or a pane.
+  The agent's own shell commands inherit the key: an `env` writes it into the transcript.
   - The token: 64 lowercase hex digits (32 random bytes; `ws` cuts a `ws+unix:` URL at each `:`, and
     a `#` is an error, so hex is safe). Its hash: SHA-256 of those 64 ASCII characters, in lowercase
     hex.
   - Where it lives: only in the session's environment, put there by agentwatch at the session's
-    launch. Never in an argv, never in the output of `agentwatch browser endpoint` or `agentwatch
-    browser env`, never in a log, and never in a URL that a tool gets as an argument. agent-browser
-    and a script read it from their environment and add it to the URL at the connect call only
-    (agent-browser never puts it into its `Settings.cdpUrl`: `agent-browser status` prints that).
-    The Playwright MCP reads the full URL from `PLAYWRIGHT_MCP_CDP_ENDPOINT`, so agentwatch puts the
-    URL with the key into that variable of the session's environment at the launch. The daemon keeps
-    each session's key in a token file under `~/.config/agentwatch/tokens/` (0600 files in 0700
-    folders, the modes applied again at each write), never in the browser state folder.
+    launch, in one variable, `AGENTWATCH_BROWSER_CRED` (its name keeps `KEY`, `SECRET` and `TOKEN`
+    out: Codex's default policy removes such names from the commands that the model runs). Never
+    in an argv, never in the output of `agentwatch browser
+    endpoint` or `agentwatch browser env`, never in a log, and never in a URL that a tool gets as an
+    argument. agent-browser and a script read it from their environment and add it to the URL at
+    the connect call only (agent-browser never puts it into its `Settings.cdpUrl`: `agent-browser
+    status` prints that). The daemon keeps each session's key in a token file under
+    `~/.config/agentwatch/tokens/` (0600 files in 0700 folders, the modes applied again at each
+    write), never in the browser state folder.
+  - The session's environment is the agent's process environment. The launch line reads the key
+    from the token file. agentwatch never sets the key with `tmux -e` or `set-environment`: both put
+    the value into tmux's argv.
+  - Only the daemon reads the token files. No agentwatch command reads a key from them: the CLI
+    cannot tell which session calls (agentwatch #563).
+  - The operator's answer age-4ks ("env: no", 2026-11-04) stands. Without a key, agentwatch puts no
+    endpoint URL into a session's environment; only `agentwatch browser env` prints it, on request.
+    With a key, agentwatch puts only the key variable into the environment.
+    `PLAYWRIGHT_MCP_CDP_ENDPOINT` with the key goes into it only after the operator answers that
+    question again: it sends each session's Playwright MCP to the signed-in agent browser.
+  - With keys on, `agentwatch browser env` prints the keyless URL and one line that names the key
+    variable (`AGENTWATCH_BROWSER_CRED`), never the key. `agentwatch browser <command>` passes the
+    key variable into agent-browser's environment: that one named variable only.
   - The URL form: the token goes in the query, `ws+unix://<socket
     path>:/devtools/browser/<scope>?key=<token>`, or in an upgrade header `X-Agentwatch-Key:
     <token>` for a client that can send one. Never in the path: playwright-core 1.61.1 and 1.63.0
@@ -1313,6 +1328,14 @@ settings and the allowlist refusals above. The rest of C11 stays.
     key whose hash is not the scope's entry in `keys` (or no entry, or no `keys`) gets the same 403;
     then `the allowlist has no list for this scope` gets its 503. So a session that is live before
     the deploy (it has no key until its restart) gets the 403, fail closed.
-  - Over a daemon restart: the daemon keeps each live session's key in its token file (the
-    session's environment still holds it) and sends the hashes again in its next `allowlist` line.
-    A lost token file means that its session gets the 403 until it starts again.
+  - The key's life: the daemon makes a new key at each launch of a session and keeps it over a
+    restart of the session's agent. At the session's end it removes the token file and drops the
+    scope's entry from `keys`, in the line that drops the scope. A later session of the same name
+    never gets an old key. Over a daemon restart the daemon keeps each live session's key in its
+    token file (the session's environment still holds it) and sends the hashes again in its next
+    `allowlist` line. A lost token file means that its session gets the 403 until it starts again.
+  - agentwatch picks each session's scope at its launch and keeps it for the session's life. A
+    rename does not change it. No two live sessions share one scope.
+  - A launch never waits for the agent browser. The daemon adds the scope to its map before the
+    launch and sends `set_scopes` when the link is up. With `default` `null`, an earlier connection
+    gets the 503 `the allowlist has no list for this scope`.
