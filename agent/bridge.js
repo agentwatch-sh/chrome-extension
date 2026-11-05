@@ -258,6 +258,7 @@ export class Bridge {
   reset() {
     this.#epoch += 1;
     this.#r.removals.dropBridge();
+    this.#r.popups.reset();
     return this.#att.reset();
   }
 
@@ -296,26 +297,46 @@ export class Bridge {
       if (source && att.dropped(source.tabId)) this.#emit("debugger.onDetach", { source, reason });
     });
     // While the eager attach is on, the event comes once the attach and the
-    // hold of the tab are on (or failed); an event of the tab that Chrome
-    // fires meanwhile can come before it. Off, it comes at once.
+    // hold of the tab are on (or failed), and a popup whose hold is on keeps
+    // it longer (popups.js); an event of the tab that Chrome fires meanwhile
+    // can come before it. Off, it comes after the tab's navigation target, or
+    // NEW_TAB_WAIT_MS late when none comes (popups.js).
     c.tabs.onCreated.addListener((tab) => {
-      if (!att.attachNew || !tab || !isId(tab.id)) {
+      const at = this.#r.clock.now();
+      if (!tab || !isId(tab.id)) {
         this.#emit("tabs.onCreated", { tab, attached: false, held: false });
         return;
       }
-      void att.attachNewTab(tab.id, ownOrigin(this.#ctx, tab)).then((fields) => this.#emit("tabs.onCreated", { tab, ...fields }));
+      if (!att.attachNew) {
+        this.#r.popups.created(tab, { attached: false, held: false });
+        return;
+      }
+      void att.attachNewTab(tab.id, ownOrigin(this.#ctx, tab)).then((fields) => this.#r.popups.attached(tab, fields, at));
     });
     c.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       if (!isObj(changeInfo) || !["url", "title", "status"].some((k) => Object.hasOwn(changeInfo, k))) return;
       this.#emit("tabs.onUpdated", { tabId, changeInfo, tab });
     });
-    // tabs.onRemoved and tabs.onReplaced change the map: receiver.js sends them.
-    c.webNavigation.onCreatedNavigationTarget.addListener((details) =>
-      this.#emit("webNavigation.onCreatedNavigationTarget", { details }));
+    // tabs.onRemoved, tabs.onReplaced and webNavigation.onCreatedNavigationTarget
+    // change the map: receiver.js sends them.
     c.webNavigation.onErrorOccurred.addListener((d) => {
       if (!d || d.frameId !== 0) return;
       this.#emit("webNavigation.onErrorOccurred", { details: { tabId: d.tabId, frameId: d.frameId, url: d.url, error: d.error } });
+      this.#r.popups.error(d);
     });
+    // A popup's main-frame navigations: the retry and the hold of its
+    // tabs.onCreated (popups.js). No event of them goes to the relay.
+    c.webNavigation.onBeforeNavigate.addListener((d) => this.#r.popups.beforeNavigate(d));
+    c.webNavigation.onCommitted.addListener((d) => this.#r.popups.committed(d));
+    // The method of a blocked main-frame request: the retry reloads a GET only
+    // (popups.js). With no chrome.webRequest (Chrome withheld the permission)
+    // the bridge still starts, every method is unknown, and no popup gets a
+    // retry (fail closed).
+    if (c.webRequest && c.webRequest.onErrorOccurred) {
+      c.webRequest.onErrorOccurred.addListener((d) => this.#r.popups.requestError(d), { urls: ["<all_urls>"], types: ["main_frame"] });
+    } else {
+      console.warn("agentwatch receiver: no chrome.webRequest: a popup's blocked first request gets no retry");
+    }
     c.downloads.onCreated.addListener((item) => this.#emit("downloads.onCreated", { item }));
     c.downloads.onChanged.addListener((delta) => this.#emit("downloads.onChanged", { delta }));
   }

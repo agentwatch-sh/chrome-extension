@@ -11,6 +11,7 @@ import { HOLD_MAX_MS, HOLD_FORCE_MS } from "../agent/hold.js";
 import { ReceiverLink } from "../agent/link.js";
 import { mainOps, setScopes } from "../agent/allowlist.js";
 import { receiver } from "../agent/receiver.js";
+import { NEW_TAB_WAIT_MS } from "../agent/popups.js";
 import { REMOVAL_WAIT_MS } from "../agent/removals.js";
 import { RESTORE_MAX_MS, TOMBSTONE_MS } from "../agent/tabmap.js";
 import { MAX_RESULT, MAX_TO_DAEMON, PART_BYTES, RESULT_PART_BYTES, splitParts } from "../agent/wire.js";
@@ -70,6 +71,13 @@ async function setup({ navigator = NAV, scopes = V.setScopes, tabs = [], copy = 
   const evs = () => port().posted.filter((m) => m.t === "ev");
   const errorOf = (req) => bridge.handle(req).then(() => null, (e) => e.message);
   return { f, link, bridge, timers, port, send, answer, resOf, evs, errorOf, att: attachments(f.chrome), r: receiver(f.chrome) };
+}
+// Fires every pending fake timer of ms, once.
+function fireTimers(s, ms) {
+  for (const t of s.timers.filter((x) => x.ms === ms && !x.cleared)) {
+    t.cleared = true;
+    t.fn();
+  }
 }
 // The chrome calls since mark, without the port's posts.
 const callsSince = (f, mark) => f.calls.slice(mark).filter(([p]) => p !== "port.postMessage");
@@ -529,6 +537,7 @@ test("an event above MAX_TO_DAEMON goes as bridge.tooLarge with what the relay n
   s.f.chrome.debugger.onEvent.fire({ tabId: 7 }, "Network.webSocketFrameReceived", { requestId: "9", response: { payloadData: big } });
   s.f.chrome.tabs.onUpdated.fire(9, { title: big }, { id: 9, title: big });
   s.f.chrome.tabs.onCreated.fire({ id: 10, pendingUrl: "data:text/html," + big });
+  fireTimers(s, NEW_TAB_WAIT_MS); // a tab with no navigation target: its event NEW_TAB_WAIT_MS late (part 1b)
   s.f.chrome.webNavigation.onCreatedNavigationTarget.fire({ sourceTabId: 7, tabId: 11, url: "data:text/html," + big });
   s.f.chrome.downloads.onCreated.fire({ id: 3, url: "data:text/plain," + big });
   const want = V.eventVectors.filter((v) => v.ev.ev === "bridge.tooLarge").map((v) => v.ev);
@@ -711,6 +720,8 @@ test("the eager attach: off, a tab of the agent's own origin, Chrome's refusal, 
     const tab = c.tab ?? POPUP;
     s.f.chrome.tabs.onCreated.fire(structuredClone(tab));
     await flush();
+    // Off: a tab with no navigation target gets its event NEW_TAB_WAIT_MS late (part 1b).
+    if (c.off) fireTimers(s, NEW_TAB_WAIT_MS);
     assert.deepEqual(s.evs().at(-1), { t: "ev", ch: "bridge", ev: "tabs.onCreated", tab, ...want }, name);
     assert.deepEqual(callsSince(s.f, mark).map(([p]) => p), calls, name);
     assert.equal(s.att.isBridgeTab(9), want.attached, name);

@@ -1,10 +1,11 @@
 // The receiver's state per worker (one per chrome object): the attachments
 // (attach.js), the tab-to-scope map and its copy (tabmap.js), the session
-// rules (dnr.js) and the removal queue (removals.js), with the chrome events
-// that change the map. The bridge (bridge.js), set_scopes (allowlist.js) and
-// the import (importer.js) share it.
+// rules (dnr.js), the removal queue (removals.js) and the popups with their
+// retry (popups.js), with the chrome events that change the map. The bridge
+// (bridge.js), set_scopes (allowlist.js) and the import (importer.js) share it.
 import { attachments } from "./attach.js";
 import { SessionRules } from "./dnr.js";
+import { Popups } from "./popups.js";
 import { Removals } from "./removals.js";
 import { TabMap } from "./tabmap.js";
 
@@ -33,6 +34,8 @@ export class Receiver {
     this.map = new TabMap(chrome, clock);
     this.rules = new SessionRules(chrome, () => this.#model(), clock);
     this.removals = new Removals(chrome, { att: this.att, map: this.map, clock });
+    this.popups = new Popups(this);
+    this.att.holds.onKept = (tabId) => this.popups.paused(tabId);
     this.#listen();
   }
 
@@ -83,21 +86,24 @@ export class Receiver {
   }
 
   // A new tab that a tab of the map replaces (tabs.onReplaced) or opens (a
-  // popup: part 1b calls this from webNavigation.onCreatedNavigationTarget)
-  // takes that tab's scope (C10, each tab's scope). from: map.opener() of the
-  // other tab. The new tab enters the map: bridge.tabScope goes as soon as
-  // the entry is in the map, then its key and its list's rules follow. Or
-  // (a scope with no list from the first applied set_scopes on, or a tab of
-  // the orphan set) it joins the orphan set and closes, with no key and no
-  // bridge.tabScope. Gives what map.adopt() gives.
+  // popup, from webNavigation.onCreatedNavigationTarget) takes that tab's
+  // scope (C10, each tab's scope). from: map.opener() of the other tab. The
+  // new tab enters the map: bridge.tabScope goes as soon as the entry is in
+  // the map, then its key and its list's rules follow (got.ruled: that rule
+  // update). Or (a scope with no list from the first applied set_scopes on,
+  // or a tab of the orphan set) it joins the orphan set and closes, with no
+  // key and no bridge.tabScope. A tab that closed gets nothing (no stale
+  // entry). Gives what map.adopt() gives.
   adoptTab(tabId, from) {
+    if (this.map.isGone(tabId)) return null;
     const got = this.map.adopt(tabId, from);
     if (got && got.orphan) {
       this.orphanClose(tabId);
     } else if (got) {
       this.emit("bridge.tabScope", { tabId, scope: got.scope });
       void this.map.writeKey(tabId, got.scope).catch(() => {});
-      void this.rules.replaceLists([this.listName(got.scope)]).catch(() => {});
+      got.ruled = this.rules.replaceLists([this.listName(got.scope)]);
+      got.ruled.catch(() => {});
     }
     return got;
   }
@@ -146,6 +152,7 @@ export class Receiver {
     // query of the removal queue and the relay then see the tab gone).
     c.tabs.onRemoved.addListener((tabId, removeInfo) => this.map.whenRestored(() => {
       const scope = this.map.removed(tabId);
+      this.popups.removed(tabId);
       this.emit("tabs.onRemoved", { tabId, removeInfo });
       this.removals.tabRemoved(tabId);
       if (scope !== undefined) {
@@ -161,6 +168,7 @@ export class Receiver {
       const before = this.map.scopeOf(removedTabId);
       const from = this.map.opener(removedTabId);
       this.map.release(removedTabId);
+      this.popups.removed(removedTabId);
       this.adoptTab(addedTabId, from);
       this.emit("tabs.onReplaced", { addedTabId, removedTabId });
       this.removals.tabRemoved(removedTabId);
@@ -169,6 +177,21 @@ export class Receiver {
         void this.rules.replaceLists([this.listName(before)]).catch(() => {});
       }
     }));
+    // A popup takes the scope of its sourceTabId (never chrome.tabs'
+    // openerTabId: it names the active tab): the entry is in the map in the
+    // handler, then bridge.tabScope, its key and its list's rules. Then the
+    // event goes, and (with the eager attach off) the popup's tabs.onCreated
+    // after it. receiver.js sends this event: it changes the map.
+    c.webNavigation.onCreatedNavigationTarget.addListener((details) => {
+      const tabId = details && details.tabId;
+      this.popups.target(tabId);
+      return this.map.whenRestored(() => {
+        const ids = Number.isInteger(tabId) && Number.isInteger(details.sourceTabId);
+        this.popups.adopted(tabId, ids ? this.adoptTab(tabId, this.map.opener(details.sourceTabId)) : null);
+        this.emit("webNavigation.onCreatedNavigationTarget", { details });
+        this.popups.announced(tabId);
+      });
+    });
   }
 }
 

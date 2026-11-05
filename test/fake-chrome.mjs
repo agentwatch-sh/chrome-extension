@@ -183,6 +183,7 @@ export function makeFakeChrome() {
         if (fake.autoNavigate) fake.pauseRequest(tabId, props.url);
         return { id: tabId, ...props };
       }),
+      reload: rec("tabs.reload", async () => {}),
       onCreated: makeEvent(),
       onUpdated: makeEvent(),
       onRemoved: makeEvent(),
@@ -266,6 +267,10 @@ export function makeFakeChrome() {
         }
         return [{ frameId: 0, result: isPageState ? chromeResult(structuredClone(fake.pageResult)) : undefined }];
       }),
+    },
+    webRequest: {
+      onBeforeRequest: makeEvent(),
+      onErrorOccurred: makeEvent(),
     },
     webNavigation: {
       onErrorOccurred: makeEvent(),

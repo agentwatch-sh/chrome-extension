@@ -15,7 +15,8 @@ const link = new ReceiverLink(chrome, {
 });
 const bridge = new Bridge(chrome, link);
 
-watchBlocked(chrome, (msg) => link.send(msg));
+// A popup's retry decides the notice of its first request (C10, popups.js).
+watchBlocked(chrome, (msg) => link.send(msg), (details, msg, send) => receiver(chrome).popups.screen(details, msg, send));
 // C10: the cleanup at the worker's start (a worker that started again knows no bridge tabs).
 void bridge.reset();
 // C5 and C10 at the worker's start: every session rule goes and the map comes
