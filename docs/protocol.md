@@ -2098,9 +2098,10 @@ cgroup in ab-6gs.
   3. It starts a child process (`process.execPath` with a few lines of script) that connects to that
      socket and stays until the relay has read the connection.
   4. It reads the peer of the accepted socket and compares it with the child's facts: the pid (the
-     child's pid), the uid (the relay's), and on Linux the pid that the pidfd names (the `Pid:` line
-     of `/proc/self/fdinfo/<pidfd>`). A connection from the relay to itself would not do: a reader
-     of the wrong fd (the listening socket's) gives the relay's own pid too (measured).
+     child's pid), the uid (the relay's), and, when `SO_PEERPIDFD` gives a pidfd, the pid that the
+     pidfd names (the `Pid:` line of `/proc/self/fdinfo/<pidfd>`). A connection from the relay to
+     itself would not do: a reader of the wrong fd (the listening socket's) gives the relay's own
+     pid too (measured).
   5. On Linux the answer of `SO_PEERPIDFD` selects the form of every later read: a pidfd of the
      child selects the **pidfd form**; `ENOPROTOOPT` (a kernel before 6.5) selects the **stat
      form**, which is not a failure; any other error fails the test. The Mac has one form.
@@ -2133,8 +2134,8 @@ cgroup in ab-6gs.
 - The session check (step 6), for a connection of scope S, in this order:
   1. The peer is alive. Pidfd form: libc `poll` of the pidfd (`POLLIN`, a 0 ms timeout) does not
      report it readable, the `Pid:` line of its `fdinfo` is the peer's pid (`-1` means that it was
-     reaped), and the peer's state (field 3 of `/proc/<pid>/stat`) is not `Z`. Each of the three
-     counts alone: a process can show the state `Z` before its pidfd polls readable (a Node peer
+     reaped), and the peer's `/proc/<pid>/stat` can be read and its state (field 3) is not `Z`.
+     Each of the three counts alone: a process can show the state `Z` before its pidfd polls readable (a Node peer
      whose other threads still run), and a pidfd can poll readable while the state still shows `R`
      (both measured, review-54b note 2). Stat form and the Mac: the pid is still there, its start
      time is the one of the accept, and its state is not `Z` (on the Mac `pbi_status` is not

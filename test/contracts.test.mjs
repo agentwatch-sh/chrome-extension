@@ -885,7 +885,7 @@ test("C11's scope's session holds the design's rules: the self-test, the peer re
   has(["a dynamic `import(\"node:ffi\")`, never a static import", "`ERR_UNKNOWN_BUILTIN_MODULE`", "A relay without `--peer-check` never loads `node:ffi`",
     "It makes a folder of mode 0700 with `mkdtemp` next to the endpoint socket", "The socket's path is at most 103 bytes, as the endpoint's; a longer path fails the test",
     "It starts a child process (`process.execPath` with a few lines of script) that connects to that socket and stays until the relay has read the connection",
-    "the pid (the child's pid), the uid (the relay's), and on Linux the pid that the pidfd names", "A connection from the relay to itself would not do",
+    "the pid (the child's pid), the uid (the relay's), and, when `SO_PEERPIDFD` gives a pidfd, the pid that the pidfd names", "A connection from the relay to itself would not do",
     "a pidfd of the child selects the **pidfd form**; `ENOPROTOOPT` (a kernel before 6.5) selects the **stat form**, which is not a failure; any other error fails the test",
     "The whole test has a time limit, `SELF_TEST_MS = 5000`", "In every path (a pass, a failure, the time limit) the relay stops the child and removes the folder",
     "`relay: the peer check runs (<form>)`, with `<form>` one of `pidfd`, `stat` and `mac`, or `relay: the peer check cannot run: <reason>`",
@@ -897,7 +897,7 @@ test("C11's scope's session holds the design's rules: the self-test, the peer re
     "The peer's 403 (step 3) is the one answer for every read that fails at the accept (review-54b note 1)",
     "In the pidfd form any error of `SO_PEERPIDFD` is the peer's 403, whatever its code"]);
   // The session check (step 6; review-54b note 2).
-  has(["libc `poll` of the pidfd (`POLLIN`, a 0 ms timeout) does not report it readable, the `Pid:` line of its `fdinfo` is the peer's pid (`-1` means that it was reaped), and the peer's state (field 3 of `/proc/<pid>/stat`) is not `Z`",
+  has(["libc `poll` of the pidfd (`POLLIN`, a 0 ms timeout) does not report it readable, the `Pid:` line of its `fdinfo` is the peer's pid (`-1` means that it was reaped), and the peer's `/proc/<pid>/stat` can be read and its state (field 3) is not `Z`",
     "Each of the three counts alone: a process can show the state `Z` before its pidfd polls readable", "and a pidfd can poll readable while the state still shows `R` (both measured, review-54b note 2)",
     "Stat form and the Mac: the pid is still there, its start time is the one of the accept, and its state is not `Z` (on the Mac `pbi_status` is not `SZOMB`)",
     "The walk, from the peer itself (hop 0) to its parent, and on. It stops at the first process that matches a root of the line, of any scope (also a root that does not count, below)",
