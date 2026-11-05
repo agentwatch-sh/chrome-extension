@@ -199,6 +199,18 @@ scope its own allowlist (the design: agent-browser
 until that build merges; the build then replaces it with the block, and changes the vectors with it.
 There is no backward compatibility: agentwatch pins both repositories and moves them at once.
 
+- The rollout. The receiver's hello names the new form:
+  `{"t":"hello","v":2,"version":"<manifest version>","channels":["main","bridge"],"features":["scopes"]}`.
+  Each side meets the other's old form fails closed, by name:
+  - A new daemon and an old receiver (its latest hello has no `"scopes"` in `features`): the daemon
+    sends `set_allowlist` with `"domains":[]` (the old receiver then blocks every site and closes its
+    `http:`/`https:` tabs), writes no `allowlist` line to the relay (so the relay admits no
+    connection), and shows on the Browser page: "The agent browser's extension is too old for the
+    per-repo allowlists. Update it."
+  - A new receiver and an old daemon: the receiver answers `set_allowlist` with
+    `{"t":"res","id":"<id>","ok":false,"error":"set_allowlist is gone: send set_scopes"}` and applies
+    nothing, so no scope rule exists and every tab is blocked (it removed the old dynamic rules 2
+    and 4 at its start). An old relay's `tabs.create` without the scope arg gets `bad args`.
 - `set_allowlist` goes. In its place, on channel `main`:
   `{"t":"req","id":"<id>","op":"set_scopes","lists":{"<list>":["a.example"]},"scopes":{"<scope>":"<list>"},"default":"<list>"}` ->
   `{"rules":<scope rules in force>,"closed":<tabs closed>,"refused":<entries, list names and scopes refused>}`.
@@ -223,10 +235,12 @@ There is no backward compatibility: agentwatch pins both repositories and moves 
     launch: else the session could connect in the moment before and get the `default` list, which
     can be another repo's list. The URL is easy to guess, so with a `default` list any scope that
     `scopes` does not name gets it.
-  - At a session's end the daemon keeps its scope in `scopes` with `null` and writes `end_scope` to
-    the relay (C10), so the ended scope never falls back to the `default` list. It keeps that entry
-    until the next `link` up (the receiver empties its map then); with `default` `null` it may drop
-    the entry as soon as `end_scope` has removed the scope's tabs.
+  - At a session's end the daemon writes `end_scope` to the relay (C10) and drops the scope from
+    `scopes` in its next `set_scopes` (agentwatch stage 4, B5). So `scopes` holds only the live
+    sessions, and the receiver's map cannot grow without bound. With `default` `null` (the design's
+    choice 5 a) a dropped scope has no list, so its tabs fail closed. Only with a `default` list does
+    the daemon first send the ended scope as `null`, and drop it when `end_scope` has removed the
+    scope's tabs: so the ended scope never falls back to the `default` list.
   - With choice 3 of the design (the operator's own tabs), `set_scopes` has one more field,
     `"operator"`: `"*"` (the marked tabs may open any site), a list name (they have that list), or
     `null` (no site; also when the field is absent). C10's target gives the mark. For "every repo's
@@ -1221,6 +1235,14 @@ settings and the allowlist refusals above. The rest of C11 stays.
   and acts on the whole profile, so a grant of one scope applies to another scope's tab on the same
   host; the sent sign-ins (cookies, storage, workers) are in the profile for every scope; only
   navigation is guarded per scope.
-- The scope stays advisory unless the operator chooses a scope token (the design's choice 1): any
-  process of the daemon's OS user can connect with any scope and get that scope's list. With a
-  token, `default` is `null`: a scope that `scopes` does not name has no token.
+- The scope stays advisory unless the operator chooses a scope token (the design's choice 1, aw-lead's
+  "key"): any process of the daemon's OS user can connect with any scope and get that scope's list.
+  With a token, `default` is `null`: a scope that `scopes` does not name has no token. The token
+  lives only in the session's environment: never in an argv, never in the output of `agentwatch
+  browser endpoint` or `env`, never in a log, and never in a URL that a tool gets as an argument
+  (the client reads it from its environment and adds it to the URL itself). The same OS user can
+  read `/proc/<pid>/environ`, so the token guards against mistakes and against another session's
+  prompt injection, not against a hostile process of that user. A connection of a scope with no
+  valid token gets 403 `The agent browser needs this session's key. A session that started before
+  the key existed gets one when it starts again.` A session that is live before the deploy has no
+  token until its restart, so it gets that refusal (fail closed).
