@@ -1,5 +1,5 @@
 {
-  "contract": "C10, docs/protocol.md. The receiver (stage 2), the relay (stage 3) and the daemon (stage 4) check their code against these vectors. Every value is a sample. Since board ab-v16.30 the vectors hold the per-scope rules (the scope arg of tabs.create and windows.create, the kind scope, bridge.tabScope, the allowlist line with lists and scopes): the receiver meets them from part 1a (board ab-v16.31) on, the relay from part 2 (board ab-v16.35) on.",
+  "contract": "C10, docs/protocol.md. The receiver (stage 2), the relay (stage 3) and the daemon (stage 4) check their code against these vectors. Every value is a sample. Since board ab-v16.30 the vectors hold the per-scope rules (the scope arg of tabs.create and windows.create, the kind scope, bridge.tabScope, the allowlist line with lists and scopes): the receiver meets them from part 1a (board ab-v16.31) on, the relay from part 2 (board ab-v16.35) on. Since board ab-v16.41 they also hold the orphan-tabs rules (the op bridge.tabScopes, the error no list for this scope, the window rule of the removal queue, and TOMBSTONE_MS, RESTORE_MAX_MS and REMOVAL_WAIT_MS), which the receiver meets from part 1a on and the relay from part 2 on.",
   "constants": {
     "BRIDGE_VERSION": 1,
     "WAIT_DEFAULT_MS": 30000,
@@ -12,10 +12,15 @@
     "PART_BYTES": 700000,
     "MAX_RESULT": 134217728,
     "RESULT_PART_BYTES": 4194304,
-    "HOLD_MAX_MS": 5000
+    "HOLD_MAX_MS": 5000,
+    "TOMBSTONE_MS": 10000,
+    "RESTORE_MAX_MS": 2000,
+    "REMOVAL_WAIT_MS": 2000
   },
   "allowlist": ["a.example"],
   "allowlistNote": "The union of the lists of the receiver's last applied set_scopes (C4, C5): contentDetails is checked against it (any list, C10).",
+  "setScopes": {"lists": {"md": ["a.example"]}, "scopes": {"ab-lead": "md", "md-gone": null}, "default": null},
+  "setScopesNote": "The receiver's last applied set_scopes of the samples (C4, C5): scope ab-lead has list md, scope md-gone has no list (a session that ended), and so has every scope that it does not name. allowlist is the union of its lists.",
   "scope": "ab-lead",
   "scopeNote": "The scope of the samples: a scope of C11, the second arg of tabs.create and windows.create.",
   "kinds": {
@@ -53,7 +58,8 @@
     {"op": "contentSettings.clear", "args": ["type"], "kinds": ["contentType"], "required": 1, "result": "`null`", "defaultWait": "WAIT_DEFAULT_MS"},
     {"op": "bridge.info", "args": [], "kinds": [], "required": 0, "result": "an object (below)", "defaultWait": "WAIT_DEFAULT_MS"},
     {"op": "bridge.attachNew", "args": ["on"], "kinds": ["boolean"], "required": 1, "result": "`null`", "defaultWait": "WAIT_DEFAULT_MS"},
-    {"op": "bridge.release", "args": ["tabId"], "kinds": ["id"], "required": 1, "result": "`null`", "defaultWait": "WAIT_DEFAULT_MS"}
+    {"op": "bridge.release", "args": ["tabId"], "kinds": ["id"], "required": 1, "result": "`null`", "defaultWait": "WAIT_DEFAULT_MS"},
+    {"op": "bridge.tabScopes", "args": [], "kinds": [], "required": 0, "result": "`[{\"tabId\":<id>,\"scope\":\"<scope>\"}]`", "defaultWait": "WAIT_DEFAULT_MS"}
   ],
   "requests": [
     {"req": {"t": "req", "id": "5f3a9c01-1", "op": "debugger.attach", "args": [7]}, "chrome": ["debugger.attach", [{"tabId": 7}, "1.3"]], "res": {"t": "res", "ch": "bridge", "id": "5f3a9c01-1", "ok": true, "data": {"already": false}}},
@@ -75,7 +81,8 @@
     {"req": {"t": "req", "id": "5f3a9c01-17", "op": "contentSettings.clear", "args": ["location"]}, "chrome": ["contentSettings.location.clear", [{}]], "res": {"t": "res", "ch": "bridge", "id": "5f3a9c01-17", "ok": true, "data": null}},
     {"req": {"t": "req", "id": "5f3a9c01-18", "op": "bridge.info", "args": []}, "chrome": null, "res": {"t": "res", "ch": "bridge", "id": "5f3a9c01-18", "ok": true, "data": {"bridge": 1, "version": "0.2.0", "id": "abcdefghijklmnopabcdefghijklmnop", "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/1.0.0.0 Safari/537.36", "fullVersion": "1.0.0.0"}}},
     {"req": {"t": "req", "id": "5f3a9c01-19", "op": "bridge.attachNew", "args": [true]}, "chrome": null, "res": {"t": "res", "ch": "bridge", "id": "5f3a9c01-19", "ok": true, "data": null}},
-    {"req": {"t": "req", "id": "5f3a9c01-20", "op": "bridge.release", "args": [9]}, "chrome": null, "res": {"t": "res", "ch": "bridge", "id": "5f3a9c01-20", "ok": true, "data": null}}
+    {"req": {"t": "req", "id": "5f3a9c01-20", "op": "bridge.release", "args": [9]}, "chrome": null, "res": {"t": "res", "ch": "bridge", "id": "5f3a9c01-20", "ok": true, "data": null}},
+    {"note": "Every entry of the tab-to-scope map at the moment of the answer (C10, board ab-v16.41): here tab 9 (windows.create above) and tab 12, a popup of tab 9. A tab of no scope and a marked tab are not in it. The relay calls it at each link up, after bridge.info.", "req": {"t": "req", "id": "5f3a9c01-21", "op": "bridge.tabScopes", "args": []}, "chrome": null, "res": {"t": "res", "ch": "bridge", "id": "5f3a9c01-21", "ok": true, "data": [{"tabId": 9, "scope": "ab-lead"}, {"tabId": 12, "scope": "ab-lead"}]}}
   ],
   "badRequests": [
     {"note": "No cookie op exists (C11, ab-8mf).", "req": {"t": "req", "id": "b1", "op": "cookies.getAll", "args": [{}]}, "error": "unknown op", "res": {"t": "res", "ch": "bridge", "id": "b1", "ok": false, "error": "unknown op"}},
@@ -114,7 +121,10 @@
     {"note": "An empty scope.", "req": {"t": "req", "id": "b34", "op": "windows.create", "args": [{"url": "about:blank"}, ""]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b34", "ok": false, "error": "bad args"}},
     {"note": "The scope is a string.", "req": {"t": "req", "id": "b35", "op": "tabs.create", "args": [{"url": "about:blank"}, 7]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b35", "ok": false, "error": "bad args"}},
     {"note": "No op moves a tab to another window: newWindow has no tabId (C11: the relay never moves a tab).", "req": {"t": "req", "id": "b36", "op": "windows.create", "args": [{"tabId": 9, "focused": false}, "ab-lead"]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b36", "ok": false, "error": "bad args"}},
-    {"note": "One arg too many.", "req": {"t": "req", "id": "b37", "op": "tabs.create", "args": [{"url": "about:blank"}, "ab-lead", "x"]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b37", "ok": false, "error": "bad args"}}
+    {"note": "One arg too many.", "req": {"t": "req", "id": "b37", "op": "tabs.create", "args": [{"url": "about:blank"}, "ab-lead", "x"]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b37", "ok": false, "error": "bad args"}},
+    {"note": "Scope md-gone has no list in the receiver's last applied set_scopes (setScopes): the receiver creates no tab (C10, a new entry after the sweep). Also for a scope that it does not name, and for every scope before the first applied set_scopes after the worker's start.", "req": {"t": "req", "id": "b38", "op": "tabs.create", "args": [{"url": "about:blank", "active": false}, "md-gone"]}, "error": "no list for this scope", "res": {"t": "res", "ch": "bridge", "id": "b38", "ok": false, "error": "no list for this scope"}},
+    {"note": "The same for windows.create: no window opens.", "req": {"t": "req", "id": "b39", "op": "windows.create", "args": [{"url": "about:blank", "focused": false}, "md-gone"]}, "error": "no list for this scope", "res": {"t": "res", "ch": "bridge", "id": "b39", "ok": false, "error": "no list for this scope"}},
+    {"note": "A scope that setScopes does not name, with default null: no list.", "req": {"t": "req", "id": "b40", "op": "tabs.create", "args": [{"url": "about:blank"}, "md-new"]}, "error": "no list for this scope", "res": {"t": "res", "ch": "bridge", "id": "b40", "ok": false, "error": "no list for this scope"}}
   ],
   "events": [
     {"ev": "debugger.onEvent", "fields": ["source", "method", "params"], "optional": []},
@@ -174,5 +184,16 @@
     {"t": "allowlist", "lists": {"md": ["a.example"]}, "scopes": {"ab-lead": "md"}, "default": null},
     {"t": "allowlist", "lists": {"md": ["a.example"]}, "scopes": {"ab-lead": "md", "md-worker": "md"}, "default": null, "operator": "*", "keys": {"ab-lead": "a8ae6e6ee929abea3afcfc5258c8ccd6f85273e0d4626d26c7279f3250f77c8e", "md-worker": "7b9d07f2404b102b3c62fede026097c5ab81668f18414abd8ea560cecb008006"}},
     {"t": "end_scope", "scope": "ab-lead"}
+  ],
+  "windowRuleNote": "C10, removals and the last window (board ab-v16.41): one item of the receiver's removal queue. open: the tab ids of its tabs.query; pending: the tabs with a pending close (a close went to Chrome, and no tabs.onRemoved came yet); closes: the tabs that the item closes. guard: the receiver first opens an about:blank tab (not active, in no scope) in the window of the item's last tab, because no tab stays open other than the item's tabs and the pending ones.",
+  "windowRule": [
+    {"note": "The browser's only tab (board ab-v16.39, case F: without the guard Chromium ended).", "open": [9], "pending": [], "closes": [9], "guard": true},
+    {"note": "Another tab stays open.", "open": [7, 9], "pending": [], "closes": [9], "guard": false},
+    {"note": "Two removals of the browser's only two tabs, one item at a time (review-48 X2b): the first item sees tab 9 stay ...", "open": [7, 9], "pending": [], "closes": [7], "guard": false},
+    {"note": "... and the second item, after tab 7's tabs.onRemoved, sees only tab 9.", "open": [9], "pending": [], "closes": [9], "guard": true},
+    {"note": "Board ab-v16.43: tab 7's Page.close waits for its beforeunload dialog past REMOVAL_WAIT_MS, so tab 7 is still open but pending. The item that closes tab 9 counts tab 7 as closed: a later accept of the dialog then closes no last window.", "open": [7, 9], "pending": [7], "closes": [9], "guard": true},
+    {"note": "A pending close and the operator's tab 3 (no scope): tab 3 stays open.", "open": [3, 7, 9], "pending": [7], "closes": [9], "guard": false},
+    {"note": "The sweep closes the two tabs of an ended scope; the operator's tab 3 stays.", "open": [3, 7, 8], "pending": [], "closes": [7, 8], "guard": false},
+    {"note": "The sweep closes every open tab: one about:blank first.", "open": [7, 8], "pending": [], "closes": [7, 8], "guard": true}
   ]
 }

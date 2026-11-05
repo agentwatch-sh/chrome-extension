@@ -366,7 +366,12 @@ test("each bad request vector breaks one C10 rule and gets an error text of C10"
     if (error === "unknown op") assert.equal(o, undefined, req.id);
     else if (error === "bad args") assert.ok(!argsFit(o, req.args ?? []), req.id);
     else if (error === "bad wait") assert.ok(argsFit(o, req.args ?? []) && !waitFits(req), req.id);
-    else assert.ok(argsFit(o, req.args ?? []) && waitFits(req), `${req.id}: only the tab check fails`);
+    else if (error === "no list for this scope") {
+      // The scope check of tabs.create and windows.create (board ab-v16.41): the samples' last applied set_scopes gives the scope no list.
+      assert.ok(["tabs.create", "windows.create"].includes(req.op), `${req.id}: only tabs.create and windows.create check the scope's list`);
+      assert.ok(argsFit(o, req.args) && waitFits(req), `${req.id}: only the scope check fails`);
+      assert.equal(applySetScopes(bridge.setScopes).listOf(req.args[1]), null, `${req.id}: the scope has no list`);
+    } else assert.ok(argsFit(o, req.args ?? []) && waitFits(req), `${req.id}: only the tab check fails`);
     if (error === "not an agent tab") kinds.add(req.op);
   }
   // S4 and S6: the restore tab and the receiver's own pages are never bridge tabs.
@@ -495,6 +500,100 @@ test("the daemon's allowlist line is the confirmed set_scopes object; keys only 
   }
   assert.ok(lines.some((l) => isObj(l.keys)) && lines.some((l) => !Object.hasOwn(l, "keys")), "a line with keys and one without");
   assert.ok(C10.includes("the\n    receiver never sees the keys") || C10.includes("the receiver never sees the keys"));
+});
+
+// ---- C10 and C5: the orphan-tabs rules (board ab-v16.41) ----
+
+// Whether a contract's text says s, whatever its line breaks.
+const flat = (t) => t.replace(/\s+/g, " ");
+const says = (text, s) => flat(text).includes(flat(s));
+
+test("the samples' last applied set_scopes: the union of its lists is the allowlist, and the samples' scope has a list", () => {
+  const a = applySetScopes(bridge.setScopes);
+  assert.equal(a.refused, 0, "the daemon sends only valid objects");
+  assert.deepEqual([...new Set(Object.values(a.lists).flat())].sort(), [...bridge.allowlist].sort());
+  assert.notEqual(a.listOf(bridge.scope), null, bridge.scope);
+  const noList = bridge.badRequests.filter((v) => v.error === "no list for this scope");
+  for (const op of ["tabs.create", "windows.create"]) assert.ok(noList.some((v) => v.req.op === op), `a no-list vector for ${op}`);
+  assert.ok(noList.some((v) => Object.hasOwn(bridge.setScopes.scopes, v.req.args[1])), "a scope named null");
+  assert.ok(noList.some((v) => !Object.hasOwn(bridge.setScopes.scopes, v.req.args[1])), "a scope that it does not name");
+  assert.ok(C10.includes("`no list for this scope`"));
+});
+
+test("bridge.tabScopes: C10 states the op, its place in the steps of the link up, and its vector lists tabs and scopes", () => {
+  const o = opByName.get("bridge.tabScopes");
+  assert.deepEqual([o.args, o.required, o.defaultWait], [[], 0, "WAIT_DEFAULT_MS"]);
+  const v = bridge.requests.find((r) => r.req.op === "bridge.tabScopes");
+  assert.ok(Array.isArray(v.res.data) && v.res.data.length > 0, "a list");
+  for (const e of v.res.data) {
+    assert.deepEqual(Object.keys(e).sort(), ["scope", "tabId"]);
+    assert.ok(int(e.tabId) && e.tabId >= 0 && SCOPE.test(e.scope), JSON.stringify(e));
+  }
+  assert.equal(new Set(v.res.data.map((e) => e.tabId)).size, v.res.data.length, "one item for each tab");
+  for (const s of ["**steps of the link up**", "2. In the per-scope build only", "When `bridge.tabScopes` fails or times out", "Today's relay (before part 2) runs steps 1, 3 (the list only) and 4"]) {
+    assert.ok(says(C10, s), `C10 says: ${s}`);
+  }
+  assert.ok(says(C11, "the steps of the link up (C10, \"The daemon and the relay\") are done"), "C11's readiness waits for the steps of the link up");
+});
+
+// C10's window rule: the receiver first opens about:blank when no tab stays open other than the item's tabs and the
+// tabs with a pending close.
+const guardOf = (v) => !v.open.some((t) => !v.closes.includes(t) && !v.pending.includes(t));
+
+test("the window rule: each vector follows C10's rule, also for a pending close (board ab-v16.43)", () => {
+  for (const v of bridge.windowRule) {
+    assert.ok(v.closes.every((t) => v.open.includes(t)), `${v.note}: an item closes open tabs`);
+    assert.equal(guardOf(v), v.guard, v.note);
+  }
+  const has = (f) => bridge.windowRule.some(f);
+  assert.ok(has((v) => v.guard && v.pending.length === 0 && v.open.length === 1), "the browser's only tab");
+  assert.ok(has((v) => v.guard && v.pending.some((t) => v.open.includes(t))), "a pending close that is still open counts as closed");
+  assert.ok(has((v) => !v.guard && v.pending.length > 0), "a pending close and a tab that stays");
+  assert.ok(has((v) => v.closes.length > 1 && v.guard) && has((v) => v.closes.length > 1 && !v.guard), "an item with several closes");
+  for (const s of ["**removal queue**", "**window rule**", "**pending close**", "`REMOVAL_WAIT_MS = 2000`", "a client's `Page.close`", "`windowRule`"]) {
+    assert.ok(says(C10, s), `C10 says: ${s}`);
+  }
+});
+
+// C5's sweep: at an applied set_scopes (scopes and lists are objects), every tab of the map whose scope has no list.
+function sweepOf(msg, map) {
+  if (!isObj(msg.scopes) || !isObj(msg.lists)) return { applied: false, closes: [] };
+  const a = applySetScopes(msg);
+  const closes = Object.entries(map).filter(([, scope]) => a.listOf(scope) === null).map(([id]) => Number(id));
+  return { applied: true, closes: closes.sort((x, y) => x - y) };
+}
+
+test("the sweep: each vector closes the tabs whose scope has no list, and none at a set_scopes that is not applied", () => {
+  for (const v of scopesV.sweep) {
+    for (const [id, scope] of Object.entries(v.map)) assert.ok(/^\d+$/.test(id) && NAME.test(scope), `${v.note}: ${id} -> ${scope}`);
+    assert.deepEqual(sweepOf(v.in, v.map), { applied: v.applied, closes: v.closes }, v.note);
+  }
+  const has = (f) => scopesV.sweep.some(f);
+  const scopes = (v) => (isObj(v.in.scopes) ? v.in.scopes : {});
+  assert.ok(has((v) => v.in.default === null && v.closes.some((t) => !Object.hasOwn(scopes(v), v.map[t]))), "a scope that is not named, with default null");
+  assert.ok(has((v) => v.closes.some((t) => scopes(v)[v.map[t]] === null)), "a scope named null");
+  assert.ok(has((v) => v.closes.some((t) => typeof scopes(v)[v.map[t]] === "string" && !Object.hasOwn(v.in.lists, scopes(v)[v.map[t]]))), "a list that is not in lists");
+  assert.ok(has((v) => typeof v.in.default === "string" && Object.values(v.map).some((s) => !Object.hasOwn(scopes(v), s)) && v.closes.length === 0), "a scope that is not named, with a default list, stays");
+  assert.ok(has((v) => !v.applied && Object.hasOwn(v.in, "scopes") && !isObj(v.in.scopes)), "scopes not an object: no sweep");
+  assert.ok(has((v) => !v.applied && Object.hasOwn(v.in, "lists") && !isObj(v.in.lists)), "lists not an object: no sweep");
+  assert.ok(has((v) => v.applied && applySetScopes(v.in).refused > 0 && v.closes.length > 0), "a refused entry follows what applies");
+  for (const s of ["The sweep (board ab-v16.41", "An **applied** `set_scopes`", "at its rule update, before the sweep's `tabs.query`", "`sweep` in `test/vectors/scopes.json`"]) {
+    assert.ok(says(C5, s), `C5 says: ${s}`);
+  }
+});
+
+test("the orphan-tabs rules are in the text: the kept map, its copy and restore, the kept entries, and the daemon's rules", () => {
+  for (const s of ["The map stays at each disconnect", "`chrome.storage.session`", "`tab:<id>`", "`TRUSTED_CONTEXTS`", "`RESTORE_MAX_MS = 2000`", "`TOMBSTONE_MS = 10000`", "never goes to `chrome.storage.local`", "A new entry after the sweep (board ab-v16.41)", "drops only a write for a tab that no longer exists"]) {
+    assert.ok(says(C10, s), `C10 says: ${s}`);
+  }
+  assert.ok(says(C5, "keeps every session rule, the map and the marks"), "C5: the scope rules stay at a link change");
+  const daemon = C4.slice(C4.indexOf("**The tabs of a session that ended (board ab-v16.41).**"));
+  assert.ok(daemon.length > 100, "C4 has the daemon's rules");
+  for (let i = 1; i <= 6; i++) assert.ok(daemon.includes(`\n${i}. `), `C4: rule ${i}`);
+  for (const s of ["first complete read of its sessions", "a good read of zero sessions sends an empty `scopes`", "splits a merged update", "not at the next `link` up", "`end_scope` stays as it is", "Declined (aw-lead"]) {
+    assert.ok(says(daemon, s), `C4 says: ${s}`);
+  }
+  assert.ok(protocol.includes("The orphan-tabs rules (board task ab-v16.41"), "the intro says which build holds them");
 });
 
 test("the bridge vector names all three sides", () => {
