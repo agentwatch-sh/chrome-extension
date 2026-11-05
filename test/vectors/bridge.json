@@ -1,5 +1,5 @@
 {
-  "contract": "C10, docs/protocol.md. The receiver (stage 2), the relay (stage 3) and the daemon (stage 4) check their code against these vectors. Every value is a sample.",
+  "contract": "C10, docs/protocol.md. The receiver (stage 2), the relay (stage 3) and the daemon (stage 4) check their code against these vectors. Every value is a sample. Since board ab-v16.30 the vectors hold the per-scope rules (the scope arg of tabs.create and windows.create, the kind scope, bridge.tabScope, the allowlist line with lists and scopes): the receiver meets them from part 1a (board ab-v16.31) on, the relay from part 2 (board ab-v16.35) on.",
   "constants": {
     "BRIDGE_VERSION": 1,
     "WAIT_DEFAULT_MS": 30000,
@@ -15,7 +15,9 @@
     "HOLD_MAX_MS": 5000
   },
   "allowlist": ["a.example"],
-  "allowlistNote": "The list that the receiver applied last (C5); contentDetails is checked against it.",
+  "allowlistNote": "The union of the lists of the receiver's last applied set_scopes (C4, C5): contentDetails is checked against it (any list, C10).",
+  "scope": "ab-lead",
+  "scopeNote": "The scope of the samples: a scope of C11, the second arg of tabs.create and windows.create.",
   "kinds": {
     "id": "an integer of 0 or more: a tab, window or download id",
     "object": "a JSON object",
@@ -23,26 +25,27 @@
     "boolean": "true or false",
     "target": "{\"tabId\": <id>} or {\"tabId\": <id>, \"sessionId\": \"<child session>\"}, with no other key; tabId is 0 or more",
     "contentType": "one of contentTypes",
-    "newTab": "an object with url (a web URL) and at most active (boolean), windowId and index (ids)",
+    "scope": "a string that matches C11's scope pattern ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+    "newTab": "an object with url (about:blank) and at most active (boolean), windowId and index (ids)",
     "tabUpdate": "exactly {\"active\": <boolean>}",
-    "newWindow": "an object with url (a web URL, a string) and at most focused (boolean), left, top, width, height (integers) and state",
+    "newWindow": "an object with url (about:blank, a string) and at most focused (boolean), left, top, width, height (integers) and state; no tabId",
     "windowUpdate": "an object with at least one of left, top, width, height, state and focused, and no other key",
     "contentDetails": "exactly primaryPattern (<scheme>://<host>/* or <scheme>://<host>:<port>/*, scheme http, https or *, host covered by the allowlist, with or without *.) and setting (allow or block)"
   },
-  "webUrl": "about:blank, or an absolute http: or https: URL",
+  "newUrl": "about:blank: a new tab or window makes no request before its scope rule is in force",
   "contentTypes": ["location", "notifications", "camera", "microphone", "clipboard", "automaticDownloads"],
   "ops": [
     {"op": "debugger.attach", "args": ["tabId"], "kinds": ["id"], "required": 1, "result": "`{\"already\": <bool>}`", "defaultWait": "WAIT_DEFAULT_MS"},
     {"op": "debugger.detach", "args": ["tabId"], "kinds": ["id"], "required": 1, "result": "`null`", "defaultWait": "WAIT_DEFAULT_MS"},
     {"op": "debugger.sendCommand", "args": ["target", "method", "params?"], "kinds": ["target", "string", "object"], "required": 2, "result": "the CDP result", "defaultWait": "WAIT_MAX_MS"},
     {"op": "debugger.getTargets", "args": [], "kinds": [], "required": 0, "result": "`[TargetInfo]`", "defaultWait": "WAIT_DEFAULT_MS"},
-    {"op": "tabs.create", "args": ["createProperties"], "kinds": ["newTab"], "required": 1, "result": "`Tab`", "defaultWait": "WAIT_DEFAULT_MS"},
+    {"op": "tabs.create", "args": ["createProperties", "scope"], "kinds": ["newTab", "scope"], "required": 2, "result": "`Tab`", "defaultWait": "WAIT_DEFAULT_MS"},
     {"op": "tabs.get", "args": ["tabId"], "kinds": ["id"], "required": 1, "result": "`Tab`", "defaultWait": "WAIT_DEFAULT_MS"},
     {"op": "tabs.query", "args": ["queryInfo"], "kinds": ["object"], "required": 1, "result": "`[Tab]`", "defaultWait": "WAIT_DEFAULT_MS"},
     {"op": "tabs.update", "args": ["tabId", "updateProperties"], "kinds": ["id", "tabUpdate"], "required": 2, "result": "`Tab`", "defaultWait": "WAIT_DEFAULT_MS"},
     {"op": "tabs.remove", "args": ["tabId"], "kinds": ["id"], "required": 1, "result": "`null`", "defaultWait": "WAIT_DEFAULT_MS"},
     {"op": "windows.get", "args": ["windowId", "queryOptions?"], "kinds": ["id", "object"], "required": 1, "result": "`Window`", "defaultWait": "WAIT_DEFAULT_MS"},
-    {"op": "windows.create", "args": ["createData"], "kinds": ["newWindow"], "required": 1, "result": "`Window`", "defaultWait": "WAIT_DEFAULT_MS"},
+    {"op": "windows.create", "args": ["createData", "scope"], "kinds": ["newWindow", "scope"], "required": 2, "result": "`Window`", "defaultWait": "WAIT_DEFAULT_MS"},
     {"op": "windows.update", "args": ["windowId", "updateInfo"], "kinds": ["id", "windowUpdate"], "required": 2, "result": "`Window`", "defaultWait": "WAIT_DEFAULT_MS"},
     {"op": "downloads.search", "args": ["query"], "kinds": ["object"], "required": 1, "result": "`[DownloadItem]`", "defaultWait": "WAIT_DEFAULT_MS"},
     {"op": "downloads.cancel", "args": ["downloadId"], "kinds": ["id"], "required": 1, "result": "`null`", "defaultWait": "WAIT_DEFAULT_MS"},
@@ -58,13 +61,13 @@
     {"note": "A command of a child session (a frame or a worker); a missing params goes to Chrome as {}.", "req": {"t": "req", "id": "5f3a9c01-3", "op": "debugger.sendCommand", "args": [{"tabId": 7, "sessionId": "A1B2C3"}, "Runtime.enable"]}, "chrome": ["debugger.sendCommand", [{"tabId": 7, "sessionId": "A1B2C3"}, "Runtime.enable", {}]], "res": {"t": "res", "ch": "bridge", "id": "5f3a9c01-3", "ok": true, "data": {}}},
     {"req": {"t": "req", "id": "5f3a9c01-4", "op": "debugger.detach", "args": [7]}, "chrome": ["debugger.detach", [{"tabId": 7}]], "res": {"t": "res", "ch": "bridge", "id": "5f3a9c01-4", "ok": true, "data": null}},
     {"req": {"t": "req", "id": "5f3a9c01-5", "op": "debugger.getTargets", "args": []}, "chrome": ["debugger.getTargets", []], "res": {"t": "res", "ch": "bridge", "id": "5f3a9c01-5", "ok": true, "data": [{"id": "D1E2F3", "tabId": 7, "type": "page", "title": "a", "url": "https://a.example/", "attached": true}]}},
-    {"req": {"t": "req", "id": "5f3a9c01-6", "op": "tabs.create", "args": [{"url": "about:blank", "active": false}]}, "chrome": ["tabs.create", [{"url": "about:blank", "active": false}]], "res": {"t": "res", "ch": "bridge", "id": "5f3a9c01-6", "ok": true, "data": {"id": 8, "windowId": 1, "index": 1, "active": false, "url": "", "pendingUrl": "about:blank", "title": "", "status": "loading"}}},
+    {"note": "The new tab gets the scope; the op answers when its scope rule is in force (C5, C10). The scope goes to the map, not to Chrome.", "req": {"t": "req", "id": "5f3a9c01-6", "op": "tabs.create", "args": [{"url": "about:blank", "active": false}, "ab-lead"]}, "chrome": ["tabs.create", [{"url": "about:blank", "active": false}]], "res": {"t": "res", "ch": "bridge", "id": "5f3a9c01-6", "ok": true, "data": {"id": 8, "windowId": 1, "index": 1, "active": false, "url": "", "pendingUrl": "about:blank", "title": "", "status": "loading"}}},
     {"note": "The receiver ignores a request field that it does not know (here trace).", "req": {"t": "req", "id": "5f3a9c01-7", "op": "tabs.get", "args": [8], "trace": "relay-17"}, "chrome": ["tabs.get", [8]], "res": {"t": "res", "ch": "bridge", "id": "5f3a9c01-7", "ok": true, "data": {"id": 8, "windowId": 1, "index": 1, "active": false, "url": "about:blank", "title": "about:blank", "status": "complete"}}},
     {"req": {"t": "req", "id": "5f3a9c01-8", "op": "tabs.query", "args": [{}]}, "chrome": ["tabs.query", [{}]], "res": {"t": "res", "ch": "bridge", "id": "5f3a9c01-8", "ok": true, "data": [{"id": 8, "windowId": 1, "index": 1, "active": false, "url": "about:blank", "title": "about:blank", "status": "complete"}]}},
     {"req": {"t": "req", "id": "5f3a9c01-9", "op": "tabs.update", "args": [8, {"active": true}]}, "chrome": ["tabs.update", [8, {"active": true}]], "res": {"t": "res", "ch": "bridge", "id": "5f3a9c01-9", "ok": true, "data": {"id": 8, "windowId": 1, "index": 1, "active": true, "url": "about:blank", "title": "about:blank", "status": "complete"}}},
     {"req": {"t": "req", "id": "5f3a9c01-10", "op": "tabs.remove", "args": [8]}, "chrome": ["tabs.remove", [8]], "res": {"t": "res", "ch": "bridge", "id": "5f3a9c01-10", "ok": true, "data": null}},
     {"req": {"t": "req", "id": "5f3a9c01-11", "op": "windows.get", "args": [1]}, "chrome": ["windows.get", [1]], "res": {"t": "res", "ch": "bridge", "id": "5f3a9c01-11", "ok": true, "data": {"id": 1, "left": 0, "top": 0, "width": 1280, "height": 800, "state": "normal", "type": "normal", "focused": false}}},
-    {"req": {"t": "req", "id": "5f3a9c01-12", "op": "windows.create", "args": [{"url": "about:blank", "focused": false}]}, "chrome": ["windows.create", [{"url": "about:blank", "focused": false}]], "res": {"t": "res", "ch": "bridge", "id": "5f3a9c01-12", "ok": true, "data": {"id": 2, "left": 0, "top": 0, "width": 1280, "height": 800, "state": "normal", "type": "normal", "focused": false, "tabs": [{"id": 9, "windowId": 2, "index": 0, "active": true, "url": "", "pendingUrl": "about:blank", "title": "", "status": "loading"}]}}},
+    {"note": "One window per page (C11): the window's tab gets the scope, as for tabs.create.", "req": {"t": "req", "id": "5f3a9c01-12", "op": "windows.create", "args": [{"url": "about:blank", "focused": false}, "ab-lead"]}, "chrome": ["windows.create", [{"url": "about:blank", "focused": false}]], "res": {"t": "res", "ch": "bridge", "id": "5f3a9c01-12", "ok": true, "data": {"id": 2, "left": 0, "top": 0, "width": 1280, "height": 800, "state": "normal", "type": "normal", "focused": false, "tabs": [{"id": 9, "windowId": 2, "index": 0, "active": true, "url": "", "pendingUrl": "about:blank", "title": "", "status": "loading"}]}}},
     {"req": {"t": "req", "id": "5f3a9c01-13", "op": "windows.update", "args": [2, {"width": 1000, "height": 700}]}, "chrome": ["windows.update", [2, {"width": 1000, "height": 700}]], "res": {"t": "res", "ch": "bridge", "id": "5f3a9c01-13", "ok": true, "data": {"id": 2, "left": 0, "top": 0, "width": 1000, "height": 700, "state": "normal", "type": "normal", "focused": false}}},
     {"req": {"t": "req", "id": "5f3a9c01-14", "op": "downloads.search", "args": [{"id": 3}]}, "chrome": ["downloads.search", [{"id": 3}]], "res": {"t": "res", "ch": "bridge", "id": "5f3a9c01-14", "ok": true, "data": [{"id": 3, "url": "https://a.example/f.txt", "filename": "/var/agent/downloads/f.txt", "state": "complete", "danger": "safe", "bytesReceived": 19, "totalBytes": 19}]}},
     {"req": {"t": "req", "id": "5f3a9c01-15", "op": "downloads.cancel", "args": [3]}, "chrome": ["downloads.cancel", [3]], "res": {"t": "res", "ch": "bridge", "id": "5f3a9c01-15", "ok": true, "data": null}},
@@ -87,13 +90,13 @@
     {"req": {"t": "req", "id": "b10", "op": "tabs.get", "args": [7], "wait": 1.5}, "error": "bad wait", "res": {"t": "res", "ch": "bridge", "id": "b10", "ok": false, "error": "bad wait"}},
     {"note": "Tab 9 is not attached by the bridge.", "req": {"t": "req", "id": "b11", "op": "debugger.sendCommand", "args": [{"tabId": 9}, "Page.enable", {}]}, "error": "not attached", "res": {"t": "res", "ch": "bridge", "id": "b11", "ok": false, "error": "not attached"}},
     {"note": "Tab 5 is the restore tab of a running import (C6).", "req": {"t": "req", "id": "b12", "op": "debugger.attach", "args": [5]}, "error": "not an agent tab", "res": {"t": "res", "ch": "bridge", "id": "b12", "ok": false, "error": "not an agent tab"}},
-    {"note": "Only about:blank or an absolute http(s) URL.", "req": {"t": "req", "id": "b13", "op": "tabs.create", "args": [{"url": "chrome://settings"}]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b13", "ok": false, "error": "bad args"}},
-    {"req": {"t": "req", "id": "b14", "op": "tabs.create", "args": [{"url": "javascript:alert(1)"}]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b14", "ok": false, "error": "bad args"}},
-    {"note": "Without url Chrome opens its New Tab page.", "req": {"t": "req", "id": "b15", "op": "tabs.create", "args": [{"active": true}]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b15", "ok": false, "error": "bad args"}},
-    {"note": "A key outside the kind.", "req": {"t": "req", "id": "b16", "op": "tabs.create", "args": [{"url": "https://a.example/", "openerTabId": 7}]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b16", "ok": false, "error": "bad args"}},
+    {"note": "Only about:blank.", "req": {"t": "req", "id": "b13", "op": "tabs.create", "args": [{"url": "chrome://settings"}, "ab-lead"]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b13", "ok": false, "error": "bad args"}},
+    {"req": {"t": "req", "id": "b14", "op": "tabs.create", "args": [{"url": "javascript:alert(1)"}, "ab-lead"]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b14", "ok": false, "error": "bad args"}},
+    {"note": "Without url Chrome opens its New Tab page.", "req": {"t": "req", "id": "b15", "op": "tabs.create", "args": [{"active": true}, "ab-lead"]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b15", "ok": false, "error": "bad args"}},
+    {"note": "A key outside the kind.", "req": {"t": "req", "id": "b16", "op": "tabs.create", "args": [{"url": "about:blank", "openerTabId": 7}, "ab-lead"]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b16", "ok": false, "error": "bad args"}},
     {"note": "tabs.update takes only {active}; a navigation is Page.navigate.", "req": {"t": "req", "id": "b17", "op": "tabs.update", "args": [8, {"url": "https://a.example/"}]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b17", "ok": false, "error": "bad args"}},
-    {"req": {"t": "req", "id": "b18", "op": "windows.create", "args": [{"url": "file:///etc/passwd"}]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b18", "ok": false, "error": "bad args"}},
-    {"note": "url is one string, not a list.", "req": {"t": "req", "id": "b19", "op": "windows.create", "args": [{"url": ["https://a.example/"]}]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b19", "ok": false, "error": "bad args"}},
+    {"req": {"t": "req", "id": "b18", "op": "windows.create", "args": [{"url": "file:///etc/passwd"}, "ab-lead"]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b18", "ok": false, "error": "bad args"}},
+    {"note": "url is one string, not a list.", "req": {"t": "req", "id": "b19", "op": "windows.create", "args": [{"url": ["about:blank"]}, "ab-lead"]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b19", "ok": false, "error": "bad args"}},
     {"req": {"t": "req", "id": "b20", "op": "windows.update", "args": [2, {}]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b20", "ok": false, "error": "bad args"}},
     {"note": "b.example is not on the applied allowlist.", "req": {"t": "req", "id": "b21", "op": "contentSettings.set", "args": ["location", {"primaryPattern": "https://b.example/*", "setting": "allow"}]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b21", "ok": false, "error": "bad args"}},
     {"req": {"t": "req", "id": "b22", "op": "contentSettings.set", "args": ["location", {"primaryPattern": "<all_urls>", "setting": "allow"}]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b22", "ok": false, "error": "bad args"}},
@@ -102,7 +105,16 @@
     {"note": "Tab 5 is the restore tab of a running import (C6).", "req": {"t": "req", "id": "b25", "op": "debugger.detach", "args": [5]}, "error": "not an agent tab", "res": {"t": "res", "ch": "bridge", "id": "b25", "ok": false, "error": "not an agent tab"}},
     {"note": "Tab 5 is the restore tab of a running import (C6).", "req": {"t": "req", "id": "b26", "op": "tabs.remove", "args": [5]}, "error": "not an agent tab", "res": {"t": "res", "ch": "bridge", "id": "b26", "ok": false, "error": "not an agent tab"}},
     {"note": "Tab 5 is the restore tab of a running import (C6).", "req": {"t": "req", "id": "b27", "op": "tabs.update", "args": [5, {"active": true}]}, "error": "not an agent tab", "res": {"t": "res", "ch": "bridge", "id": "b27", "ok": false, "error": "not an agent tab"}},
-    {"note": "Tab 6 shows a page of the receiver's own origin (chrome-extension://<receiver id>/).", "req": {"t": "req", "id": "b28", "op": "debugger.attach", "args": [6]}, "error": "not an agent tab", "res": {"t": "res", "ch": "bridge", "id": "b28", "ok": false, "error": "not an agent tab"}}
+    {"note": "Tab 6 shows a page of the receiver's own origin (chrome-extension://<receiver id>/).", "req": {"t": "req", "id": "b28", "op": "debugger.attach", "args": [6]}, "error": "not an agent tab", "res": {"t": "res", "ch": "bridge", "id": "b28", "ok": false, "error": "not an agent tab"}},
+    {"note": "The scope arg is required (C10, each tab's scope): an old relay's tabs.create gets bad args (C4, the rollout).", "req": {"t": "req", "id": "b29", "op": "tabs.create", "args": [{"url": "about:blank", "active": false}]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b29", "ok": false, "error": "bad args"}},
+    {"note": "The scope arg is required.", "req": {"t": "req", "id": "b30", "op": "windows.create", "args": [{"url": "about:blank", "focused": false}]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b30", "ok": false, "error": "bad args"}},
+    {"note": "A new tab opens at about:blank only, also for a host of its list: its first request would come before its scope rule.", "req": {"t": "req", "id": "b31", "op": "tabs.create", "args": [{"url": "https://a.example/"}, "ab-lead"]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b31", "ok": false, "error": "bad args"}},
+    {"note": "A new window opens at about:blank only.", "req": {"t": "req", "id": "b32", "op": "windows.create", "args": [{"url": "https://a.example/", "focused": false}, "ab-lead"]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b32", "ok": false, "error": "bad args"}},
+    {"note": "The scope does not match C11's scope pattern.", "req": {"t": "req", "id": "b33", "op": "tabs.create", "args": [{"url": "about:blank"}, "a/b"]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b33", "ok": false, "error": "bad args"}},
+    {"note": "An empty scope.", "req": {"t": "req", "id": "b34", "op": "windows.create", "args": [{"url": "about:blank"}, ""]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b34", "ok": false, "error": "bad args"}},
+    {"note": "The scope is a string.", "req": {"t": "req", "id": "b35", "op": "tabs.create", "args": [{"url": "about:blank"}, 7]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b35", "ok": false, "error": "bad args"}},
+    {"note": "No op moves a tab to another window: newWindow has no tabId (C11: the relay never moves a tab).", "req": {"t": "req", "id": "b36", "op": "windows.create", "args": [{"tabId": 9, "focused": false}, "ab-lead"]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b36", "ok": false, "error": "bad args"}},
+    {"note": "One arg too many.", "req": {"t": "req", "id": "b37", "op": "tabs.create", "args": [{"url": "about:blank"}, "ab-lead", "x"]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b37", "ok": false, "error": "bad args"}}
   ],
   "events": [
     {"ev": "debugger.onEvent", "fields": ["source", "method", "params"], "optional": []},
@@ -115,6 +127,7 @@
     {"ev": "webNavigation.onErrorOccurred", "fields": ["details"], "optional": []},
     {"ev": "downloads.onCreated", "fields": ["item"], "optional": []},
     {"ev": "downloads.onChanged", "fields": ["delta"], "optional": []},
+    {"ev": "bridge.tabScope", "fields": ["tabId", "scope"], "optional": []},
     {"ev": "bridge.tooLarge", "fields": ["of", "tabId"], "optional": ["method", "sessionId", "requestId"]}
   ],
   "eventVectors": [
@@ -137,7 +150,9 @@
     {"note": "In place of a tabs.onUpdated above MAX_TO_DAEMON: tabId is the event's tabId.", "chrome": null, "ev": {"t": "ev", "ch": "bridge", "ev": "bridge.tooLarge", "of": "tabs.onUpdated", "tabId": 9}},
     {"note": "In place of a tabs.onCreated above MAX_TO_DAEMON: tabId is tab.id.", "chrome": null, "ev": {"t": "ev", "ch": "bridge", "ev": "bridge.tooLarge", "of": "tabs.onCreated", "tabId": 10}},
     {"note": "In place of a webNavigation event above MAX_TO_DAEMON: tabId is details.tabId.", "chrome": null, "ev": {"t": "ev", "ch": "bridge", "ev": "bridge.tooLarge", "of": "webNavigation.onCreatedNavigationTarget", "tabId": 11}},
-    {"note": "In place of a downloads.onCreated above MAX_TO_DAEMON (for example a download of a large data: URL). A download names no tab: tabId is -1, Chrome's tabs.TAB_ID_NONE.", "chrome": null, "ev": {"t": "ev", "ch": "bridge", "ev": "bridge.tooLarge", "of": "downloads.onCreated", "tabId": -1}}
+    {"note": "In place of a downloads.onCreated above MAX_TO_DAEMON (for example a download of a large data: URL). A download names no tab: tabId is -1, Chrome's tabs.TAB_ID_NONE.", "chrome": null, "ev": {"t": "ev", "ch": "bridge", "ev": "bridge.tooLarge", "of": "downloads.onCreated", "tabId": -1}},
+    {"note": "A popup: in webNavigation.onCreatedNavigationTarget tab 9 takes the scope of its sourceTabId 7. The receiver sends it before the popup's tabs.onCreated.", "chrome": null, "ev": {"t": "ev", "ch": "bridge", "ev": "bridge.tabScope", "tabId": 9, "scope": "ab-lead"}},
+    {"note": "A replaced tab: tab 11 takes the scope of tab 9. The receiver sends it right before its tabs.onReplaced event (addedTabId 11, removedTabId 9).", "chrome": null, "ev": {"t": "ev", "ch": "bridge", "ev": "bridge.tabScope", "tabId": 11, "scope": "ab-lead"}}
   ],
   "resultParts": {
     "note": "A res above MAX_TO_DAEMON goes in parts of RESULT_PART_BYTES from the receiver; here part_bytes is 16. The daemon joins them and writes the res as one line.",
@@ -156,7 +171,8 @@
   "daemonLines": [
     {"t": "link", "up": true, "version": "0.2.0"},
     {"t": "link", "up": false},
-    {"t": "allowlist", "domains": ["a.example"]},
+    {"t": "allowlist", "lists": {"md": ["a.example"]}, "scopes": {"ab-lead": "md"}, "default": null},
+    {"t": "allowlist", "lists": {"md": ["a.example"]}, "scopes": {"ab-lead": "md", "md-worker": "md"}, "default": null, "operator": "*", "keys": {"ab-lead": "a8ae6e6ee929abea3afcfc5258c8ccd6f85273e0d4626d26c7279f3250f77c8e", "md-worker": "7b9d07f2404b102b3c62fede026097c5ab81668f18414abd8ea560cecb008006"}},
     {"t": "end_scope", "scope": "ab-lead"}
   ]
 }
