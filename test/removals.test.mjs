@@ -14,15 +14,19 @@ const blanks = (f) => f.callsTo("tabs.create").filter(([p]) => p.url === "about:
 const closeCmds = (f, mark = 0) => callsSince(f, mark).filter(([p, a]) => p === "debugger.sendCommand" && a[1] === "Target.closeTarget").map(([, a]) => a[0].tabId);
 const isOpen = (f, id) => f.tabs_.some((t) => t.id === id);
 
-// Tab ids pending: a receiver's close whose command answered with no error, and no tabs.onRemoved
-// (for example a page that a dialog holds); the item waits REMOVAL_WAIT_MS and ends.
+// Tab ids pending: a receiver's close whose command answered with no error and closed no tab, and
+// whose fallback (REMOVAL_WAIT_MS after that answer) a beforeunload dialog holds; the item waits
+// REMOVAL_WAIT_MS and ends.
 async function makePending(s, ids) {
   const sendCommand = s.f.impl["debugger.sendCommand"];
+  const remove = s.f.impl["tabs.remove"];
   s.f.impl["debugger.sendCommand"] = async (t, method) => (method === "Target.closeTarget" && ids.includes(t.tabId) ? {} : sendCommand ? sendCommand(t, method) : {});
+  s.f.impl["tabs.remove"] = (id) => (ids.includes(id) ? new Promise(() => {}) : remove ? remove(id) : s.f.closeTab(id));
   const done = s.r.removals.closeOwn({ ids });
   await flush();
   await s.fire(REMOVAL_WAIT_MS);
   assert.deepEqual((await done).left, ids);
+  assert.deepEqual(s.f.callsTo("tabs.remove").filter(([id]) => ids.includes(id)).map(([id]) => id).sort(), [...ids].sort(), "the held fallbacks");
   s.f.impl["debugger.sendCommand"] = sendCommand;
   if (!sendCommand) delete s.f.impl["debugger.sendCommand"];
   for (const id of ids) assert.equal(s.r.removals.isPending(id), true);
@@ -370,6 +374,90 @@ test("Target.closeTarget that answers Detached while handling command. before th
   await flush();
   assert.deepEqual(s.resOf("r").map((m) => m.data), [null]);
   assert.deepEqual(s.f.callsTo("tabs.remove"), []);
+});
+
+// Board ab-v16.63 (measured, Chromium 156): a Target.closeTarget that reaches Chrome shortly before the
+// tab's navigation commits answers {success: true}, and Chrome drops the close: the tab stays open, and
+// no tabs.onRemoved comes. Such a close counts as failed REMOVAL_WAIT_MS after its answer: the fallback runs.
+test("a Target.closeTarget that answers with no error but closes no tab: the fallback runs REMOVAL_WAIT_MS after the answer, and the op answers at the close", async () => {
+  const noClose = (s) => {
+    s.f.impl["debugger.sendCommand"] = async (t, m) => (m === "Target.closeTarget" ? { success: true } : {});
+  };
+  // A bridge tab (the eager attach's attachment): the fallback keeps that attachment.
+  const s = await startReceiver({ tabs: [blank(7), blank(3)], targets: [target(7)] });
+  await s.answer({ id: "a", op: "debugger.attach", args: [7] });
+  noClose(s);
+  s.send({ t: "req", id: "r", op: "tabs.remove", args: [7] });
+  await flush();
+  assert.deepEqual(closeCmds(s.f), [7]);
+  assert.deepEqual(s.resOf("r"), [], "the close ends at the tab's tabs.onRemoved");
+  assert.deepEqual(s.f.callsTo("tabs.remove"), [], "no fallback before the limit");
+  await s.fire(REMOVAL_WAIT_MS); // the item's wait, and the close's limit after the command's answer
+  await flush();
+  assert.deepEqual(s.f.callsTo("tabs.remove"), [[7]], "the fallback");
+  assert.deepEqual(s.f.callsTo("debugger.detach"), [], "the bridge's attachment stays");
+  assert.deepEqual(s.resOf("r").map((m) => m.data), [null]);
+  assert.equal(isOpen(s.f, 7), false);
+  assert.equal(s.r.removals.isPending(7), false);
+
+  // An attach for the close only: the fallback ends it first, then calls chrome.tabs.remove.
+  const o = await startReceiver({ tabs: [blank(7), blank(3)], targets: [target(7)] });
+  noClose(o);
+  const mark = o.f.calls.length;
+  o.send({ t: "req", id: "r", op: "tabs.remove", args: [7] });
+  await flush();
+  await o.fire(REMOVAL_WAIT_MS);
+  await flush();
+  const order = callsSince(o.f, mark).map(([p]) => p).filter((p) => ["debugger.attach", "debugger.detach", "tabs.remove"].includes(p));
+  assert.deepEqual(order, ["debugger.attach", "debugger.detach", "tabs.remove"]);
+  assert.deepEqual(o.resOf("r").map((m) => m.data), [null]);
+
+  // A failed fallback: the close fails, the tab stays and is not pending, and the op answers the error.
+  const e = await startReceiver({ tabs: [blank(7), blank(3)], targets: [target(7)] });
+  await e.answer({ id: "a", op: "debugger.attach", args: [7] });
+  noClose(e);
+  e.f.impl["tabs.remove"] = async (id) => {
+    throw new Error(`No tab with id: ${id}.`);
+  };
+  e.send({ t: "req", id: "r", op: "tabs.remove", args: [7] });
+  await flush();
+  await e.fire(REMOVAL_WAIT_MS);
+  await flush();
+  assert.deepEqual(e.resOf("r").map((m) => m.error), ["No tab with id: 7."]);
+  assert.equal(e.r.removals.isPending(7), false);
+
+  // The tab's tabs.onRemoved before the limit: the close ends there, and no fallback runs later.
+  const l = await startReceiver({ tabs: [blank(7), blank(3)], targets: [target(7)] });
+  await l.answer({ id: "a", op: "debugger.attach", args: [7] });
+  noClose(l);
+  l.send({ t: "req", id: "r", op: "tabs.remove", args: [7] });
+  await flush();
+  l.f.closeTab(7);
+  await flush();
+  assert.deepEqual(l.resOf("r").map((m) => m.data), [null]);
+  assert.equal(l.pending(REMOVAL_WAIT_MS).length, 0, "no timer of the close is left");
+  await l.fire(REMOVAL_WAIT_MS);
+  assert.deepEqual(l.f.callsTo("tabs.remove"), [], "no fallback");
+
+  // A no-error answer after the command's limit, when the fallback ran already and failed: the close
+  // ends REMOVAL_WAIT_MS after that answer, with the fallback's error, and no second fallback runs.
+  const d = await startReceiver({ tabs: [blank(7), blank(3)], targets: [target(7)] });
+  await d.answer({ id: "a", op: "debugger.attach", args: [7] });
+  let answer;
+  d.f.impl["debugger.sendCommand"] = (t, m) => (m === "Target.closeTarget" ? new Promise((res) => (answer = res)) : Promise.resolve({}));
+  d.f.impl["tabs.remove"] = () => Promise.reject(new Error("held"));
+  d.send({ t: "req", id: "r", op: "tabs.remove", args: [7] });
+  await flush();
+  await d.fire(REMOVAL_WAIT_MS); // the command's limit: the fallback fails
+  assert.deepEqual(d.f.callsTo("tabs.remove"), [[7]]);
+  assert.equal(d.r.removals.isPending(7), true, "the command has not answered");
+  answer({ success: true });
+  await flush();
+  assert.equal(d.r.removals.isPending(7), true, "the tab can still close");
+  await d.fire(REMOVAL_WAIT_MS);
+  assert.deepEqual(d.resOf("r").map((m) => m.error), ["held"]);
+  assert.equal(d.r.removals.isPending(7), false);
+  assert.deepEqual(d.f.callsTo("tabs.remove"), [[7]], "one fallback");
 });
 
 // review-20 note 2: the fallback never ends its own attach while Target.closeTarget still runs (a detach

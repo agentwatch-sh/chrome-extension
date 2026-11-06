@@ -677,6 +677,14 @@ test("the window rule: each vector follows C10's rule, also for a pending close 
     assert.ok(says(C10, s), `C10 says: ${s}`);
   }
   assert.ok(says(C5, "The sweep closes a tab with a pending close again, by the receiver's close"), "C5: the sweep does not skip a held tab");
+  // Board ab-v16.63: the dropped close (a no-error answer with no tabs.onRemoved) gets the fallback; its numbers.
+  for (const s of ["The **dropped close** (board ab-v16.63, receiver 0.3.4)", "a `Target.closeTarget` that reaches Chrome shortly before the tab's navigation commits answers `{\"success\":true}`, and the tab stays open with no `tabs.onRemoved`",
+    "no `tabs.onRemoved` of the tab came `REMOVAL_WAIT_MS` after that answer, the command counts as failed, and the fallback runs", "when the command fails and the tab stays, or at a dropped close (above)",
+    "The fallback of a dropped close is one more op of the tab's chain", "a failed fallback then ends the close `REMOVAL_WAIT_MS` after that answer",
+    "A dropped close ends at its fallback, about `REMOVAL_WAIT_MS` after the command's answer, so after the item's wait", "Chrome answered `{\"success\":true}` in 1 to 3 ms each time"]) {
+    assert.ok(says(C10, s), `C10 says: ${s}`);
+  }
+  assert.ok(says(C5, "that needs a failed attach or a dropped close (C10)"), "C5: the dropped close can lead to a held fallback");
   // review-17b: B1 (pending from the start of the close), N1 (the chain), N2 (step 3), N3 (a tab that the sweep cannot close leaves its scope).
   for (const s of ["a close is pending from the moment its item starts it (for the receiver's close, from the moment it joins the tab's chain; for a client's `Page.close`, from its send) until the tab's `tabs.onRemoved`, or until it fails and the tab stays (after the fallback too, and, when the receiver sent a `Target.closeTarget` command, only after that command also answered",
     "a late `Page.close` answer with no error leaves the close pending, and a late error ends it", "also one that still waits in the tab's chain, or is still in its attach",

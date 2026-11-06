@@ -13,7 +13,10 @@
 // - The receiver's close (every close but a client's Page.close):
 //   Target.closeTarget through chrome.debugger on the tab, one op of the
 //   tab's chain of attaches (attach.js). No beforeunload handler runs. Its
-//   fallback is chrome.tabs.remove.
+//   fallback is chrome.tabs.remove. A command that answered with no error
+//   but closed no tab (no tabs.onRemoved REMOVAL_WAIT_MS after its answer)
+//   counts as failed too: Chrome drops a close that reaches it shortly
+//   before the tab's navigation commits (measured, board ab-v16.63).
 // - A pending close: from the moment its item starts it until the tab's
 //   tabs.onRemoved, or until it fails and the tab stays (and, when a
 //   Target.closeTarget command went, until that command answered). The
@@ -52,6 +55,7 @@ class Close {
   error = null;
   commandOpen = false; // a Target.closeTarget command went and has not answered
   commandClosed = false; // that command answered with no error: the tab closes
+  fallback = false; // the fallback ran
   fallbackError = null;
 
   constructor(tabId, forget) {
@@ -214,7 +218,10 @@ export class Removals {
       const answered = sent.then(() => true, (e) => message(e) === DETACHED);
       void answered.then((ok) => {
         c.commandOpen = false;
-        if (ok) c.commandClosed = true;
+        if (ok) {
+          c.commandClosed = true;
+          this.#watch(c, own);
+        }
         c.check();
       });
       // A command with no answer in REMOVAL_WAIT_MS counts as failed.
@@ -223,10 +230,16 @@ export class Removals {
       fallback = true;
       running = !r.ok ? answered : null;
     }
+    return this.#fallback(c, own, running);
+  }
+
+  // The fallback ends the close's own attach first, but never while its
+  // command still runs (running: a detach makes that command fail): then only
+  // after the command answered. Then it calls chrome.tabs.remove.
+  async #fallback(c, own, running = null) {
     if (c.done) return;
-    // The fallback ends the close's own attach first, but never while its
-    // command still runs (a detach makes that command fail): then only after
-    // the command answered.
+    const { tabId } = c;
+    c.fallback = true;
     if (own && running) void running.then(() => call(() => this.#att.detachForClose(tabId)).catch(() => {}));
     else if (own) await call(() => this.#att.detachForClose(tabId)).catch(() => {});
     const removing = call(() => this.#chrome.tabs.remove(tabId));
@@ -234,6 +247,24 @@ export class Removals {
       c.fallbackError = e;
       c.check();
     });
+  }
+
+  // The command answered with no error. When no tabs.onRemoved of the tab
+  // comes in REMOVAL_WAIT_MS after that answer, Chrome dropped the close
+  // (measured: a Target.closeTarget that reaches Chrome shortly before the
+  // tab's navigation commits answers {success: true}, and the tab stays
+  // open): the command counts as failed, and the fallback runs, one op of
+  // the tab's chain. When the fallback ran already (the command answered
+  // after its limit), its result ends the close.
+  #watch(c, own) {
+    if (c.done) return;
+    const handle = this.#clock.setTimer(() => {
+      if (c.done) return;
+      c.commandClosed = false;
+      if (c.fallback) c.check();
+      else void this.#att.inChain(c.tabId, () => this.#fallback(c, own)).catch(() => {});
+    }, REMOVAL_WAIT_MS);
+    void c.ended.then(() => this.#clock.clearTimer(handle));
   }
 
   // ---- the items ----

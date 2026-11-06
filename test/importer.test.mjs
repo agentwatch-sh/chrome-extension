@@ -685,6 +685,7 @@ test("a close of the origin's tab that has not ended in the item's wait fails cl
   f.setTabs([{ id: 1, windowId: 1, url: ORIGIN + "/a" }, { id: 3, windowId: 1, url: "https://other.localhost/" }]);
   f.targets_ = [{ id: "T1", tabId: 1, type: "page", attached: false }];
   f.impl["debugger.sendCommand"] = async () => ({}); // the command answers; no tabs.onRemoved comes
+  f.impl["tabs.remove"] = () => new Promise(() => {}); // and a beforeunload dialog holds the fallback (board ab-v16.63)
   const qt = fakeTimers();
   Object.assign(receiver(f.chrome).clock, { setTimer: qt.setTimer, clearTimer: qt.clearTimer });
   const p = importState(f.chrome, makeState(), opts());
