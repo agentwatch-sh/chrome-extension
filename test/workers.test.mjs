@@ -1057,6 +1057,7 @@ test("a follow-up check that a new mark stops keeps the due origins that it did 
   held[0].resolve();
   await flush(40);
   assert.equal(count("https://u499.example"), 2, "u499's follow-up came at the next check");
+  assert.equal(count("https://u0.example"), 2, "u0's follow-up (part 1) is not repeated");
 });
 
 // ---- review-30e B3: the rules of round 4 with no test (G1 to G6) ----
