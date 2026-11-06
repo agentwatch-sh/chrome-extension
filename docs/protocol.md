@@ -656,9 +656,9 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
   - A refused entry follows what applies (C4): a scope whose entry applies as `null`, or whose list
     applies as absent, has no list, and its tabs close. The daemon never sends one.
   - The shared vector: `sweep` in `test/vectors/scopes.json`.
-- The guard (the operator's choice 2 of the design can replace it with a block of service workers):
-  a site's service worker answers a navigation before DNR sees it, also in a tab of a scope whose
-  list lacks the site. Measured: a scope-B tab loaded a scope-A site's worker page, 20 of 20; a
+- The guard (service workers stay on: the operator chose the design's choice 2 a, board items ab-8zv
+  and ab-7wg; the residue is below): a site's service worker answers a navigation before DNR sees
+  it, also in a tab of a scope whose list lacks the site. Measured: a scope-B tab loaded a scope-A site's worker page, 20 of 20; a
   worker that passes the navigation on (`fetch(event.request)`) loaded the page from the network in
   a scope-B tab, 5 of 5, with no DNR match (in its own scope it loaded too, so no site breaks);
   navigation preload is a `main_frame` request of the tab and was blocked in the scope-B tab, 5 of
@@ -705,8 +705,12 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
     also not for a page's own navigation (the probe's 10 of 10 above had layer 2 alone), and layer 3
     sent each page away. So in the own-page form the worker's page commits and runs its scripts
     before layer 3 sends it away (80 of 80), and a client attached to the tab can read it meanwhile.
-    ab-lead asked the operator again what to do about it (board item ab-7wg); this text changes when
-    the answer changes the build. A worker that passes the navigation on: 80 of 80 at `about:blank`
+    The operator chose to keep service workers on (board item ab-7wg, 2026-11-06, the recommended
+    option), so the build stays as it is, with this residue: a worker of another scope's site can
+    answer a navigation of a scope's tab from its cache (no request); that page commits and runs its
+    scripts for some tens of ms (the measures above) before layer 3 sends the tab away, and a client
+    attached to the tab can read it meanwhile. Both scopes are the operator's own agents, and no site
+    outside the lists is reached. A worker that passes the navigation on: 80 of 80 at `about:blank`
     with one `blocked`; its page ran in 0 of 80, and its request reached the site in 80 of 80 (as
     above). A client's `Page.navigate` of a scope-A tab to a `blob:` URL that a page of scope B's site made: Chrome began
     the navigation, and in 6 of 6 runs the tab ended at `about:blank` with one `blocked` naming the
