@@ -281,6 +281,18 @@ test("a tab of the orphan set has no host, also one on the union of the lists; a
   assert.equal(s.notices().length, 1, "the union covers both");
 });
 
+test("a restore tab whose import's domain is not known covers no host (fail closed)", async () => {
+  const s = await setup();
+  s.r.att.markRestore(3);
+  nav(s, "onBeforeNavigate", 3, "https://a.example/");
+  await flush();
+  assert.deepEqual(s.notices(), [notice(3, "a.example", null)], "not the union of the lists");
+  s.r.att.clearRestore(3);
+  nav(s, "onBeforeNavigate", 3, "https://a.example/");
+  await flush();
+  assert.equal(s.notices().length, 1, "after the import: a tab of no scope, the union");
+});
+
 test("the restore tab of a running import: its domain only, from its mark to the import's end; then a plain tab of no scope (the union)", async () => {
   const s = await setup();
   const state = {

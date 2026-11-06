@@ -46,7 +46,7 @@ export function guardHost(url) {
     return null;
   }
   if (u.protocol === "blob:") {
-    if (u.origin === "null") return null;
+    // An opaque inner origin serializes as "null", which is no URL.
     try {
       u = new URL(u.origin);
     } catch {

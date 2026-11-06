@@ -565,7 +565,11 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
   `REMOVAL_WAIT_MS` (C10), fails the call (`ok: false`) after the tabs closed, and the receiver logs
   it; the next call removes again. A call that answers `ok: false` for another reason (a failed rule
   update, rule 5 or key removal) moves no "last" either, but its new rules can be in force: so the
-  next call removes the workers too (review-20 B2).
+  next call removes the workers too (review-20 B2). Measured (part 1c's live test, 3 of 3 runs): with
+  a worker's page open in a tab of scope B (its own scope), a `set_scopes` that took the host off B's
+  list closed that tab (the closing rule); a new tab of scope B was then blocked by DNR at the host
+  (no worker's page, no request) with `blocked` naming scope B; with the host back on the list its
+  page came from the network: the worker was gone.
 - The closing rule: on each `set_scopes` the receiver closes every tab whose `http:`/`https:` host
   its list does not cover; for a marked tab, its `operator` value counts (with `"*"` it never
   closes; with a list name, that list; with `null` no list, so its `http:`/`https:` page closes);
@@ -671,6 +675,27 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
   - A `tabs.update` that fails (the tab closed) is ignored; the notice still goes. The guard acts at
     both layers of one navigation: when it lost the race at `onBeforeNavigate`, the commit sends the
     tab away again.
+  - Measured (part 1c's live test: Chromium 156, the unpacked agent of the branch, a stub daemon and
+    no relay, so the bridge's `Page.navigate` reached Chrome; two lists, `sitea.localhost` for scope A
+    and `siteb.localhost` for scope B; a run with 20 trials of each case and the eager attach off,
+    and runs with 10 trials with it off and on). A worker of scope B's site that answers each
+    navigation with its own page (from memory, no request): each navigation of a scope-A tab to it
+    ended at `about:blank` with one `blocked` (scope A, `from` A's site), 40 of 40 for a client's
+    `Page.navigate` and 40 of 40 for a page script's link click; but the worker's page committed and
+    ran its script in all 80 (its beacon reached the site 68 to 325 ms after the command, and the
+    notice reached the daemon 17 to 62 ms after it): against a warm worker layer 2 did not win, also not for a
+    page's own navigation (the probe's 10 of 10 above had layer 2 alone), and layer 3 sent each page
+    away. A worker that passes the navigation on: 80 of 80 at `about:blank` with one `blocked`; its
+    page ran in 0 of 80, and its request reached the site in 80 of 80 (as above). A client's
+    `Page.navigate` of a scope-A tab to a `blob:` URL that a page of scope B's site made: Chrome began
+    the navigation, the tab ended at `about:blank` with one `blocked` naming the inner host, and the
+    `blob:` page's script did not run (3 of 3 runs); a `blob:` page of a tab's own site stayed, with
+    no notice. Popups of a scope-A page to its own site (a `target=_blank` link, `window.open`, a
+    `noopener` popup and the sign-in pattern): 160 of 160 loaded, the guard blocked none (the popup's
+    scope is in the map before its first `onBeforeNavigate`). The operator's marked tab with `"*"`:
+    40 of 40 popups by the operator's click (a link and `window.open`) loaded hosts of no list. A
+    popup of a scope-A page to a host of no list: one `blocked` with scope A and `from` the opener's
+    host.
 - `blocked`: a main-frame `webNavigation.onErrorOccurred` with `net::ERR_BLOCKED_BY_CLIENT` (DNR's
   block), and each block of the guard, send `blocked` (C4) with the host (never the path or the
   query), the tab's scope and `from`. The receiver builds it from part 1c (board ab-v16.33, version
@@ -701,9 +726,11 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
   - The shared vector: `test/vectors/blocked.json` (`notices`: `blocked` as the receiver sends it;
     `guard`: the covered set of each kind of tab, and the host that the guard judges for each kind
     of URL).
-- Stage-2 limit (not handled now): a tab whose back/forward cache holds a page of a removed host may go
-  Back to it with no request, so DNR does not block it. The guard's `onCommitted` check also covers
-  a page that Chrome restores from the cache and reports there (not measured).
+- The back/forward cache: a tab whose cache holds a page of a removed host may go Back to it with no
+  request, so DNR does not block it. The guard's `onCommitted` check covers it. Measured (part 1c's
+  live test): after a `set_scopes` took the host of the tab's earlier page off its scope's list, Back
+  restored that page from the cache (no request) in 3 of 3 runs, and the guard sent the tab to
+  `about:blank` with one `blocked` (the removed host, the scope, `from` the page that the tab left).
 
 ### C6. The restore page (the receiver's import)
 

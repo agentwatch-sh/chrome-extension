@@ -210,7 +210,13 @@ test("each guard vector follows C5's guard: the host that it judges and the cove
     "The host of a `blob:` URL is its inner origin's host. A `blob:` URL of an opaque origin (`blob:null/...`), and `about:`, `data:`, `chrome:` and `file:` URLs, have no host",
     "for the restore tab of a running import its `domain` only (rules 6 and 7), from its mark to the import's end",
     "`test/vectors/blocked.json`",
+    // Part 1c's live test: the measures as built.
+    "against a warm worker layer 2 did not win, also not for a page's own navigation",
+    "its page ran in 0 of 80, and its request reached the site in 80 of 80",
+    "Popups of a scope-A page to its own site",
+    "Back restored that page from the cache (no request) in 3 of 3 runs, and the guard sent the tab to `about:blank`",
   ]) assert.ok(says(C5, s), `C5 says: ${s}`);
+  assert.ok(!says(C5, "reports there (not measured)"), "the back/forward cache is measured now");
 });
 
 test("C4's blocked holds from (board ab-v16.33), each notice vector has C4's shape, and C5 states from and the once rule", () => {
