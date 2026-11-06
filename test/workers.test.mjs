@@ -436,11 +436,15 @@ test("a scope's tab that commits a page on no list (a worker's page before layer
   assert.deepEqual(recorded(s), [X]);
 });
 
-// ---- the bound (review-30b B1 and ab-lead's decision: no page content removes a worker of a shown site or of a listed origin) ----
+// ---- the bound (review-30b B1, review-30d and ab-lead's decisions: no page content removes a worker of a shown site or of a listed
+// origin; the record refuses at the bound, with no eviction; a refused origin waits in memory with the same rules) ----
 
 // Every call of browsingData.remove that is no removal of given origins (a removal of every worker, with or without excludeOrigins).
 const wide = (s) => s.f.callsTo("browsingData.remove").filter(([d]) => !d || !d.origins);
 const removedAny = (s) => new Set(leaves(s).flat());
+const excluding = (s) => s.f.callsTo("browsingData.remove").filter(([d]) => d && d.excludeOrigins).map(([d]) => [...d.excludeOrigins].sort());
+// A session end: md-lead's list goes (no shrink, so C5's own removal of every worker does not run).
+const SESSION_END = { lists: { ops: ["o.example"], spare: ["s.example"] }, scopes: { "md-lead": null }, default: null, operator: "*" };
 
 // Frames of distinct origins of one site (a page that floods the record), as a tab's sub-frames.
 function flood(s, tabId, top, n, host = (i) => `https://f${i}.b1.example`) {
@@ -448,7 +452,7 @@ function flood(s, tabId, top, n, host = (i) => `https://f${i}.b1.example`) {
   for (let i = 0; i < n; i++) commit(s, tabId, host(i) + "/tiny", { frameId: 100 + i, parentFrameId: 0 });
 }
 
-test("the flood: marked tabs that show frames of more origins than the bound never make the receiver remove a worker of a site that a marked tab shows or of a listed origin; the record stays at the bound", async () => {
+test("the flood: marked tabs that show frames of more origins than the bound never make the receiver remove a worker of a site that a marked tab shows or of a listed origin; after they leave, every origin of the flood goes", async () => {
   const s = await setup();
   s.r.workers.max = 8;
   operatorTab(s, 20);
@@ -469,13 +473,13 @@ test("the flood: marked tabs that show frames of more origins than the bound nev
   for (const o of [X, "https://a.example"]) assert.ok(!gone.has(o), `${o}: kept`);
   for (const o of gone) assert.ok(!/b[12]\.example$/.test(o), `${o}: of a shown site, never removed while shown`);
   assert.ok(gone.has("https://u.example"), "an origin on no list that no marked tab shows still goes");
-  assert.ok(recorded(s).length <= 8, "the bound");
-  assert.ok(recorded(s).includes(X), "the open page's origin is never evicted");
-  // The flood pages leave: their recorded origins go; then the operator's tab leaves X: X goes (the gap after the leave stays closed).
+  assert.equal(recorded(s).length, 8, "the bound");
+  assert.deepEqual(recorded(s).slice().sort(), [X, "https://a.example", "https://www.b1.example", ...[0, 1, 2, 3, 4].map((i) => `https://f${i}.b1.example`)].sort(), "the first origins stay: no eviction");
+  // The flood pages leave: every origin of the flood goes, the recorded and the refused ones; then the operator's tab leaves X.
   s.f.closeTab(21);
   s.f.closeTab(22);
-  await flush();
-  assert.ok([...removedAny(s)].some((o) => /b1\.example$/.test(o)), "the flood's recorded origins go");
+  await flush(20);
+  for (const sub of ["b1", "b2"]) for (const o of [`https://www.${sub}.example`, ...Array.from({ length: 12 }, (_, i) => `https://f${i}.${sub}.example`)]) assert.ok(removedAny(s).has(o), `${o}: goes after the leave`);
   assert.ok(!removedAny(s).has(X));
   commit(s, 20, "https://other.example/");
   await flush();
@@ -483,15 +487,14 @@ test("the flood: marked tabs that show frames of more origins than the bound nev
   assert.deepEqual(wide(s).length, 1, "still no removal of every worker");
 });
 
-test("the flood in a scope's tab: a listed page with frames of many origins on no list removes only those origins, never a shown site's or a listed origin's worker", async () => {
+test("the flood in a scope's tab: a listed page with frames of many origins on no list removes only those origins (also the refused ones), never a shown site's or a listed origin's worker", async () => {
   const s = await setup();
   s.r.workers.max = 6;
   operatorTab(s, 20);
   await flush();
   commit(s, 20, X + "/home");
   flood(s, 7, "https://a.example/burst", 20, (i) => `https://u${i}.example`);
-  // Before any check: each new origin evicted the oldest origin on no list (its own removal follows).
-  assert.deepEqual(recorded(s), [X, "https://a.example", "https://u16.example", "https://u17.example", "https://u18.example", "https://u19.example"].sort());
+  assert.deepEqual(recorded(s), [X, "https://a.example", "https://u0.example", "https://u1.example", "https://u2.example", "https://u3.example"].sort(), "the bound refuses the later origins");
   await flush();
   const gone = removedAny(s);
   for (let i = 0; i < 20; i++) assert.ok(gone.has(`https://u${i}.example`), `u${i}: removed`);
@@ -500,79 +503,277 @@ test("the flood in a scope's tab: a listed page with frames of many origins on n
   assert.ok(recorded(s).length <= 6);
 });
 
-test("a listed origin that the bound evicts: no removal of every worker while its list is in force; at its list's end one removal of every worker that excludes the shown origins and the listed origins of the record; a failed one is retried at the next check", async () => {
+test("a listed origin that the bound refuses waits in memory while its list is in force, and goes by an ordinary removal at its list's end (no removal of every worker)", async () => {
   const s = await setup();
   s.r.workers.max = 3;
   operatorTab(s, 20);
   await flush();
   commit(s, 20, X + "/home");
-  commit(s, 7, "https://a.example/"); // listed (md)
   commit(s, 3, "https://o.example/"); // listed (ops)
+  commit(s, 3, "https://s.example/"); // listed (spare)
   await flush();
-  commit(s, 3, "https://s.example/"); // listed (spare): the bound evicts a.example, the oldest listed origin
+  commit(s, 7, "https://a.example/"); // listed (md): the full record refuses it
   await flush();
   assert.deepEqual(recorded(s), [X, "https://o.example", "https://s.example"].sort());
-  assert.deepEqual(wide(s).length, 1, "nothing while md is in force");
-  await s.set(scopesWith("*", { lists: { ...LISTS, spare: ["s.example", "t.example"] } })); // a.example's entry stays
+  assert.deepEqual(leaves(s), [], "kept while md is in force");
+  await s.set(SESSION_END); // md ends: a.example is on no list now
   await flush();
-  assert.deepEqual(wide(s).length, 1, "nothing: a.example's entry stays");
-  // md loses a.example (C5's own removal of every worker runs for that shrink, with {}); the list's end owes the excluding one.
+  assert.deepEqual(leaves(s), [["https://a.example"]]);
+  assert.deepEqual(wide(s).length, 1, "no removal of every worker");
+});
+
+test("beyond the pending bound: a dropped listed origin keeps its list entries, and only that list's end runs one removal of every worker that keeps the shown origins (also the refused ones), the recorded origins of shown sites and the listed origins; a failed one is retried at the next check", async () => {
+  const s = await setup();
+  s.r.workers.max = 3;
+  s.r.workers.pendingMax = 1;
+  operatorTab(s, 20);
+  await flush();
+  commit(s, 20, "https://www.b1.example/");
+  commit(s, 20, "https://api.b1.example/t", { frameId: 100, parentFrameId: 0 });
+  commit(s, 3, "https://s.example/"); // listed (spare)
+  await flush();
+  commit(s, 20, "about:blank", { frameId: 100, parentFrameId: 0 }); // api.b1 shows nothing now; its site is still shown
+  commit(s, 20, "https://f2.b1.example/t", { frameId: 101, parentFrameId: 0 }); // refused: it waits (pending 1 of 1)
+  await flush();
+  commit(s, 7, "https://a.example/"); // listed (md): refused, and the pending set is full: dropped, its entries kept
+  await flush();
+  assert.deepEqual(wide(s).length, 1, "nothing while md is in force");
+  await s.set(scopesWith("*", { lists: { ...LISTS, spare: ["s.example", "t.example"] } })); // another list changes: nothing
+  await flush();
+  assert.deepEqual(wide(s).length, 1, "the end of another list removes nothing");
   s.f.impl["browsingData.remove"] = async (d) => {
     if (d && d.excludeOrigins) throw new Error("busy");
   };
   const log = quietWarn();
   try {
-    await s.set(scopesWith("*", { lists: { md: ["b.example"], ops: ["o.example"], spare: ["s.example"] } }));
+    await s.set({ ...SESSION_END, lists: { ops: ["o.example"], spare: ["s.example", "t.example"] } }); // md's end
     await flush();
-    const failed = wide(s).filter(([d]) => d && d.excludeOrigins);
-    assert.equal(failed.length, 1, "the list end's removal ran and failed");
+    assert.equal(excluding(s).length, 1, "the list end's removal ran and failed");
     delete s.f.impl["browsingData.remove"];
-    commit(s, 3, "https://s.example/again"); // the next event (an origin of the record: no eviction)
+    commit(s, 3, "https://s.example/again"); // the next event
     await flush();
   } finally {
     log.restore();
   }
-  const excluding = wide(s).filter(([d]) => d && d.excludeOrigins);
-  assert.equal(excluding.length, 2, "retried at the next check");
-  assert.deepEqual([...excluding[1][0].excludeOrigins].sort(), ["https://o.example", "https://s.example", X].sort(), "the shown origin and the recorded listed origins");
-  assert.deepEqual(excluding[1][1], { serviceWorkers: true });
+  const e = excluding(s);
+  assert.equal(e.length, 2, "retried at the next check");
+  for (const o of ["https://www.b1.example", "https://f2.b1.example", "https://api.b1.example", "https://s.example"]) assert.ok(e[1].includes(o), `${o} kept: ${JSON.stringify(e[1])}`);
+  assert.ok(!e[1].includes("https://a.example"));
   commit(s, 3, "https://s.example/next");
   await flush();
-  assert.equal(wide(s).filter(([d]) => d && d.excludeOrigins).length, 2, "once");
+  assert.equal(excluding(s).length, 2, "once");
 });
 
-test("a record full of origins of shown sites: a new origin of a shown site is not recorded (the residue), one on no list goes at once, and nothing removes a shown site's worker", async () => {
+test("a record full of origins of shown sites: a new origin of a shown site waits in memory and goes after the leave (no residue); one on no list goes at once; the bound never removes a recorded origin", async () => {
   const s = await setup();
   s.r.workers.max = 3;
   operatorTab(s, 20);
   await flush();
   flood(s, 20, "https://www.b1.example/", 2); // www, f0, f1: three origins of one shown site
   await flush();
-  assert.deepEqual(recorded(s), ["https://f0.b1.example", "https://f1.b1.example", "https://www.b1.example"]);
   commit(s, 20, "https://f9.b1.example/tiny", { frameId: 199, parentFrameId: 0 });
   commit(s, 3, "https://u.example/");
   await flush();
-  assert.deepEqual(recorded(s), ["https://f0.b1.example", "https://f1.b1.example", "https://www.b1.example"], "f9 is not recorded");
+  assert.deepEqual(recorded(s), ["https://f0.b1.example", "https://f1.b1.example", "https://www.b1.example"], "f9 is not recorded; nothing left the record");
   assert.deepEqual(leaves(s), [["https://u.example"]]);
+  commit(s, 20, "https://other.example/"); // the marked tab leaves site b1
+  await flush();
+  assert.ok(removedAny(s).has("https://f9.b1.example"), "the refused origin goes after the leave");
   assert.deepEqual(wide(s).length, 1);
 });
 
-test("a marked tab's commit makes its site shown at once: before any check the bound evicts no origin of that site", async () => {
+// review-30d P7: with no eviction a marked tab's origin cannot leave the record by the bound.
+test("an origin that a marked tab commits while the record is full and the reads wait stays recorded, and goes after the leave", async () => {
+  const s = await setup();
+  s.r.workers.max = 2;
+  operatorTab(s, 20);
+  await flush();
+  commit(s, 20, "https://www.p.example/");
+  await flush();
+  const held = [];
+  s.f.impl["webNavigation.getAllFrames"] = (q) => new Promise((resolve) => held.push({ q, resolve }));
+  commit(s, 3, "https://www.k.example/"); // the record: www.p, www.k
+  commit(s, 20, "https://www.k.example/"); // the marked tab opens www.k
+  commit(s, 3, "https://u2.example/");
+  commit(s, 3, "https://u3.example/");
+  assert.ok(recorded(s).includes("https://www.k.example"), "www.k stays recorded: " + JSON.stringify(recorded(s)));
+  delete s.f.impl["webNavigation.getAllFrames"];
+  for (const h of held.splice(0)) h.resolve(structuredClone(s.f.frames_.get(h.q.tabId) ?? []));
+  await flush(20);
+  commit(s, 20, "https://www.q.example/"); // the marked tab leaves k
+  await flush(20);
+  assert.ok(removedAny(s).has("https://www.k.example"), "www.k goes after the leave");
+});
+
+// review-30d P8 (its fuzz, seed 40): a refused origin whose site a marked tab shows by its own check stays pending, and goes after the leave.
+test("a refused origin whose site a marked tab shows by its own check waits, and goes after the marked tab leaves that site", async () => {
+  const s = await setup();
+  s.r.workers.max = 2;
+  operatorTab(s, 20);
+  await flush();
+  commit(s, 20, "https://www.p.example/");
+  await flush();
+  commit(s, 3, "https://u0.example/"); // the record: www.p, u0
+  commit(s, 3, "https://www.k.example/"); // refused: it waits
+  commit(s, 20, "https://api.k.example/f", { frameId: 5, parentFrameId: 0 }); // the marked tab shows site k before that check
+  await flush(20);
+  assert.ok(!removedAny(s).has("https://www.k.example"));
+  commit(s, 20, "https://www.q.example/f", { frameId: 5, parentFrameId: 0 }); // the frame leaves site k
+  await flush(20);
+  assert.ok(removedAny(s).has("https://www.k.example"), "www.k goes after the marked tab left site k");
+  assert.ok(removedAny(s).has("https://api.k.example"));
+});
+
+// review-30c R5: the shown sites come from the reads; a site that the marked tabs left is not shown.
+test("a site that the marked tabs left is not shown any more: a new origin of it that the full record refuses goes at the next check", async () => {
   const s = await setup();
   s.r.workers.max = 3;
   operatorTab(s, 20);
   await flush();
-  // All before a check: the page and two frames of its site, then a fourth origin of that site.
-  commit(s, 20, "https://www.b1.example/");
-  commit(s, 20, "https://f0.b1.example/tiny", { frameId: 100, parentFrameId: 0 });
-  commit(s, 20, "https://f1.b1.example/tiny", { frameId: 101, parentFrameId: 0 });
-  commit(s, 20, "https://f2.b1.example/tiny", { frameId: 102, parentFrameId: 0 });
-  assert.deepEqual(recorded(s), ["https://f0.b1.example", "https://f1.b1.example", "https://www.b1.example"], "the oldest origins of the shown site stay");
+  commit(s, 20, "https://www.k.example/");
   await flush();
-  assert.deepEqual(leaves(s), []);
+  commit(s, 20, "https://www.b1.example/"); // the tab leaves k: the check removes www.k.example
+  await flush();
+  commit(s, 20, "https://f0.b1.example/t", { frameId: 100, parentFrameId: 0 });
+  commit(s, 20, "https://f1.b1.example/t", { frameId: 101, parentFrameId: 0 });
+  await flush();
+  assert.deepEqual(recorded(s), ["https://f0.b1.example", "https://f1.b1.example", "https://www.b1.example"]);
+  commit(s, 3, "https://api.k.example/"); // a tab of no scope, no room
+  await flush();
+  assert.ok(removedAny(s).has("https://api.k.example"), "api.k.example went: " + JSON.stringify(leaves(s)));
 });
 
-// review-30b note 4: the lists at removal time, not at the check's start.
+// review-30d P2: the sites of the marked tabs' commits during a check count as shown, refused origins too (not through the record).
+test("a marked tab that commits a refused origin of site k during a check's read: that check removes no origin of site k", async () => {
+  const s = await setup();
+  s.r.workers.max = 4;
+  operatorTab(s, 20);
+  operatorTab(s, 21);
+  await flush();
+  commit(s, 20, "https://www.b1.example/");
+  commit(s, 20, "https://f0.b1.example/t", { frameId: 100, parentFrameId: 0 });
+  commit(s, 20, "https://f1.b1.example/t", { frameId: 101, parentFrameId: 0 });
+  commit(s, 21, "https://www.k.example/");
+  await flush();
+  assert.equal(recorded(s).length, 4);
+  const held = [];
+  s.f.impl["webNavigation.getAllFrames"] = (q) => new Promise((resolve) => held.push({ q, resolve }));
+  commit(s, 21, "about:blank"); // tab 21 leaves site k
+  await flush();
+  assert.deepEqual(held.map((h) => h.q.tabId), [21]);
+  commit(s, 20, "https://api.k.example/f", { frameId: 102, parentFrameId: 0 }); // during the read: refused by the full record
+  assert.ok(!recorded(s).includes("https://api.k.example"));
+  delete s.f.impl["webNavigation.getAllFrames"];
+  for (const h of held.splice(0)) h.resolve([{ frameId: 0, parentFrameId: -1, url: "about:blank", documentLifecycle: "active" }]);
+  await flush(20);
+  assert.ok(!removedAny(s).has("https://www.k.example"), "tab 20 shows site k in a frame: " + JSON.stringify(leaves(s)));
+});
+
+// review-30d P6 and P6b: the version of a read is taken before the read.
+test("a commit of a marked tab during its own frame read: the next check reads that tab again (a left site goes; a new sub-frame stays shown)", async () => {
+  for (const kind of ["leave", "frame"]) {
+    const s = await setup();
+    operatorTab(s, 20);
+    await flush();
+    commit(s, 20, "https://www.y.example/");
+    await flush();
+    const held = [];
+    s.f.impl["webNavigation.getAllFrames"] = (q) => new Promise((resolve) => held.push({ q, resolve }));
+    commit(s, 20, "https://www.y.example/again"); // the check reads tab 20 (held)
+    await flush();
+    assert.equal(held.length, 1, kind);
+    if (kind === "leave") commit(s, 20, "https://www.z.example/"); // tab 20 leaves y during its read
+    else commit(s, 20, "https://w.example/f", { frameId: 5, parentFrameId: 0 }); // a sub-frame commits during the read
+    delete s.f.impl["webNavigation.getAllFrames"];
+    held[0].resolve([{ frameId: 0, parentFrameId: -1, url: "https://www.y.example/", documentLifecycle: "active" }]); // the read before that commit
+    await flush(20);
+    commit(s, 3, "https://other.example/"); // an event of another tab: a check
+    await flush(20);
+    if (kind === "leave") assert.ok(removedAny(s).has("https://www.y.example"), "y goes after the tab left it");
+    else assert.ok(!removedAny(s).has("https://w.example"), "w.example is shown in tab 20's frame: " + JSON.stringify(leaves(s)));
+  }
+});
+
+// review-30d P1: the tab that replaces a marked tab can show a new origin.
+test("a tab that gets the mark during a check's read and shows a new origin Z: that check removes nothing of Z, and the next one reads the new tab", async () => {
+  const s = await setup();
+  operatorTab(s, 20);
+  await flush();
+  commit(s, 20, "https://www.x.example/");
+  await flush();
+  const held = [];
+  s.f.impl["webNavigation.getAllFrames"] = (q) => new Promise((resolve) => held.push({ q, resolve }));
+  s.f.tabs_.push({ id: 30, windowId: 1, url: "https://www.z.example/" });
+  commit(s, 30, "https://www.z.example/"); // a tab with no mark yet (a prerendered page) commits Z
+  commit(s, 20, "https://www.y.example/");
+  await flush();
+  assert.deepEqual(held.map((h) => h.q.tabId), [20]);
+  s.f.tabs_ = s.f.tabs_.filter((t) => t.id !== 20);
+  s.f.frames_.delete(20);
+  s.f.chrome.tabs.onReplaced.fire(30, 20); // tab 30 takes tab 20's mark during the read
+  delete s.f.impl["webNavigation.getAllFrames"];
+  for (const h of held.splice(0)) h.resolve(null);
+  await flush(20);
+  assert.equal(s.r.map.isMarked(30), true);
+  assert.ok(!removedAny(s).has("https://www.z.example"), "Z is shown by marked tab 30: " + JSON.stringify(leaves(s)));
+});
+
+// review-30d B1 and ab-lead's decision 2: each loop of a check pauses (one task) after SLICE items.
+test("a check that reads more than SLICE frames, or handles more than SLICE pending origins, lets a queued task run before its removal", async () => {
+  for (const kind of ["frames", "pending"]) {
+    const s = await setup();
+    s.r.workers.max = 2;
+    operatorTab(s, 20);
+    await flush();
+    commit(s, 20, X + "/");
+    await flush();
+    let ran = false;
+    let seen = null;
+    s.f.impl["browsingData.remove"] = async () => {
+      if (seen === null) seen = ran;
+    };
+    if (kind === "frames") {
+      const frames = [{ frameId: 0, parentFrameId: -1, url: "https://www.b1.example/", documentLifecycle: "active" }];
+      for (let i = 0; i < 2500; i++) frames.push({ frameId: 100 + i, parentFrameId: 0, url: `https://f${i}.b1.example/t`, documentLifecycle: "active" });
+      s.f.frames_.set(20, frames);
+      s.f.tabs_.find((t) => t.id === 20).url = "https://www.b1.example/";
+      s.f.chrome.webNavigation.onCommitted.fire({ tabId: 20, frameId: 0, parentFrameId: -1, url: "https://www.b1.example/" }); // X left: a removal at the end
+    } else {
+      for (let i = 0; i < 2500; i++) s.f.chrome.webNavigation.onCommitted.fire({ tabId: 3, frameId: 100 + i, parentFrameId: 0, url: `https://u${i}.example/` });
+    }
+    setTimeout(() => {
+      ran = true;
+    }, 0);
+    await flush(40);
+    assert.equal(seen, true, `${kind}: a queued task ran before the removal`);
+  }
+});
+
+// The decision runs in parts with pauses: the events during the pauses count before each removal call.
+test("a marked tab that commits an origin of site k during the pauses of a check's decision: that check removes no origin of k; a set_scopes during them: that check removes nothing", async () => {
+  for (const kind of ["commit", "set_scopes"]) {
+    const s = await setup();
+    operatorTab(s, 20);
+    await flush();
+    commit(s, 20, "https://www.k.example/");
+    await flush();
+    const held = [];
+    s.f.impl["webNavigation.getAllFrames"] = (q) => new Promise((resolve) => held.push({ q, resolve }));
+    commit(s, 20, "about:blank"); // tab 20 leaves k: the check reads it (held)
+    for (let i = 0; i < 1200; i++) commit(s, 7, `https://cdn${i}.a.example/f`, { frameId: 100 + i, parentFrameId: 0 }); // listed: the decision loops pause
+    await flush();
+    // At the decision's first pause: the event.
+    setTimeout(() => {
+      if (kind === "commit") commit(s, 20, "https://api.k.example/f", { frameId: 5, parentFrameId: 0 });
+      else void s.set(scopesWith("*", { lists: { ...LISTS, spare: ["s.example", "k.example"] } }));
+    }, 0);
+    delete s.f.impl["webNavigation.getAllFrames"];
+    for (const h of held.splice(0)) h.resolve([{ frameId: 0, parentFrameId: -1, url: "about:blank", documentLifecycle: "active" }]);
+    await flush(40);
+    assert.ok(!removedAny(s).has("https://www.k.example"), `${kind}: www.k.example kept by that check: ${JSON.stringify(leaves(s))}`);
+  }
+});
+
 test("a set_scopes during the check's frame read that puts an origin on a list: that check does not remove it", async () => {
   const s = await setup();
   operatorTab(s, 20);
@@ -591,8 +792,8 @@ test("a set_scopes during the check's frame read that puts an origin on a list: 
   assert.deepEqual(leaves(s), [], "X is listed now");
 });
 
-// review-30b note 2: a page can register its worker after the check of its own commit.
-test("a removed origin gets a follow-up check RECHECK_MS later: a worker that its page registered after the first check goes too; then the origin is forgotten", async () => {
+// review-30b note 2 and review-30d's decision 3: a follow-up check after each removal, with one timer at a time.
+test("a removed origin gets a follow-up check: a worker that its page registered after the first check goes too; then the origin is forgotten", async () => {
   const s = await setup();
   commit(s, 7, "https://a.example/");
   commit(s, 7, "https://cdn.u.example/f", { frameId: 2, parentFrameId: 0 }); // a frame on no list in a listed page
@@ -600,6 +801,7 @@ test("a removed origin gets a follow-up check RECHECK_MS later: a worker that it
   assert.deepEqual(leaves(s), [["https://cdn.u.example"]]);
   await s.fire(RECHECK_MS);
   assert.deepEqual(leaves(s), [["https://cdn.u.example"], ["https://cdn.u.example"]], "the follow-up check");
+  await s.fire(RECHECK_MS);
   await s.fire(RECHECK_MS);
   assert.deepEqual(leaves(s).length, 2, "once");
   // An origin shown or listed at the follow-up check stays.
@@ -610,117 +812,30 @@ test("a removed origin gets a follow-up check RECHECK_MS later: a worker that it
   commit(s, 20, "https://cdn.v.example/");
   await flush();
   await s.fire(RECHECK_MS);
+  await s.fire(RECHECK_MS);
   assert.deepEqual(leaves(s), [["https://cdn.u.example"], ["https://cdn.u.example"], ["https://cdn.v.example"]], "shown at the follow-up: kept");
 });
 
-// ---- review-30c B2: the list end's excludeOrigins, the own check and the shown sites ----
-
-const excluding = (s) => s.f.callsTo("browsingData.remove").filter(([d]) => d && d.excludeOrigins).map(([d]) => [...d.excludeOrigins].sort());
-// A session end: md-lead's list goes (no shrink, so C5's own removal of every worker does not run).
-const SESSION_END = { lists: { ops: ["o.example"], spare: ["s.example"] }, scopes: { "md-lead": null }, default: null, operator: "*" };
-
-test("the list end's removal of every worker keeps a shown origin that the full record could not hold (excludeOrigins)", async () => {
-  const s = await setup();
-  s.r.workers.max = 3;
-  operatorTab(s, 20);
-  await flush();
-  commit(s, 7, "https://a.example/"); // listed (md)
-  commit(s, 20, "https://www.b1.example/");
-  commit(s, 20, "https://f0.b1.example/t", { frameId: 100, parentFrameId: 0 });
-  await flush();
-  commit(s, 20, "https://f1.b1.example/t", { frameId: 101, parentFrameId: 0 }); // evicts a.example (listed)
-  commit(s, 20, "https://f2.b1.example/t", { frameId: 102, parentFrameId: 0 }); // no room: not recorded (residue 1)
-  await flush();
-  assert.ok(!recorded(s).includes("https://f2.b1.example"));
-  await s.set(SESSION_END);
-  await flush();
-  const e = excluding(s);
-  assert.equal(e.length, 1, "one list-end removal");
-  assert.ok(e[0].includes("https://f2.b1.example"), "the shown origin out of the record is kept: " + JSON.stringify(e[0]));
-});
-
-test("the list end's removal of every worker keeps a recorded origin of a shown site that no frame shows at that time (excludeOrigins: a first-party worker needs its exact origin)", async () => {
-  const s = await setup();
-  s.r.workers.max = 3;
-  operatorTab(s, 20);
-  await flush();
-  commit(s, 7, "https://a.example/"); // listed (md)
-  commit(s, 20, "https://www.b1.example/");
-  commit(s, 20, "https://api.b1.example/t", { frameId: 100, parentFrameId: 0 });
-  await flush();
-  commit(s, 20, "about:blank", { frameId: 100, parentFrameId: 0 }); // api.b1 shows nothing now; its site is still shown
-  await flush();
-  commit(s, 3, "https://s.example/"); // listed (spare): evicts a.example (the record: www.b1, api.b1, s)
-  await flush();
-  assert.ok(recorded(s).includes("https://api.b1.example"));
-  await s.set(SESSION_END);
-  await flush();
-  const e = excluding(s);
-  assert.equal(e.length, 1, "one list-end removal");
-  assert.ok(e[0].includes("https://api.b1.example"), "the recorded origin of the shown site is kept: " + JSON.stringify(e[0]));
-});
-
-test("an evicted origin whose site a marked tab shows by the time of its own check keeps its workers", async () => {
-  const s = await setup();
-  s.r.workers.max = 2;
-  operatorTab(s, 20);
-  await flush();
-  commit(s, 3, "https://u.example/");
-  await flush();
-  // The frame reads wait, so that the evictions and the marked tab's commits come before the own checks.
-  const held = [];
-  s.f.impl["webNavigation.getAllFrames"] = (q) => new Promise((resolve) => held.push({ q, resolve }));
-  commit(s, 3, "https://v.example/");
-  commit(s, 3, "https://w.example/");
-  commit(s, 3, "https://x.example/"); // evicts the oldest free origin
-  const evicted = ["https://v.example", "https://w.example"].filter((o) => !recorded(s).includes(o));
-  assert.ok(evicted.length > 0, "an origin was evicted");
-  // A marked tab now shows the site of each of them.
-  commit(s, 20, "https://www.v.example/");
-  commit(s, 20, "https://www.w.example/f", { frameId: 5, parentFrameId: 0 });
-  delete s.f.impl["webNavigation.getAllFrames"];
-  for (const h of held) h.resolve(structuredClone(s.f.frames_.get(h.q.tabId) ?? []));
-  await flush(20);
-  const gone = removedAny(s);
-  for (const o of ["https://v.example", "https://w.example"]) assert.ok(!gone.has(o), `${o}: kept while a marked tab shows its site; removals: ${JSON.stringify(leaves(s))}`);
-});
-
-test("a site that the marked tabs left is not shown any more for the bound: a new origin of it that finds no room gets its own check and goes", async () => {
-  const s = await setup();
-  s.r.workers.max = 3;
-  operatorTab(s, 20);
-  await flush();
-  commit(s, 20, "https://www.k.example/");
-  await flush();
-  commit(s, 20, "https://www.b1.example/"); // the tab leaves k: the check removes www.k.example
-  await flush();
-  commit(s, 20, "https://f0.b1.example/t", { frameId: 100, parentFrameId: 0 });
-  commit(s, 20, "https://f1.b1.example/t", { frameId: 101, parentFrameId: 0 });
-  await flush();
-  assert.deepEqual(recorded(s), ["https://f0.b1.example", "https://f1.b1.example", "https://www.b1.example"]);
-  commit(s, 3, "https://api.k.example/"); // a tab of no scope, no room
-  await flush();
-  assert.ok(removedAny(s).has("https://api.k.example"), "api.k.example had its own check: " + JSON.stringify(leaves(s)));
-});
-
-// review-30c B3 d: each removal's follow-up comes RECHECK_MS after that removal, not at an earlier removal's timer.
-test("each removal arms its own follow-up timer of RECHECK_MS, also while an earlier one runs", async () => {
+test("the follow-up checks use one timer at a time: a removal while it runs gets its follow-up at the timer after (RECHECK_MS to 2 x RECHECK_MS after its removal)", async () => {
   const s = await setup();
   commit(s, 3, "https://u1.example/");
   await flush();
   assert.equal(s.pending(RECHECK_MS).length, 1, "the timer of u1's removal");
   commit(s, 3, "https://u2.example/");
   await flush();
-  assert.deepEqual(leaves(s), [["https://u1.example"], ["https://u2.example"]]);
-  assert.equal(s.pending(RECHECK_MS).length, 2, "u2's removal has its own timer");
-  // The first timer: u1's follow-up only.
-  const [t1] = s.pending(RECHECK_MS);
-  t1.cleared = true;
-  t1.fn();
-  await flush();
-  assert.deepEqual(leaves(s).slice(2), [["https://u1.example"]]);
+  for (let i = 0; i < 50; i++) {
+    commit(s, 3, `https://w${i}.example/`);
+    await flush(3);
+  }
+  assert.equal(s.pending(RECHECK_MS).length, 1, "still one timer");
+  const n = leaves(s).length;
+  await s.fire(RECHECK_MS); // u1's follow-up; u2's wait starts
+  assert.deepEqual(leaves(s).slice(n), [["https://u1.example"]]);
+  assert.equal(s.pending(RECHECK_MS).length, 1);
+  await s.fire(RECHECK_MS); // u2's follow-up (and the others')
+  assert.ok(leaves(s).slice(n + 1).flat().includes("https://u2.example"));
   await s.fire(RECHECK_MS);
-  assert.deepEqual(leaves(s).slice(3), [["https://u2.example"]], "u2's follow-up at its own timer");
+  assert.equal(s.pending(RECHECK_MS).length, 0, "no timer with nothing due");
 });
 
 // review-30c B1: the CPU work of a check grows linearly with the shown origins; the bound refuses an origin in O(1).
@@ -734,18 +849,17 @@ test("a check with 3000 shown origins and a full record does work linear in the 
   await flush(20);
   assert.equal(recorded(s).length, 1000, "the bound");
   const w0 = s.r.workers.stats.work;
-  const m0 = s.r.workers.stats.room;
   const r0 = s.f.callsTo("webNavigation.getAllFrames").length;
-  commit(s, 7, "https://a.example/next"); // one more check, after an event of a tab that is not marked
+  commit(s, 7, "https://a.example/next"); // one more check, after an event of a tab that is not marked (its origin: one step)
+  const m0 = s.r.workers.stats.room;
   await flush(20);
   assert.equal(s.f.callsTo("webNavigation.getAllFrames").length - r0, 0, "no marked tab had an event: its last frame read stays (no new read)");
   const work = s.r.workers.stats.work - w0;
   assert.ok(work > 0 && work <= 4 * (3003 + 1000), `one check's work: ${work}`);
-  // Each origin that the full record refuses costs one step of the bound.
   const m1 = s.r.workers.stats.room;
   commit(s, 20, "https://f9999.b1.example/t", { frameId: 9999, parentFrameId: 0 });
   assert.equal(s.r.workers.stats.room - m1, 1, "one step for a refused origin");
-  assert.ok(m1 - m0 <= 2003 + 1, `the check's learning: ${m1 - m0} steps`);
+  assert.equal(m1 - m0, 0, "no step: the check does not try the waiting origins again");
   await flush(20);
   assert.deepEqual(wide(s).length, 1);
 });

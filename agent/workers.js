@@ -129,50 +129,50 @@ function infoOf(origin) {
 
 // A pause that lets Chrome's queued events (the guard's) run.
 const pause = () => new Promise((resolve) => setTimeout(resolve, 0));
-// The items that a check handles between two pauses.
-const SLICE = 1000;
+// The items that a check handles between two pauses, and the most origins of one removal call.
+export const SLICE = 500;
 
 export class Workers {
   #r; // the Receiver: chrome, clock, map
-  // The record: origin -> {seq, host, site, cls, cov, covVer}, oldest first
-  // (a new record of an origin moves it to the end).
+  // The record: origin -> {seq, host, site, cov, covVer}; at most max, with
+  // its copy in chrome.storage.session.
   #record = new Map();
-  // The record by class, each oldest first: free (no list covers it, no
-  // marked tab shows its site), listed (a list covers it, no marked tab shows
-  // its site), held (a marked tab shows its site: the bound never evicts it).
-  #cls = { free: new Map(), listed: new Map(), held: new Map() };
-  #bySite = new Map(); // site -> the recorded origins of that site
+  // The origins that the full record refused (the same entries), in memory
+  // only, at most pendingMax: each check handles them with the same rules.
+  #pending = new Map();
   #seq = 0;
   #chain = Promise.resolve();
   #queued = null; // the check that waits to start, or null
   #learn = false;
-  // The sites that the marked tabs show: the last frame read, and the marked
-  // tabs' commits since (a stale site only keeps an origin longer).
-  #shown = new Set();
   // The lists of the last applied set_scopes, cached with a version.
   #listsRef = undefined;
   #lists = [];
   #listsVer = 0;
-  // Origins out of the record that get their own check at the next check
-  // (origin -> its info): the bound evicted them, or found no room for them.
-  #evicted = new Map();
-  // The list entries of listed origins that the bound evicted or could not
-  // record: at the end of one of them, one removal of every worker that keeps
-  // the shown origins and the listed origins of the record.
+  // The list entries of listed origins that the full pending set dropped: at
+  // the end of one of them, one removal of every worker that keeps the shown
+  // origins and the listed origins.
   #listedGone = new Set();
-  // The origins whose follow-up check is due (each removal's timer adds its own).
-  #due = new Set();
   // The last frame read of each marked tab: tabId -> {ver, origins (origin ->
   // info), sites}. A check reads a marked tab's frames again only after an
   // event of its frames (a commit or a navigation error: #ver) or for a tab
-  // with no read; the other events of a check reuse the read. A frame that
-  // goes with no event keeps its site shown until the tab's next event.
+  // with no read; the other events of a check reuse the read. The version is
+  // taken before the read, so an event during the read makes the read old.
   #frames = new Map();
   #ver = new Map(); // tabId -> the count of the events of its frames
-  // The most origins in the record (tests set a lower one).
+  // The sites of the marked tabs' commits since the start of the running
+  // check (null between checks): they count as shown in that check.
+  #recent = null;
+  // The follow-up checks: one timer at a time. An origin that a removal
+  // removed waits one whole period of the timer (RECHECK_MS), then it is due.
+  #due = new Set();
+  #waiting = new Set(); // its period runs: due at the next tick
+  #next = new Set(); // its period starts at the next tick
+  #timer = null;
+  // The most origins in the record and in the pending set (tests set lower ones).
   max = RECORD_MAX;
-  // The work counts (for tests): work, the items that the checks and the
-  // bound handle; room, the calls of the bound.
+  pendingMax = PENDING_MAX;
+  // The work counts (for tests): work, the items that the checks handle;
+  // room, the origins that the full record refused.
   stats = { work: 0, room: 0 };
 
   constructor(receiver) {
@@ -185,15 +185,16 @@ export class Workers {
   }
 
   // webNavigation.onCommitted of any frame of any tab: its web origin joins
-  // the record, and a check follows (the frame's old document went). A
-  // marked tab's commit makes its site shown at once.
+  // the record (or, with the record full, the pending set), and a check
+  // follows (the frame's old document went). A marked tab's commit counts as
+  // shown in a check that runs.
   committed(d) {
     if (!d || !Number.isInteger(d.tabId)) return;
     this.#touch(d.tabId);
     const o = originOf(d.url);
     if (o !== null) {
-      const info = this.#record.get(o) ?? infoOf(o);
-      if (this.#r.map.isMarked(d.tabId)) this.#show(info.site);
+      const info = this.#record.get(o) ?? this.#pending.get(o) ?? infoOf(o);
+      if (this.#recent !== null && this.#r.map.isMarked(d.tabId)) this.#recent.add(info.site);
       this.#add(o, info);
     }
     this.schedule();
@@ -213,28 +214,33 @@ export class Workers {
   }
 
   // The copy at the worker's start (tabmap.js, its one read): the recorded
-  // origins join the record (beyond the bound, their own check at the next
-  // check); a key that is no origin leaves the copy. A check follows.
+  // origins join the record (beyond the bound, the pending set, and their
+  // keys leave the copy); a key that is no origin leaves the copy. A check
+  // follows.
   restored(data) {
-    const bad = [];
+    const drop = [];
     let any = false;
     for (const k of Object.keys(data ?? {})) {
       if (!k.startsWith(WORKER_KEY)) continue;
       const o = k.slice(WORKER_KEY.length);
       if (originOf(o) !== o) {
-        bad.push(k);
+        drop.push(k);
         continue;
       }
-      if (this.#record.has(o)) continue;
-      if (this.#record.size < this.max) this.#insert(o, infoOf(o), 0);
-      else if (this.#evicted.size < PENDING_MAX) this.#evicted.set(o, infoOf(o));
+      if (this.#record.has(o) || this.#pending.has(o)) continue;
       any = true;
+      if (this.#record.size < this.max) {
+        this.#record.set(o, this.#entry(infoOf(o), 0));
+        continue;
+      }
+      drop.push(k);
+      if (this.#pending.size < this.pendingMax) this.#pending.set(o, this.#entry(infoOf(o), 0));
     }
-    if (bad.length > 0) void call(() => this.#r.chrome.storage.session.remove(bad)).catch(() => {});
+    if (drop.length > 0) void call(() => this.#r.chrome.storage.session.remove(drop)).catch(() => {});
     if (any) this.schedule();
   }
 
-  // A check after an event. learn: run it also with an empty record (a tab
+  // A check after an event. learn: run it also with nothing recorded (a tab
   // that took a mark with its pages: their origins join the record). Gives
   // the check's end.
   schedule({ learn = false } = {}) {
@@ -249,7 +255,7 @@ export class Workers {
     return this.#chain;
   }
 
-  // ---- the lists, the classes ----
+  // ---- the lists ----
 
   #listsNow() {
     const ref = this.#r.map.reference;
@@ -261,7 +267,7 @@ export class Workers {
     return this.#lists;
   }
 
-  // A list covers this host (cached on a record entry until the lists change).
+  // A list covers the entry's host (cached on the entry until the lists change).
   #covered(e) {
     const lists = this.#listsNow();
     if (e.covVer !== this.#listsVer) {
@@ -271,121 +277,94 @@ export class Workers {
     return e.cov;
   }
 
-  #classOf(e) {
-    if (this.#shown.has(e.site)) return "held";
-    return this.#covered(e) ? "listed" : "free";
-  }
-
-  #place(o, e, cls) {
-    if (e.cls) this.#cls[e.cls].delete(o);
-    e.cls = cls;
-    this.#cls[cls].set(o, true);
-  }
-
-  // A marked tab shows site: its recorded origins are held.
-  #show(site) {
-    if (this.#shown.has(site)) return;
-    this.#shown.add(site);
-    for (const o of this.#bySite.get(site) ?? []) this.#place(o, this.#record.get(o), "held");
-  }
-
   // ---- the record and the bound ----
 
-  #insert(o, info, seq) {
-    const e = { seq, host: info.host, site: info.site, cls: null, cov: false, covVer: -1 };
-    this.#record.set(o, e);
-    if (!this.#bySite.has(e.site)) this.#bySite.set(e.site, new Set());
-    this.#bySite.get(e.site).add(o);
-    this.#place(o, e, this.#classOf(e));
-    return e;
+  #entry(info, seq) {
+    return { seq, host: info.host, site: info.site, cov: false, covVer: -1 };
   }
 
-  #drop(o) {
-    const e = this.#record.get(o);
-    if (!e) return;
-    this.#record.delete(o);
-    this.#cls[e.cls].delete(o);
-    const same = this.#bySite.get(e.site);
-    same.delete(o);
-    if (same.size === 0) this.#bySite.delete(e.site);
-  }
-
+  // The bound, in one step: the full record refuses a new origin (it never
+  // evicts one); the origin waits in the pending set, and beyond that bound
+  // a listed one keeps its list entries for its list's end (an origin on no
+  // list is then the residue).
   #add(o, info) {
     this.#seq += 1;
-    const e = this.#record.get(o);
+    const e = this.#record.get(o) ?? this.#pending.get(o);
     if (e) {
-      // A new record moves it to the end (the newest), in the record and in its class.
       e.seq = this.#seq;
-      this.#record.delete(o);
-      this.#record.set(o, e);
-      this.#place(o, e, e.cls);
       return;
     }
-    if (this.#record.size >= this.max && !this.#makeRoom(o, info)) return;
-    this.#insert(o, info, this.#seq);
-    void call(() => this.#r.chrome.storage.session.set({ [WORKER_KEY + o]: true })).catch(() => {});
-  }
-
-  // The bound, in one step: the oldest free origin, else the oldest listed
-  // one, leaves the record and gets its own check; with neither, o gets it.
-  // Never an origin whose site a marked tab shows. True when o may join.
-  #makeRoom(o, info) {
-    this.stats.room += 1;
-    const first = (m) => m.keys().next().value;
-    const victim = first(this.#cls.free) ?? first(this.#cls.listed);
-    if (victim !== undefined) {
-      const e = this.#record.get(victim);
-      this.#drop(victim);
-      void call(() => this.#r.chrome.storage.session.remove([WORKER_KEY + victim])).catch(() => {});
-      this.#outside(victim, e);
-      return true;
+    if (this.#record.size < this.max) {
+      this.#record.set(o, this.#entry(info, this.#seq));
+      void call(() => this.#r.chrome.storage.session.set({ [WORKER_KEY + o]: true })).catch(() => {});
+      return;
     }
-    this.#outside(o, info);
-    return false;
+    this.stats.room += 1;
+    const ne = this.#entry(info, this.#seq);
+    if (this.#pending.size < this.pendingMax) {
+      this.#pending.set(o, ne);
+      return;
+    }
+    if (this.#covered(ne)) for (const d of this.#listsNow()) if (covers(d, ne.host)) this.#listedGone.add(d);
   }
 
-  // An origin outside the record gets its own check at once (the next
-  // check): its workers go unless a list covers it (then its list entries are
-  // kept for its list's end) or a marked tab shows its site. One of a shown
-  // site is not kept (the residue).
-  #outside(o, info) {
-    if (this.#shown.has(info.site) || this.#evicted.size >= PENDING_MAX) return;
-    this.#evicted.set(o, { host: info.host, site: info.site });
-    this.schedule();
+  // ---- the follow-up checks ----
+
+  // The origins of one removal: due after one whole period of the timer.
+  #followUp(origins) {
+    if (this.#timer === null) {
+      for (const o of origins) if (this.#waiting.size < this.pendingMax) this.#waiting.add(o);
+      this.#arm();
+    } else {
+      for (const o of origins) if (this.#next.size < this.pendingMax) this.#next.add(o);
+    }
   }
 
-  // The follow-up check of one removal, RECHECK_MS after it.
-  #armRecheck(origins) {
-    const handle = this.#r.clock.setTimer(() => {
-      for (const o of origins) if (this.#due.size < PENDING_MAX) this.#due.add(o);
+  #arm() {
+    this.#timer = this.#r.clock.setTimer(() => {
+      this.#timer = null;
+      for (const o of this.#waiting) if (this.#due.size < this.pendingMax) this.#due.add(o);
+      this.#waiting = this.#next;
+      this.#next = new Set();
+      if (this.#waiting.size > 0) this.#arm();
       void this.schedule();
     }, RECHECK_MS);
     // In Node (the tests) a real timer must not hold the process; Chrome's has no unref.
-    if (handle && typeof handle.unref === "function") handle.unref();
+    if (this.#timer && typeof this.#timer.unref === "function") this.#timer.unref();
   }
 
   // ---- the check ----
 
   async #check() {
+    const recent = new Set();
+    this.#recent = recent;
+    try {
+      await this.#run(recent);
+    } finally {
+      this.#recent = null;
+    }
+  }
+
+  async #run(recent) {
     const r = this.#r;
     const second = this.#due;
     this.#due = new Set();
     const keepDue = () => {
       for (const o of second) this.#due.add(o);
     };
-    const idle = this.#record.size === 0 && this.#evicted.size === 0 && this.#listedGone.size === 0 && second.size === 0;
+    const idle = this.#record.size === 0 && this.#pending.size === 0 && this.#listedGone.size === 0 && second.size === 0;
     if (idle && !this.#learn) return;
     this.#learn = false;
-    const seq0 = this.#seq;
+    let n = 0;
+    const step = async () => {
+      this.stats.work += 1;
+      if (++n % SLICE === 0) await pause();
+    };
     const tabs = r.map.marked();
     // The reads of the marked tabs: only of a tab with an event of its frames
     // since its last read, or with no read; a tab that is not marked any more
-    // leaves the cache.
-    for (const id of [...this.#frames.keys()]) {
-      if (tabs.includes(id)) continue;
-      this.#frames.delete(id);
-      this.#ver.delete(id);
-    }
+    // leaves the cache. The version is taken before the read.
+    for (const id of [...this.#frames.keys()]) if (!tabs.includes(id)) this.#frames.delete(id);
     for (const id of [...this.#ver.keys()]) if (!tabs.includes(id)) this.#ver.delete(id);
     const stale = tabs.filter((id) => {
       const c = this.#frames.get(id);
@@ -405,124 +384,102 @@ export class Workers {
       return;
     }
     // Each new read: the origins and the sites of the frames that the tab
-    // shows (one parse per frame), with a pause after each SLICE frames.
+    // shows (one parse per frame).
     const fresh = new Map(); // origin -> info: the origins of the new reads
-    let n = 0;
     for (let i = 0; i < stale.length; i++) {
       const origins = new Map();
       const tabSites = new Set();
       for (const frame of Array.isArray(reads[i].value) ? reads[i].value : []) {
-        this.stats.work += 1;
-        if (++n % SLICE === 0) await pause();
+        await step();
         if (!shows(frame)) continue;
         const o = originOf(frame.url);
         if (o === null) continue;
-        let info = origins.get(o);
-        if (!info) {
-          info = this.#record.get(o) ?? infoOf(o);
-          origins.set(o, { host: info.host, site: info.site });
+        if (!origins.has(o)) {
+          const known = this.#record.get(o) ?? this.#pending.get(o) ?? fresh.get(o);
+          const info = known ? { host: known.host, site: known.site } : infoOf(o);
+          origins.set(o, info);
           fresh.set(o, info);
         }
-        tabSites.add(info.site);
+        tabSites.add(origins.get(o).site);
       }
       this.#frames.set(stale[i], { ver: vers[i], origins, sites: tabSites });
     }
-    // The site rule: the sites that the marked tabs show (their last reads).
-    const sites = new Set();
+    // A page of a marked tab that no commit named joins the record (or the
+    // pending set; a refused origin is tried again in one step).
+    for (const [o, info] of fresh) {
+      await step();
+      if (!this.#record.has(o) && !this.#pending.has(o)) this.#add(o, info);
+    }
+    // The site rule: the sites that the marked tabs show (their last reads,
+    // and their commits during this check).
+    const sites = new Set(recent);
     for (const id of tabs) {
       const c = this.#frames.get(id);
       if (c) for (const x of c.sites) sites.add(x);
     }
-    // An origin that a tab committed during the reads counts as shown.
-    for (const [, e] of this.#record) {
-      this.stats.work += 1;
-      if (e.seq > seq0) sites.add(e.site);
-    }
-    // The shown sites of this read; the classes again from the record (oldest first).
-    this.#shown = sites;
-    for (const m of Object.values(this.#cls)) m.clear();
-    for (const [o, e] of this.#record) {
-      this.stats.work += 1;
-      e.cls = null;
-      this.#place(o, e, this.#classOf(e));
-    }
-    // A page of a marked tab that no commit named joins the record (the bound
-    // refuses an origin in one step).
-    n = 0;
-    for (const [o, info] of fresh) {
-      this.stats.work += 1;
-      if (++n % SLICE === 0) await pause();
-      if (!this.#record.has(o)) this.#add(o, info);
-    }
-    const now = this.#listsNow();
-    const coveredInfo = (info) => now.some((d) => covers(d, info.host));
-    // A list's end after the bound kept a listed origin out of the record:
-    // one removal of every worker that keeps the shown origins, the origins
-    // of the shown sites and the listed origins of the record.
+    const listsVer = (this.#listsNow(), this.#listsVer);
+    const now = this.#lists;
+    // A list's end after the pending set dropped a listed origin: one removal
+    // of every worker that keeps the shown origins, the origins of the shown
+    // sites and the listed origins (of the record and of the pending set).
     let all = false;
-    if ([...this.#listedGone].some((e) => !now.includes(e))) {
+    if ([...this.#listedGone].some((d) => !now.includes(d))) {
       const keep = new Set();
       for (const id of tabs) {
         const c = this.#frames.get(id);
         if (c) for (const o of c.origins.keys()) keep.add(o);
       }
-      for (const [o, e] of this.#record) {
-        this.stats.work += 1;
-        if (sites.has(e.site) || this.#covered(e)) keep.add(o);
+      for (const [o, e] of [...this.#record, ...this.#pending]) {
+        await step();
+        if (sites.has(e.site) || recent.has(e.site) || this.#covered(e)) keep.add(o);
       }
       all = await removeWorkers(r, null, [...keep].sort());
       if (all) this.#listedGone.clear();
     }
-    // The origins to remove: of the record, the own checks and the follow-ups.
-    const gone = new Set();
-    for (const [o, e] of this.#record) {
-      this.stats.work += 1;
-      if (!sites.has(e.site) && !this.#covered(e)) gone.add(o);
-    }
-    for (const [o, info] of this.#evicted) {
-      this.stats.work += 1;
-      if (this.#record.has(o)) {
-        this.#evicted.delete(o);
-        continue;
-      }
-      if (!sites.has(info.site) && !coveredInfo(info)) {
-        gone.add(o);
-        continue;
-      }
-      // Shown or listed now: it stays; a listed one keeps its entries for its list's end.
-      this.#evicted.delete(o);
-      if (coveredInfo(info)) for (const d of now) if (covers(d, info.host)) this.#listedGone.add(d);
+    // The origins to remove: of the record, of the pending set and of the
+    // follow-ups (each with its entry).
+    const gone = new Map();
+    for (const [o, e] of [...this.#record, ...this.#pending]) {
+      await step();
+      if (!sites.has(e.site) && !this.#covered(e)) gone.set(o, e);
     }
     for (const o of second) {
-      this.stats.work += 1;
-      if (gone.has(o) || this.#record.has(o)) continue;
-      const info = infoOf(o);
-      if (!sites.has(info.site) && !coveredInfo(info)) gone.add(o);
-      else if (coveredInfo(info)) for (const d of now) if (covers(d, info.host)) this.#listedGone.add(d);
+      await step();
+      if (gone.has(o) || this.#record.has(o) || this.#pending.has(o)) continue;
+      const e = this.#entry(infoOf(o), 0);
+      if (!sites.has(e.site) && !this.#covered(e)) gone.set(o, e);
     }
-    if (gone.size === 0) return;
-    const seq1 = this.#seq;
-    const list = [...gone];
-    if (!all && !(await removeWorkers(r, list))) {
+    // The lists changed during the loops: the set_scopes's own check decides.
+    if (this.#listsNow() !== now || this.#listsVer !== listsVer) {
       keepDue();
       return;
     }
-    // An origin that a tab committed during the removal stays recorded.
+    // The removals, in parts of at most SLICE origins (each call lets the
+    // queued events run). The last filter of each part, with no pause before
+    // its call: the marked tabs' commits during the check count as shown.
+    const list = [...gone.keys()];
     const keys = [];
-    const followUp = [];
-    for (const o of list) {
-      const e = this.#record.get(o);
-      if (e && e.seq > seq1) continue;
-      if (e) {
-        this.#drop(o);
-        keys.push(WORKER_KEY + o);
+    for (let i = 0; i < list.length; i += SLICE) {
+      const part = list.slice(i, i + SLICE).filter((o) => !recent.has(gone.get(o).site));
+      if (part.length === 0) continue;
+      const seq1 = this.#seq;
+      if (!all && !(await removeWorkers(r, part))) {
+        keepDue();
+        break;
       }
-      this.#evicted.delete(o);
-      // The follow-up check, once for each removal (a page can register its
-      // worker after the check of its own commit).
-      if (!second.has(o)) followUp.push(o);
+      // An origin that a tab committed during the removal stays.
+      const followUp = [];
+      for (const o of part) {
+        const e = this.#record.get(o) ?? this.#pending.get(o);
+        if (e && e.seq > seq1) continue;
+        if (this.#record.delete(o)) keys.push(WORKER_KEY + o);
+        this.#pending.delete(o);
+        // The follow-up check, once for each removal (a page can register its
+        // worker after the check of its own commit).
+        if (!second.has(o)) followUp.push(o);
+      }
+      if (followUp.length > 0) this.#followUp(followUp);
     }
-    if (followUp.length > 0) this.#armRecheck(followUp);
     if (keys.length > 0) void call(() => r.chrome.storage.session.remove(keys)).catch(() => {});
   }
 }
