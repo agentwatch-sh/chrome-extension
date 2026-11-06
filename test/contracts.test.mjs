@@ -224,8 +224,11 @@ test("each guard vector follows C5's guard: the host that it judges and the cove
   assert.ok(says(C5, "So in the own-page form the worker's page commits and runs its scripts before layer 3 sends it away (80 of 80)"), "C5: the fact of Q3");
   // The operator's decision on ab-7wg (2026-11-06): service workers stay on; C5 states it and its residue, and waits on no answer.
   assert.ok(says(C5, "The operator chose to keep service workers on (board item ab-7wg, 2026-11-06, the recommended option)"), "C5: the decision of ab-7wg");
-  assert.ok(says(C5, "a worker of another scope's site can answer a navigation of a scope's tab from its cache (no request); that page commits and runs its scripts for some tens of ms (the measures above) before layer 3 sends the tab away, and a client attached to the tab can read it meanwhile. Both scopes are the operator's own agents, and no site outside the lists is reached"), "C5: the residue of ab-7wg");
-  for (const s of ["asked the operator again", "this text changes when the answer changes the build", "can replace it with a block of service workers"]) assert.ok(!says(C5, s), `C5 no longer says: ${s}`);
+  assert.ok(says(C5, "- The guard (service workers stay on: the operator chose the design's choice 2 a, board items ab-8zv and ab-7wg; the residue is below)"), "C5: the guard's heading");
+  // review-27 notes 2 and 3 (board ab-v16.73): the own-page form as measured (from memory, no request), and the pass-on form of ab-8zv in the residue too.
+  assert.ok(says(C5, "so the build stays as it is, with two residues. (1) The own-page form: a worker of another scope's site can answer a navigation of a scope's tab with its own page (no request); that page commits and runs its scripts for some tens of ms (the measures above) before layer 3 sends the tab away, and a client attached to the tab can read it meanwhile."), "C5: the residue of ab-7wg, the own-page form");
+  assert.ok(says(C5, "(2) The pass-on form (board item ab-8zv): a worker that passes the navigation on sends its request to its site, with the site's cookies, and the site's answer comes back to the worker; its page did not run (0 of 80, below). Both scopes are the operator's own agents, and no site outside the lists is reached."), "C5: the residue of ab-7wg, the pass-on form");
+  for (const s of ["asked the operator again", "this text changes when the answer changes the build", "can replace it with a block of service workers", "from its cache (no request)", "with this residue:"]) assert.ok(!says(C5, s), `C5 no longer says: ${s}`);
 });
 
 test("C4's blocked holds from (board ab-v16.33), each notice vector has C4's shape, and C5 states from and the once rule", () => {

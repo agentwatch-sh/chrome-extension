@@ -706,13 +706,16 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
     sent each page away. So in the own-page form the worker's page commits and runs its scripts
     before layer 3 sends it away (80 of 80), and a client attached to the tab can read it meanwhile.
     The operator chose to keep service workers on (board item ab-7wg, 2026-11-06, the recommended
-    option), so the build stays as it is, with this residue: a worker of another scope's site can
-    answer a navigation of a scope's tab from its cache (no request); that page commits and runs its
-    scripts for some tens of ms (the measures above) before layer 3 sends the tab away, and a client
-    attached to the tab can read it meanwhile. Both scopes are the operator's own agents, and no site
-    outside the lists is reached. A worker that passes the navigation on: 80 of 80 at `about:blank`
-    with one `blocked`; its page ran in 0 of 80, and its request reached the site in 80 of 80 (as
-    above). A client's `Page.navigate` of a scope-A tab to a `blob:` URL that a page of scope B's site made: Chrome began
+    option), so the build stays as it is, with two residues. (1) The own-page form: a worker of
+    another scope's site can answer a navigation of a scope's tab with its own page (no request);
+    that page commits and runs its scripts for some tens of ms (the measures above) before layer 3
+    sends the tab away, and a client attached to the tab can read it meanwhile. (2) The pass-on form
+    (board item ab-8zv): a worker that passes the navigation on sends its request to its site, with
+    the site's cookies, and the site's answer comes back to the worker; its page did not run (0 of
+    80, below). Both scopes are the operator's own agents, and no site outside the lists is reached.
+    A worker that passes the navigation on: 80 of 80 at `about:blank` with one `blocked`; its page
+    ran in 0 of 80, and its request reached the site in 80 of 80 (as above).
+    A client's `Page.navigate` of a scope-A tab to a `blob:` URL that a page of scope B's site made: Chrome began
     the navigation, and in 6 of 6 runs the tab ended at `about:blank` with one `blocked` naming the
     inner host; the `blob:` page's script ran first in 1 of 6 (a `blob:` page needs no request, so
     the guard can lose the race, as against a worker's page). A `blob:` page of a tab's own site
