@@ -1424,7 +1424,9 @@ test("the pointer vectors cover each check, each bound and each order of C10 (bo
     assert.ok(bad((x) => paths(x) && f(x.m)), `a fraction in ${name}`);
   }
   const bool = (n) => typeof n === "boolean";
-  for (const [name, f] of [["at", (m) => isObj(m.at) && (bool(m.at.x) || bool(m.at.y))], ["a point", (m) => m.path.some((q) => isObj(q) && (bool(q.x) || bool(q.y)))],
+  // review-29b note R1 (board ab-v16.75): from, width and height too.
+  for (const [name, f] of [["at", (m) => isObj(m.at) && (bool(m.at.x) || bool(m.at.y))], ["from", (m) => isObj(m.from) && (bool(m.from.x) || bool(m.from.y))],
+    ["a point", (m) => m.path.some((q) => isObj(q) && (bool(q.x) || bool(q.y)))], ["width", (m) => bool(m.width)], ["height", (m) => bool(m.height)],
     ["views", (m) => bool(m.views)], ["notAfter", (m) => bool(m.notAfter)]]) {
     assert.ok(bad((x) => paths(x) && f(x.m)), `a boolean in ${name}`);
   }
