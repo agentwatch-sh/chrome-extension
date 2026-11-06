@@ -19,7 +19,7 @@
 // When fake.autoNavigate is true, the import's last script (leaveRestorePage)
 // fires webNavigation.onCommitted for its URL.
 //
-// For the worker removal at a marked tab's leave (C5): webNavigation.getAllFrames
+// For the worker removal of the recorded origins (C5): webNavigation.getAllFrames
 // gives fake.frames_.get(tabId) when the test set it, else the main frame of a
 // tab of fake.tabs_ at its url, and null for a tab that does not exist (as
 // Chrome does).
