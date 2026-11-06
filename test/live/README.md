@@ -126,16 +126,20 @@ tab shows the host in a sub-frame: the worker stays; after that page leaves: no 
 client's `Page.navigate` 0, 100 or 300 ms after the leave's request), `error` (a leave for the error
 page of a refused connection: review-30 B1), `site` (review-30's probe 2: two origins of one site,
 and a frame's partitioned worker under that site; the site rule), `session` (a tab of scope C
-registers a worker on C's site; a `set_scopes` ends C's list), `gone` (the marked tab's next
+registers a worker on C's site; a `set_scopes` ends C's list), `flood` (review-30b B1: two marked
+tabs with 600 frames of distinct hosts each; the open page's worker and two listed workers stay; a
+list's end during the flood keeps the open page's worker; after the flood the gap after a leave is
+still closed), `gone` (the marked tab's next
 navigation to the host is a network request) and, with `RESTORE_TRIALS`, C6's restore tab. The
 environment: `TRIALS` (20), `CACHE_TRIALS` (10), `CTRL_TRIALS` (5), `AFTER_TRIALS` (20),
 `FRAME_TRIALS` (5), `RACE_REPS` (4), `ERROR_TRIALS` (5), `SITE_REPS` (3), `SESSION_TRIALS` (5),
+`FLOOD_FRAMES` (600 per tab; 0: no flood), `FLOOD_TRIALS` (5),
 `RESTORE_TRIALS` (0), `READERS` (1: every reader of ab-v16.73; 0: only `Page.enable`), `EAGER`,
 `PORT_B`, `CHROMIUM`, `RECEIVER`. The run folder holds `results.json`, `summary.json`, the rows of
 each case, the logs, the screenshots and the screencast frames. The script deletes nothing.
 
 Result on taylor (2026-11-06, Chromium 156.0.8078.79, receiver 0.3.5 of the branch
-`ab-v16.74-sw-remove` after review-30, `DISPLAY_N=142`, the defaults): 42 of 42 checks passed.
+`ab-v16.74-sw-remove` after review-30b, `DISPLAY_N=142`, the defaults): 50 of 50 checks passed.
 
 | Case | Trials | Worker's page committed (seen by the client) | Requests to the host |
 | --- | --- | --- | --- |
@@ -146,19 +150,24 @@ Result on taylor (2026-11-06, Chromium 156.0.8078.79, receiver 0.3.5 of the bran
 | after the leave, cached signed-in page | 40 | 0 | 0 |
 | frame: the host in a second marked tab's frame | 10 | 9 | 0 |
 | frame: after that page left | 10 | 0 | 0 |
-| race: `Page.navigate` 4 to 16 ms after the leave's request | 4 | 4 | 0 |
+| race: `Page.navigate` 15 to 16 ms after the leave's request | 4 | 4 | 0 |
 | race: 100 ms or 300 ms after it | 8 | 0 | 0 |
 | error: after a leave for an error page | 10 | 0 | 0 |
 | session: scope C's list in force | 10 | 10 | 0 |
 | session: after the `set_scopes` that ended it | 10 | 0 | 0 |
+| flood: D's site after the `set_scopes` that ended D's list | 10 | 0 | 0 |
+| flood: the open page's host after the flood and the leave | 10 | 0 | 0 |
 
 Every trial ended at `about:blank` with one correct `blocked`. Before the leave, the worker's page
-stayed 21 to 43 ms from its commit to `about:blank`; the client read every page that committed (the
+stayed 22 to 41 ms from its commit to `about:blank`; the client read every page that committed (the
 title event and its init script). The case `site`: the second marked tab's new frames of
 `www.nolist3.localhost` got the frame's worker in 3 of 3 before and 3 of 3 after the first tab left
 the other origin of the site; after the second tab left the site too, the next frame went to the
-network. After the leave, the marked tab's next navigation to the host was a network request (no
-worker).
+network. The case `flood` (1200 frames in 22 s): the open page's worker, D's listed worker and the
+canary on A's list answered before, during the flood and after one more new origin; at D's list end
+the open page's worker stayed and the canary went to the network (the bound had evicted it: C5's
+residue (3)). After the leave, the marked tab's next navigation to the host was a network request
+(no worker).
 
 ## What the run sets up
 

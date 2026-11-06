@@ -34,6 +34,14 @@ The cases, in order:
 - session: a tab of scope C registers a worker on C's site; scope A's tab follows a link there and
   gets the worker's page (the residue of another scope's site); a set_scopes ends C's list; then
   no commit (the record of every tab's origins).
+- flood: review-30b's case. The first marked tab shows its host (the operator's open page); a tab of
+  scope D registers a worker on D's site (listed), and a tab of scope A one on a canary host of A's
+  list. Two more marked tabs open pages with FLOOD_FRAMES frames each, of distinct hosts: the
+  record reaches its bound. The open page's worker and the listed workers stay. A set_scopes ends
+  D's list while the flood is open: the open page's worker stays (the list end's removal excludes
+  it); the canary shows whether that removal of every worker ran (a listed origin that the bound
+  evicted loses its worker there: the stated cost). Then the flood pages leave, the first tab
+  leaves its host, and scope A's tab gets no worker's page there.
 - gone: the marked tab's next navigation to the host goes to the network (no worker).
 - restore (RESTORE_TRIALS, default 0): C6's restore tab whose site redirects to the host.
 
@@ -42,7 +50,8 @@ Usage: test/live/workers.py [run folder] [port]
 Env: CHROMIUM (default /usr/bin/chromium), RECEIVER (the agent folder; default this checkout's
 agent/), DISPLAY_N (default 142), PORT_B (the second port; default port + 1), TRIALS (20),
 CACHE_TRIALS (10), CTRL_TRIALS (5), AFTER_TRIALS (20), FRAME_TRIALS (5), RACE_REPS (4),
-ERROR_TRIALS (5), SITE_REPS (3), SESSION_TRIALS (5), RESTORE_TRIALS (0), READERS (1), EAGER (0).
+ERROR_TRIALS (5), SITE_REPS (3), SESSION_TRIALS (5), FLOOD_FRAMES (600; 0: no flood),
+FLOOD_TRIALS (5), RESTORE_TRIALS (0), READERS (1), EAGER (0).
 """
 
 import base64
@@ -169,6 +178,14 @@ class Site(BaseHTTPRequestHandler):
             # A page of this host with one frame of another origin (q "src", URL-encoded).
             data = ('<!doctype html><title>embed</title><p>embed<iframe src="%s" width="300" height="100"></iframe>'
                     '<script>fetch("/beacon/embed")</script>' % unquote(q.get("src", "about:blank")).replace('"', "")).encode()
+        elif path == "/burst":
+            # A page with n frames of distinct hosts f<i>.<sub> (review-30b's flood).
+            n = min(int(q.get("n", "10")), 2000)
+            sub = q.get("sub", "b.localhost").replace('"', "")
+            data = ("<!doctype html><title>burst</title>" + "".join(
+                f'<iframe src="http://f{i}.{sub}:{PORT}/tiny" width="2" height="2"></iframe>' for i in range(n))).encode()
+        elif path == "/tiny":
+            data = b"<!doctype html><title>t</title>"
         elif path == "/redir":
             status = 302
             data = b""
@@ -604,6 +621,10 @@ PORT_B = int(os.environ.get("PORT_B", str(PORT + 1)))
 PP = "www.pp.localhost"  # on no list; served on PORT and PORT_B: two origins of one site
 W3 = "www.nolist3.localhost"  # on no list; a frame of it registers its worker under PP's site
 SITEC = "www.sitec.localhost"  # on scope C's list in the case session
+SITED = "www.sited.localhost"  # on scope D's list in the case flood
+CANARY = "www.canary.sitea.localhost"  # on scope A's list (sitea.localhost) in the case flood
+NFLOOD = int(os.environ.get("FLOOD_FRAMES", "600"))
+NFLOOD_T = int(os.environ.get("FLOOD_TRIALS", "5"))
 READ = "location.href + '\\n' + document.title"
 READERS = os.environ.get("READERS", "1") == "1"  # 0: only Page.enable (the commit's time), no reader
 
@@ -1090,6 +1111,87 @@ def session_case(a, out):
     phase(a, "session-ended", ((SITEC, "sw-c", NSESSION, "own"),), out, after=True)
 
 
+def outcome(host, path, timeout=6):
+    """worker: the worker's page answered (its beacon, no request); network: the request reached the site."""
+    wait_for(lambda: reqs(host, path) or reqs(host, "/beacon/swpage" + path), timeout)
+    time.sleep(0.2)
+    return "worker" if reqs(host, "/beacon/swpage" + path) and not reqs(host, path) else ("network" if reqs(host, path) else "none")
+
+
+def alive_marked(op, host, path):
+    if not focus(op):
+        return "no focus"
+    operator_goes(url(host, path))
+    return outcome(host, path)
+
+
+def alive_scope(tab, host, path):
+    nav_cdp(tab, url(host, path))
+    return outcome(host, path)
+
+
+def tiny_count(sub):
+    with req_lock:
+        return sum(1 for r in requests_seen if r["path"] == "/tiny" and r["host"].endswith("." + sub))
+
+
+def flood_case(a, op1, out):
+    """review-30b B1: a flood of frame origins in marked tabs never removes a worker of a shown
+    site or of a listed origin; a removal of every worker comes only from a list's end."""
+    with_d = {"lists": {**LISTS, "ld": ["sited.localhost"]}, "scopes": {**SCOPES, "scope-d": "ld"}, "default": None, "operator": "*"}
+    ok = bool(D.set_scopes(with_d).get("ok"))
+    d = agent_tab("scope-d", SITED, "/d1")
+    ok = ok and loaded(SITED, "/d1")
+    nav_cdp(d, url(SITED, "/sw-reg?mode=own"))
+    ok = ok and bool(wait_for(lambda: reqs(SITED, "/beacon/sw-ready/own"), 10))
+    c = agent_tab("scope-a", CANARY, "/c1")
+    ok = ok and loaded(CANARY, "/c1")
+    nav_cdp(c, url(CANARY, "/sw-reg?mode=own"))
+    ok = ok and bool(wait_for(lambda: reqs(CANARY, "/beacon/sw-ready/own"), 10))
+    ok = ok and focus(op1) and register(FREE, "own")
+    alive = lambda tag: {"open_page": alive_marked(op1, FREE, f"/flood-{tag}"), "listed_d": alive_scope(d, SITED, f"/flood-{tag}"),
+                         "canary_a": alive_scope(c, CANARY, f"/flood-{tag}")}
+    before = alive("before")
+    check("flood: the first marked tab shows its host; scope D's tab and scope A's canary tab register workers on their listed sites; all three answer",
+          ok and set(before.values()) == {"worker"}, **before)
+    t0 = now_ms()
+    ev = operator_tab("ctrl+t")
+    op3 = ((ev or {}).get("tab") or {}).get("id")
+    operator_goes(url("www.burst.localhost", f"/burst?n={NFLOOD}&sub=b1.localhost"))
+    ev = operator_tab("ctrl+t")
+    op4 = ((ev or {}).get("tab") or {}).get("id")
+    operator_goes(url("www.burst2.localhost", f"/burst?n={NFLOOD}&sub=b2.localhost"))
+    wait_for(lambda: tiny_count("b1.localhost") + tiny_count("b2.localhost") >= 2 * NFLOOD - 20, 90)
+    load_ms = round(now_ms() - t0)
+    time.sleep(5)
+    frames = tiny_count("b1.localhost") + tiny_count("b2.localhost")
+    during = alive("open")
+    evaluate(c, "(() => { const f = document.createElement('iframe'); f.src = " + json.dumps(url("www.newo.localhost", "/tiny")) + "; document.body.appendChild(f); return 1; })()")
+    wait_for(lambda: reqs("www.newo.localhost", "/tiny"), 6)
+    time.sleep(3)
+    again = alive("again")
+    out["flood"] = {"frames": frames, "load_ms": load_ms, "before": before, "during": during, "again": again}
+    check(f"flood: two marked tabs with {frames} frames of distinct hosts; the open page's worker and both listed workers stay, also after one more new origin",
+          frames >= 2 * NFLOOD - 20 and set(during.values()) == {"worker"} and set(again.values()) == {"worker"}, frames=frames, load_ms=load_ms, during=during, again=again)
+    # D's list ends while the flood is open: its tab closes (the sweep).
+    r = D.set_scopes(scopes_obj())
+    ended = r.get("ok") and bool(wait_for(lambda: d not in tab_ids(), 5))
+    time.sleep(3)
+    end = {"open_page": alive_marked(op1, FREE, "/flood-end"), "canary_a": alive_scope(c, CANARY, "/flood-end")}
+    out["flood"]["list_end"] = end
+    check(f"flood: a set_scopes ends D's list while the flood is open: the open page's worker stays ({end['open_page']}); the canary of A's list: {end['canary_a']} "
+          "(network: the list end's removal of every worker ran and the bound had evicted the canary, the stated cost)",
+          ended and end["open_page"] == "worker", **end)
+    phase(a, "flood-listend", ((SITED, "sw-d", NFLOOD_T, "own"),), out, after=True)
+    left = leave(op3, "/leave-flood1") is not None and leave(op4, "/leave-flood2") is not None
+    time.sleep(5)
+    left = left and leave(op1, "/leave-flood-free") is not None
+    time.sleep(3)
+    check("flood: the flood pages leave, then the first marked tab leaves its host", left)
+    phase(a, "flood-left", ((FREE, "sw-own", NFLOOD_T, "own"),), out, after=True)
+    D.bridge("tabs.remove", [c])
+
+
 def run_trials(a, op1, op2):
     out = {}
     # ---- before: the marked tabs show the hosts (the residue as measured on board ab-v16.73) ----
@@ -1137,6 +1239,10 @@ def run_trials(a, op1, op2):
     # ---- session: a scope's list ends ----
     if NSESSION > 0:
         session_case(a, out)
+
+    # ---- flood: the bound (review-30b B1) ----
+    if NFLOOD > 0:
+        flood_case(a, op1, out)
 
     # ---- gone: the marked tab's next navigation to the host goes to the network ----
     focus(op1)

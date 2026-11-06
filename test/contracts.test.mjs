@@ -260,12 +260,23 @@ test("C5 states the worker removal of the recorded origins: every tab's origins,
     "when a tab loses the mark or gets it at its `tabs.onCreated` or `tabs.onReplaced` (a popup that gets the mark at its navigation target starts no check: its own commits do)",
     // review-30 notes 1 and 2.
     "the removal ends at most about 4 x `REMOVAL_WAIT_MS` (8 s) after the event while each call ends in time",
-    "A frame that a page script removes sends no event: its origin goes at the next check, at the latest at that tab's next commit, navigation error, close or replace",
+    "A frame that a page script removes after its load sends no event (before the end of its load Chromium sends `onErrorOccurred`, review-30b note 6): its origin goes at the next check, at the latest at that tab's next commit, navigation error, close or replace",
+    // review-30b note 2: the follow-up check.
+    "A follow-up check runs `RECHECK_MS` = 5000 ms after a removal and removes each origin of that removal again (unless it is listed or its site shown then), once",
     "A read that fails or comes late removes nothing: a worker of a shown origin would break the operator's open page. A removal that fails or comes late keeps its origins in the record (Chrome can still end it later). Each logs one line with no origin, and the next check removes again; until then the case stays open.",
-    // The bound and its cost.
-    "The record holds at most `RECORD_MAX` = 1000 origins. At the bound a new origin evicts the oldest origin that a list covers (else the oldest one), and the receiver owes one removal of every worker",
+    // review-30b B1 and ab-lead's decision: the bound, its residue and its cost.
+    "no page content, any number of frames or origins in any tab, can make the receiver remove a worker of a site that a marked tab shows, or of an origin that a list covers while that list is in force",
+    "At the bound a new origin evicts the oldest recorded origin that no list covers and whose site no marked tab shows, else the oldest listed origin whose site no marked tab shows. The bound never evicts an origin whose site a marked tab shows",
+    "An evicted origin, and a new origin that finds no room, get their own check at once (the next check, with the same rules): their workers go unless a list covers the origin or a marked tab shows its site.",
+    "the receiver calls `browsingData.remove({excludeOrigins: [...]}, {serviceWorkers: true})` once: it removes every worker except those of the origins that the marked tabs show, of the recorded origins of their sites and of the recorded origins that the remaining lists cover",
+    "A removal of every worker comes only from a list's end (and from C5's removal of every worker, above), never from page content.",
+    "(1) When every recorded origin is of a site that a marked tab shows (the marked tabs show frames of 1000 or more distinct origins at once, for example a page with that many frames), a new origin of a shown site is not recorded",
+    "(3) The cost of the bound for the listed sites: a listed origin that the bound evicted loses its worker at the end of any list, also when its own list stays in force",
     "about 50 KB at the bound",
-    "The two removals share one bounded call (`removeWorkers`)",
+    "The removals share one bounded call (`removeWorkers`)",
+    // review-30b notes 1 and 3.
+    "A frame on no list inside a scope's listed page, of the same site or a third-party one, loses its worker at the next check, so its offline pages and push stop",
+    "A marked tab that Chrome discarded gives no frames to `getAllFrames` (review-30b note 3), so the workers of its sites go at the next check",
     "the answer of a `set_scopes` depends only on its own removal, and the record keeps an origin until its own removal succeeds",
     "the operator's sites on no list lose their service workers when no marked tab shows a frame of their site any more, and the sites of a list lose theirs when no list covers them any more",
     "`test/live/workers.py`",
@@ -275,7 +286,7 @@ test("C5 states the worker removal of the recorded origins: every tab's origins,
   assert.ok(says(C5, "Those workers stay at this removal; the removal of the recorded origins (below) removes them when no list covers their host any more and no marked tab shows their site"), "C5: a scope with no list");
   assert.ok(!says(C5, "so no tab of them can reach a worker"), "C5 no longer says that no tab can reach such a worker");
   // review-30 note 3: the windows in the guard's sentence.
-  assert.ok(says(C5, "so this case stays open only while the operator's own tab is on that site, and then for the windows of that removal: the end of its check (at most about 4 x `REMOVAL_WAIT_MS` while each call ends in time), until the next check after a frame that a page script removes, and until the next event after a failed read or removal."), "C5: the windows of the case of a host on no list");
+  assert.ok(says(C5, "so this case stays open only while the operator's own tab is on that site, and then for the windows of that removal: the end of its check (at most about 4 x `REMOVAL_WAIT_MS` while each call ends in time), until the next check after a frame that a page script removes, until the next event after a failed read or removal, and for an origin that the bound did not record (the residue of the bound, above)."), "C5: the windows of the case of a host on no list");
   for (const old of ["at a marked tab's leave", "MEASURE_PLACEHOLDER"]) assert.ok(!says(C5, old), `C5 no longer says: ${old}`);
 });
 
