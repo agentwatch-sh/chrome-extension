@@ -27,8 +27,10 @@ vectors that the receiver does not meet yet as `todo` tests. There
 is no backward compatibility: agentwatch pins both repositories and moves them at once, and it
 moves `CHROME_EXTENSION_COMMIT` to a commit with part 1a only together with its part 3 (aw-lead,
 mail md2ae63e). The operator answered the design's choice 1 in ab-dm6 with no key system: the peer
-check (below) takes the place of the per-scope key. Choice 3 (the operator's own tabs) changes only
-the rules that name it.
+check (below) takes the place of the per-scope key. The operator also decided the design's choices 3
+and 6 in ab-dm6, and this file states both as decided: the operator's own live-view tabs open any
+site (choice 3: `"operator":"*"`, C4), and a sent sign-in joins no repo's list (choice 6: the
+import adds its site to no list, C4 and C6).
 
 The peer check (board task ab-v16.50; the design: agent-browser
 `docs/superpowers/specs/2026-11-05-peer-admission-design.md`, board ab-v16.47, sections 9 and 12) is
@@ -272,10 +274,12 @@ held one list for the whole agent browser. The request is above. Its fields and 
   (review-20 Q2).
 - A name that comes twice in one object: the last one applies, as `JSON.parse` and Python's `json`
   read it. The daemon never sends one.
-- With the design's choice 3 (the operator's own tabs), `set_scopes` has one more field,
-  `"operator"`: `"*"` (the marked tabs may open any site), a list name (they have that list), or
-  `null` (no site; also when the field is absent). C10 gives the mark (each tab's scope). For "every
-  repo's sites" agentwatch adds a list of the union to `lists` and names it. Any other value (not
+- The operator's own tabs (the design's choice 3, decided in ab-dm6): the tabs that the operator
+  opens in the live view open any site. So the daemon sends `"operator":"*"` in each `set_scopes`.
+  `set_scopes` has one more field, `"operator"`: `"*"` (the marked tabs may open any site; the
+  decided value), a list name (they have that list), or `null` (no site; also when the field is
+  absent). The receiver reads all three values. C10 gives the mark (each tab's scope). For "every
+  repo's sites" agentwatch can add a list of the union to `lists` and name it. Any other value (not
   `"*"`, not `null`, not a string that matches the scope pattern) counts 1 in `refused` and applies
   as `null`; a valid name that is not in `lists` applies as `null` with no count. The daemon's
   `allowlist` line carries the field; the relay ignores it (no connection sees a marked tab).
@@ -292,14 +296,17 @@ held one list for the whole agent browser. The request is above. Its fields and 
   the scope rules). After an `ok: false` of a failed worker removal (C5) or of a failed key removal
   (C5, the sweep), and after an answer that came later than 10 s (C10, the bound of a `set_scopes`
   answer), the receiver's new rules are in force, and the relay's last line is older than them.
-- A send (C2) no longer adds its site to a list: agentwatch decides which list a sent site joins
-  (the design's choice 6, asked in ab-dm6; its recommendation: no list).
+- A send (C2) adds its site to no list (the design's choice 6, decided in ab-dm6). A sent sign-in
+  joins no repo's list: the site stays off every list until the operator adds it to a list in the
+  web viewer. So the import (C6) adds the site to no list, and the daemon sends no list entry for
+  a send. The import's own rules (C5, the import's rules) are as before: they let the restore tab
+  load the site, and they add nothing to a list.
 - The answer comes after the scope rules are in force, the workers are removed (when C5 needs it),
   the tabs are closed (C5: the closing rule and the sweep), and the copy's key removals of the
   sweep have ended (C10, each tab's scope: a lost key removal could bring an old scope back after
   a worker start). A key removal that fails, or that has not ended within `REMOVAL_WAIT_MS`
   (C10), makes the answer `ok: false` (C5, the sweep). `rules` counts the session rules of
-  C5 that `set_scopes` writes: the scope rules, and with choice 3 the marked-tab rule. `closed`
+  C5 that `set_scopes` writes: the scope rules, and with the marked-tab rule (choice 3). `closed`
   counts the tabs that closed before the answer: a close that did not end in its item's wait (C10,
   removals and the last window) does not count. The answer can come later than the 10 s (C10, the
   bound of a `set_scopes` answer); the daemon then sends its current object again, as above.
@@ -322,7 +329,11 @@ held one list for the whole agent browser. The request is above. Its fields and 
   it drops the `null` entry by rule 3 below. aw-lead prefers choice 5 a, which needs no `null`
   entry (mail mcbd5352), and builds the rest of 5 b only if the operator takes 5 b. The daemon can
   also write an `end_scope` for each alias of the ended session; the relay does nothing for a name
-  that is no scope (C10, C11). With the peer check, the `allowlist` line that drops the scope (with
+  that is no scope (C10, C11). From the `end_scope` on, the relay refuses new connections of the
+  scope with the no-list 503 until a later `allowlist` line names it again, also with a `null`
+  entry (C11, when a connection ends); the relay keeps that in memory only, so the line that the
+  daemon replays to a restarted relay must not name an ended scope with a list. With the peer
+  check, the `allowlist` line that drops the scope (with
   5 b: that names it `null`) also drops its roots, so no process of the ended session connects
   again, with any scope (C11, the scope's session: the roots' life). `set_scopes` carries no roots:
   the receiver never sees a pid.
@@ -459,7 +470,7 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
   reason never echoes the input; an empty label says "a label is empty".
 - Each tab has at most one scope (C10, each tab's scope), and each scope at most one list
   (`set_scopes`, C4: its `scopes` entry when it has one, else `default`). A **tab's list** is its
-  scope's list. A marked tab (C10, the operator mark of the design's choice 3) has no scope; its
+  scope's list. A marked tab (C10, the operator mark of choice 3) has no scope; its
   list is its `operator` value: `"*"` (any site), a list, or none (`null`: the tab fails closed, as
   a tab with no list). Any other tab of no scope, and a tab whose scope has no list, has no list.
 - The DNR rules. The per-scope design's probe measured them (Chromium 156, 2026-11-04), unless a
@@ -519,7 +530,7 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
     restore tab]; and session rule id 7, priority 2, `{"type":"allow"}`, `topDomains` = [the same
     `domain`], `resourceTypes: ["sub_frame", "object"]`, the same `tabIds`. They hold from C6 step 2
     until the restore tab's last navigation (C6, the import's rules).
-  - The marked-tab rule (with choice 3 of the design; C10 gives the operator mark): with
+  - The marked-tab rule (choice 3; C10 gives the operator mark): with
     `"operator":"*"`, session rule id 8, priority 2, `{"type":"allow"}`, `resourceTypes:
     ["main_frame", "sub_frame", "object"]`, `tabIds` = the marked tabs, no host condition. No rule 8
     while no tab is marked (DNR refuses an empty `tabIds`). With `"operator":"<list>"`, the marked
@@ -909,8 +920,8 @@ first document request of a new tab (below).
 - The tab checks:
   - `not an agent tab`: `debugger.attach`, `debugger.detach`, `tabs.update` and `tabs.remove` of the
     restore tab of a running import (C6); `debugger.attach` of a tab whose `url` or `pendingUrl` is
-    in the receiver's own origin (`chrome-extension://<receiver id>/`); and, with the design's
-    choice 3 (part 1d), `debugger.attach`, `debugger.sendCommand`, `tabs.update` and `tabs.remove`
+    in the receiver's own origin (`chrome-extension://<receiver id>/`); and, for choice 3
+    (part 1d), `debugger.attach`, `debugger.sendCommand`, `tabs.update` and `tabs.remove`
     of a marked tab (each tab's scope, below). No connection sees a marked tab, so this check is a
     second layer.
   - `not an agent tab`, in the per-scope build (board ab-v16.41, review-17e): `debugger.attach`,
@@ -1197,7 +1208,7 @@ hold it; the last bullet gives the numbers and what the relay does about it.
   `tabs.onCreated` that comes while the flag is set waits until the import knows the id. Then the
   receiver skips the restore tab (`"attached":false`) and attaches the others.
 - The receiver also skips a tab of its own origin. Tabs that the operator opens in the live view
-  (agentwatch design §5.15) get the operator mark with the design's choice 3 (each tab's scope,
+  (agentwatch design §5.15) get the operator mark (choice 3; each tab's scope,
   below), and the receiver skips a marked tab too.
 - The relay sends `bridge.release` when the client sends `Runtime.runIfWaitingForDebugger` on that
   tab (it does not wait for the answer: while the hold keeps a tab's first request, Chrome answers
@@ -1270,7 +1281,8 @@ hold it; the last bullet gives the numbers and what the relay does about it.
     after the pane's scope wait and only after the first `ok` on the current connection (C11, the
     roots' life). The relay applies C4's rules to the line (C11, the scope's list).
   - `{"t":"end_scope","scope":"<scope>"}`: the agentwatch session of that scope ended. The relay
-    closes the scope's connections and removes its tabs (C11). The daemon can also write one for
+    closes the scope's connections and removes its tabs, and it refuses new connections of the scope
+    until a later line names it again (C11). The daemon can also write one for
     each alias of the session; the relay does nothing for a name that is no scope.
 - At each `link` up, before it admits a connection, the relay runs the **steps of the link up**, in
   this order. The daemon writes the link-up line to each relay that starts while the link is up, so
@@ -1351,8 +1363,8 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
     `about:blank` tab of the window rule, removals and the last window, below), a tab from before
     the worker's start whose entry the copy does not hold, a tab of the orphan set (C5, the sweep),
     and the operator's own tabs. The sweep never closes a tab of no scope, except a tab of the
-    orphan set (C5). The operator's tabs depend on choice 3 of the
-    design: with it, a tab that starts at `chrome://newtab/`, that no page opened and that no bridge
+    orphan set (C5). The operator's tabs have the mark
+    (choice 3, decided in ab-dm6): a tab that starts at `chrome://newtab/`, that no page opened and that no bridge
     op created gets the **operator mark** (no agent tab starts there: the relay opens `about:blank`
     only and refuses `chrome:` URLs; that a page cannot open a `chrome://` page is Chrome's rule:
     a page's `window.open("chrome://newtab/")` opened no tab, measured in part 1d's live test), and
@@ -1481,7 +1493,7 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
       of a tab of such a scope), and no later sweep comes until the next `set_scopes`, which can be
       hours later.
   - The kept entries (board ab-v16.41). The receiver keeps each entry that leaves the map for
-    `TOMBSTONE_MS = 10000` ms, in memory (with choice 3, a mark too). It also keeps the orphan-set
+    `TOMBSTONE_MS = 10000` ms, in memory (a mark too). It also keeps the orphan-set
     membership of a tab that closed for `TOMBSTONE_MS` (C5, the sweep), so that a popup of it joins
     the set (the spread, above). A popup whose `sourceTabId` has a kept entry of the map takes that
     entry's scope (or its mark), as if the opener were still open, and the check above applies: a
@@ -1838,7 +1850,14 @@ vectors: `test/vectors/endpoint.json`.
   7. A scope with no list: the no-list 503. With the peer check, that is a named scope whose entry
      is `null` (also an entry that applies as `null`, C4) or names a list that is not in `lists`;
      without the peer check, also a scope that the line does not name while `default` gives no
-     list.
+     list. Also a scope that an `end_scope` ended and that no later line has named again (the
+     refusal after `end_scope`, "When a connection ends"). With the peer check this refusal is
+     step 7 too, after the session check: a process of another session gets the session's 403
+     first, as for any scope with no list.
+  8. A request that passes steps 1 to 7 and is no WebSocket upgrade (a plain HTTP request) is
+     admitted by no check and gets no connection: the 404 of step 2. So a plain request gets the
+     same checks in the same order as an upgrade, and the 404 only when the scope is admitted. A
+     request with a method other than `GET` gets the 404 at step 2.
 
   The relay never holds an upgrade, and no side retries for the client: the client gets the
   answer's text (agent-browser's `src/cdp.ts` passes the body on in its error), and the agent
@@ -1859,7 +1878,19 @@ vectors: `test/vectors/endpoint.json`.
 - `Browser.close` ends that connection only. The agent browser keeps running. Close code
   1000, `Browser.close ends this connection; the agent browser keeps running`.
 - `end_scope` (C10): the relay closes the scope's connections with
-  1000, `The agentwatch session ended`, and removes the scope's tabs. An `end_scope` whose name is
+  1000, `The agentwatch session ended`, and removes the scope's tabs. From the `end_scope` on, the
+  relay refuses each new connection of that scope with the no-list 503 (step 7), also over a link
+  change, until a later `allowlist` line names the scope again: the scope's entry in `scopes`,
+  also with a `null` entry (C4, rule 2: a later session of the same name). With choice 5 b, the
+  line that drops the `null` entry (C4, rule 3) names the scope no more: without the peer check
+  the `default` list then admits the scope again, and with the peer check step 5 gives it the
+  no-list 503 (a scope that the line does not name has no list). So the ended session's processes
+  cannot connect in the moment before the daemon's next line, also with a `default` list. The
+  relay keeps this set of ended scopes in memory only. A relay restart between the `end_scope` and
+  the daemon's next line loses it, and a line that still names the ended scope with a list would
+  admit its processes again. So this is a limit of the relay and a rule for the daemon: the line
+  that the daemon replays to a restarted relay must not name an ended scope with a list (a `null`
+  entry is safe, and so is a line that has dropped the scope). The shared vector: `endScopes` in `test/vectors/endpoint.json`. An `end_scope` whose name is
   no scope of the relay (for example a name of the session other than its launch scope,
   `AGENTWATCH_SESSION_ID`; C4) does nothing. agentwatch writes no `end_scope` for a name that is the
   launch scope of another live session: a rename into a former name can make one session's alias
@@ -2310,8 +2341,8 @@ cgroup in ab-6gs.
   3. It starts a child process (`process.execPath` with a few lines of script) that connects to that
      socket and stays until the relay has read the connection.
   4. It reads the peer of the accepted socket and compares it with the child's facts: the pid (the
-     child's pid), the uid (the relay's), the peer's parent (the relay's own pid) and its start time
-     (field 22 of `/proc/<pid>/stat`, or `proc_pidinfo` on the Mac: it must be readable), and, when
+     child's pid), the uid (the relay's), the peer's parent (the relay's own pid) and the peer's start time
+     (field 22 of `/proc/<pid>/stat`, or `proc_pidinfo` on the Mac: the relay must be able to read it), and, when
      `SO_PEERPIDFD` gives a pidfd, the pid that the pidfd names (the `Pid:` line of
      `/proc/self/fdinfo/<pidfd>`) and a `poll` of that pidfd, which must return 0 (the child lives;
      review-19 note 5). A connection from the relay to itself would not do: a reader of the wrong fd
@@ -2400,7 +2431,9 @@ cgroup in ab-6gs.
   session's own pane (review-19 note 3):
   - A root counts only while it lives: the process with its pid has its start time.
   - A `(pid, start)` that two scopes name counts for neither scope.
-  - A root that is an ancestor of another root (the walk from the other root reaches it) does not
+  - A root that is an ancestor of another root (the walk from the other root reaches it, with the
+    walk's own stop rules from its first hop: a parent whose start time is later than the other
+    root's start time is no parent, so it is no ancestor; review-19b note 7) does not
     count, for the walk or the cgroup: a pane is never under another pane, so such a root is a
     wrong pid (for example the tmux server's).
   - A root's cgroup counts only when its pane has a scope of its own: the cgroup is not the cgroup
@@ -2445,7 +2478,11 @@ cgroup in ab-6gs.
     for a `set_scopes` round trip: the receiver does not use the roots. Such a line comes only after
     the first `ok` on the current connection (review-19 note 6): the relay drops its line at each
     link change, and a line carries only an object that the receiver confirmed on the current
-    connection (C10). Before that `ok`, the new root goes into the line that follows it.
+    connection (C10). Before that `ok`, the new root goes into the line that follows it. The daemon
+    does not hold a respawn for that `ok` (review-19b note 3): in that window the agent can start
+    in the new pane first and connect. The relay has no line yet (it dropped it at the link
+    change), so the agent gets the 503 of step 4 (`its extension has not confirmed the allowlist`)
+    and connects again. It gets no session's 403 for it.
     `tmux respawn-pane -k` gives the pane a new process and a new scope, so the old pane's jobs (in
     the old scope, under no live root) are refused, also by their cgroup, and the relay closes the
     connections of the old root (1008, when a connection ends).
@@ -2454,9 +2491,11 @@ cgroup in ab-6gs.
     no process and its cgroup counts for no connection. A process of the ended session that still
     runs (a `nohup` job, a double-forked job, a command through a server that the session left
     running, such as a nested tmux server) then connects to no scope: for its own scope it gets the
-    session's 403 until that line, and after it the no-list 503 (step 5) with 5 a or the session's
-    403 with 5 b (the line names the scope `null` and gives it no root: step 6 comes before step 7;
-    review-19 note 2); for any other scope it gets the session's 403. Its open connections closed at
+    session's 403 until that line, and after it the no-list 503 (step 5) with 5 a. With 5 b it gets
+    the session's 403 only until the line of C4's rule 3 drops the `null` entry: the line that ends
+    the session names the scope `null` and gives it no root, so step 6 comes before step 7
+    (review-19 note 2), and after the rule 3 line the scope is unnamed and step 5 gives the no-list
+    503 (review-19b note 5); for any other scope it gets the session's 403. Its open connections closed at
     the `end_scope` (1000) or close at that line (1008). A later session of the same name has
     another pane, so another root (the operator's ab-6gs answer).
   - A session that agentwatch only stops (its agent ends, its pane stays) keeps its pane and its
