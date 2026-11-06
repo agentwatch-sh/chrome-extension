@@ -28,6 +28,10 @@ import urllib.request
 # 1280x900 window at 0,0, no window manager).
 PAGE_TOP = 87
 
+# The scope of every tab that the harness opens (server.py: LIVE_SCOPE). tabs.create and
+# windows.create take it as their second arg (C10).
+SCOPE = "live"
+
 
 class Ctl:
     def __init__(self, path: str) -> None:
@@ -160,9 +164,13 @@ class Live:
         return self.bridge("debugger.sendCommand", {"tabId": tab}, method, params or {})
 
     def new_tab(self, url: str, attach: bool = True) -> int:
-        tab = (self.bridge("tabs.create", {"url": url, "active": True}).get("data") or {}).get("id")
+        """tabs.create opens about:blank only (C10). A tab at a URL is a blank tab that the
+        driver attaches to and sends Page.navigate to."""
+        tab = (self.bridge("tabs.create", {"url": "about:blank", "active": True}, SCOPE).get("data") or {}).get("id")
         if attach:
             self.bridge("debugger.attach", tab)
+            if url != "about:blank":
+                self.cdp(tab, "Page.navigate", {"url": url})
         return tab
 
     def close_tab(self, tab: int | None) -> None:
@@ -190,6 +198,15 @@ class Live:
             self.op.shot(label + "-permission")
             self.op.key("Tab", "Return")
 
+    def agent_tab(self) -> None:
+        """Open a new tab in the agent Chromium that the driver types into. A tab that starts at
+        chrome://newtab/ (Ctrl+T), that no page and no bridge op opened, has the operator mark
+        (C10), and the list of the set_scopes `operator` field. A tab of no scope and no mark has no
+        list, so its navigations fail closed (C5). An import or an allowlist change closes the
+        driver's tab, so each case starts with a new one."""
+        self.agent.key("ctrl+t")
+        time.sleep(1.0)
+
     # -- the cases
 
     def link(self) -> None:
@@ -197,6 +214,9 @@ class Live:
         st = self.ctl(op="daemon_state")
         self.r.add("receiver links up and says hello", bool(ok), "stub daemon socket: link event, then hello",
                    version=st.get("hello"))
+        self.r.add('the hello says features ["scopes"]', st.get("features") == ["scopes"],
+                   "stub daemon socket: the hello's features", features=st.get("features"))
+        self.agent_tab()
         ping = self.ctl(op="ping")
         self.r.add("ping", ping.get("ok") is True and ping.get("data") == {}, "C4 ping through host.py", secs=ping.get("secs"))
 
@@ -240,7 +260,7 @@ class Live:
 
     def agent_old_state(self) -> None:
         a = self.allow(["s1.localhost"])
-        self.r.add("set_allowlist [s1.localhost]", a.get("ok") is True and (a.get("data") or {}).get("rules") == 1,
+        self.r.add("set_scopes [s1.localhost]", a.get("ok") is True and (a.get("data") or {}).get("rules") == 2,
                    "receiver answer", data=a.get("data"), error=a.get("error"))
         m = self.ctl.mark()
         self.agent.goto(self.site("s1", "/agent-old"))
@@ -433,7 +453,7 @@ class Live:
     def allowlist_change(self) -> None:
         base = sorted(set(self.ctl(op="daemon_state")["allow"]))
         a0 = self.allow(base)
-        self.r.add("set_allowlist with the same list closes tabs left on blocked pages", a0.get("ok") is True,
+        self.r.add("set_scopes with the same list closes tabs left on blocked pages", a0.get("ok") is True,
                    "receiver answer", data=a0.get("data"))
         a1 = self.allow(base + ["s2.localhost"])
         m = self.ctl.mark()
@@ -575,16 +595,12 @@ class Live:
         self.cdp(tab, "Runtime.evaluate", {"expression": "location.href = '/p/hdr-script'", "userGesture": True})
         script = self.ctl.wait(m1, 10, kind="req", path="/p/hdr-script")
         self.ctl.wait(m1, 10, kind="page", page_kind="page-load", page="/p/hdr-script")
-        m2 = self.ctl.mark()
-        made = self.new_tab(self.site("s1", "/p/hdr-tabs-create"), attach=False)
-        created = self.ctl.wait(m2, 10, kind="req", path="/p/hdr-tabs-create")
         m3 = self.ctl.mark()
         self.cdp(tab, "Page.navigate", {"url": self.site("off", "/p/hdr-off")})
         blocked = self.ctl.wait(m3, 10, kind="blocked", host="www.off.localhost")
         time.sleep(1.0)
         leaked = [e for e in self.ctl.events(m3) if e["kind"] == "req" and e["host"] == "www.off.localhost"]
         self.close_tab(tab)
-        self.close_tab(made)
         # Plain http to a host that is not localhost: Chrome sends no Sec-Fetch-*
         # header there, and rule 5 must add none.
         base = sorted(set(self.ctl(op="daemon_state")["allow"]))
@@ -604,7 +620,7 @@ class Live:
                    "server request log: Sec-Fetch-Site, -User, -Dest, -Mode", navigate=fetch_meta(plain), script=fetch_meta(plain_script))
         hdr = lambda e: [e.get("site"), e.get("user")] if e else None  # noqa: E731
         self.r.add("a Page.navigate sends Sec-Fetch-Site none and ?1, as a typed URL (rule 5)", hdr(nav) == ["none", "?1"],
-                   "server request log: Sec-Fetch-Site, Sec-Fetch-User", navigate=hdr(nav), tabs_create=hdr(created))
+                   "server request log: Sec-Fetch-Site, Sec-Fetch-User", navigate=hdr(nav))
         self.r.add("a page script's navigation keeps its own Sec-Fetch-Site (rule 5 names the extension only)",
                    hdr(script) == ["same-origin", "?1"], "server request log", script=hdr(script))
         self.r.add("a Page.navigate to an off-list host is still blocked (rule 1 holds under rule 5)",
@@ -662,15 +678,19 @@ class Live:
         """
         n = int(os.environ.get("HOLD_TRIALS", "10"))
         delay, miss_s = 1.0, 0.1
+        m0 = self.ctl.mark()
         opener = self.new_tab(self.site("s1", "/p/hold-opener"))
+        # The opener's page and its tabs.onCreated come before the eager attach goes on, so that no
+        # event of the opener counts as the event of a trial.
+        self.ctl.wait(m0, 10, kind="page", page_kind="page-load", page="/p/hold-opener")
+        time.sleep(1.0)
         on = self.bridge("bridge.attachNew", True)
         evaluate = lambda js: self.cdp(opener, "Runtime.evaluate", {"expression": js, "userGesture": True})  # noqa: E731
         ways = {
-            "about:blank, then Page.navigate": lambda url: self.bridge("tabs.create", {"url": "about:blank", "active": True}),
+            "about:blank, then Page.navigate": lambda url: self.bridge("tabs.create", {"url": "about:blank", "active": True}, SCOPE),
             "window.open": lambda url: evaluate("void window.open(%s)" % json.dumps(url)),
             "link _blank": lambda url: evaluate("(() => { const a = document.createElement('a'); a.href = %s; a.target = '_blank'; "
                                                 "document.body.append(a); a.click(); a.remove(); })()" % json.dumps(url)),
-            "tabs.create with a URL": lambda url: self.bridge("tabs.create", {"url": url, "active": True}),
         }
 
         def trial(way: str, name: str, release: bool = True, client: bool = False, redirect: bool = False,
@@ -725,7 +745,7 @@ class Live:
         fallback += [trial("about:blank, then Page.navigate", "hold-max-blank-%d" % i, release=False) for i in range(2)]
         client = [trial("window.open", "hold-client-%d" % i, client=True) for i in range(5)]
         redirect = [trial("window.open", "hold-redirect-%d" % i, redirect=True) for i in range(5)]
-        framed = [trial("tabs.create with a URL", "hold-frame-%d" % i, frame=True) for i in range(3)]
+        framed = [trial("about:blank, then Page.navigate", "hold-frame-%d" % i, frame=True) for i in range(3)]
         self.bridge("bridge.attachNew", False)
         off = [trial("window.open", "hold-off-%d" % i, release=False) for i in range(3)]
         self.close_tab(opener)
@@ -762,10 +782,10 @@ class Live:
         self.r.add("a held request that redirects loads after the release", all(sound(r) for r in redirect)
                    and any(r["caught"] for r in redirect), "server request time; page log",
                    release_to_req_ms=[r["release_to_req_ms"] for r in redirect])
-        self.r.add("a frame of a page that the hold missed loads at once, not at the release",
-                   all(r["frame_before_release"] for r in framed if r["missed"]) and any(r["missed"] for r in framed),
-                   "the frame's request time at the server against the release (the page's own request left before the hold)",
-                   frame_before_release=[r["frame_before_release"] for r in framed], missed=[r["missed"] for r in framed])
+        self.r.add("a page with a frame, held at its first request, loads with its frame after the release",
+                   all(r["caught"] and r["loaded"] and r["frame_before_release"] is False for r in framed),
+                   "the page's and the frame's request time at the server against the release",
+                   frame_before_release=[r["frame_before_release"] for r in framed], caught=[r["caught"] for r in framed])
         self.r.add("bridge.attachNew [false]: a new tab is neither attached nor held", all(
                    r["attached"] is False and r["held"] is False and r["loaded"] for r in off),
                    "bridge tabs.onCreated events", event_to_req_ms=[r["event_to_req_ms"] for r in off])
@@ -810,6 +830,8 @@ def main() -> int:
     live = Live(run)
     for name in names:
         print("== " + name, flush=True)
+        if name != "link":
+            live.agent_tab()
         if name.startswith("big"):
             live.big(int(name[3:]))
         else:

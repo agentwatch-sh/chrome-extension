@@ -4,7 +4,7 @@ This test runs the sender and the receiver in two real, headed Chromium
 browsers on a Linux box, each on its own private X display. A local stub box
 and a local stub daemon stand in for agentwatch. The test sends a site's full
 state from the operator's Chromium to the agent's Chromium and checks what the
-site's first script sees there. It also checks the allowlist block, and it
+site's first script sees there. It also checks the scope block (one list, one scope), and it
 drives the agent package's bridge (contract C10) through the stub daemon: the
 frame rules, the navigation-header rule, and the eager attach with the hold of
 a new tab.
@@ -25,7 +25,8 @@ names and counts, and the server compares the two sides in memory.
   the packed agent 0.2.0 of its tools folder's external file instead). To load
   the unpacked `agent/` there, start it with `--remote-debugging-pipe
   --enable-unsafe-extension-debugging` and send `Extensions.loadUnpacked`
-  with the folder's path on the pipe. This harness does not do that.
+  with the folder's path on the pipe. This harness does not do that; see
+  "Run it with Google Chrome 157" below.
 - A free loopback port (default 8771; set `LIVE_PORT`) and two free X
   displays in 90 to 189.
 - `HOLD_TRIALS` (default 10): the trials of each kind of new tab in the case
@@ -59,6 +60,50 @@ Chromium writes `agent/_metadata/` (its indexed DNR ruleset) into the
 agent folder that it loads. The folder is git-ignored. Remove it by hand
 too if you want a clean tree.
 
+## The per-scope contract in this harness
+
+The receiver (0.3.x) applies `set_scopes`, not `set_allowlist` (C4). The stub daemon keeps the one
+list of sites that the cases use and sends it as `{"lists": {"live": <list>}, "scopes": {"live":
+"live"}, "default": "live", "operator": "live"}`. So the one list `live` is the list of three kinds
+of tab:
+
+- A tab that the harness opens through the bridge: `tabs.create` (and `windows.create`) take the
+  scope as their second arg (`SCOPE = "live"` in `live.py`), and a popup of such a tab inherits it.
+  `tabs.create` opens `about:blank` only (C10), so `new_tab(url)` creates a blank tab, attaches,
+  and sends `Page.navigate`.
+- The tab that the driver types into with xdotool in the agent Chromium. A tab of no scope and no
+  mark has no list and fails closed (C5). So each case starts with Ctrl+T: a tab that starts at
+  `chrome://newtab/` has the operator mark (C10), and the `operator` field gives it the list. An
+  import or a list change closes the driver's tab, so the driver opens a new one before each case.
+- Any other tab: no list.
+
+The scope rules are two per list (`main_frame`, and `sub_frame` with `object`), so the first
+`set_scopes` answers `rules` 2. The receiver's hello must carry `"features": ["scopes"]`; the case
+`link` checks it.
+
+Since the receiver no longer lets a client open a tab at a URL, the case `hold` has no row for
+`tabs.create` with a URL, and its check of a page with a frame uses a blank tab that the client
+navigates (the page and its frame load after the release).
+
+## Run it with Google Chrome 157
+
+`run.sh` loads the receiver with `--load-extension`, which Google Chrome 157 ignores. To load the
+unpacked `agent/` of a checkout there (measured by review-22 of board ab-v16.34; `run.sh` does not
+do this):
+
+1. Start Chrome with a fresh `--user-data-dir`, `--remote-debugging-pipe`,
+   `--enable-unsafe-extension-debugging`, `--no-first-run`, and no `--load-extension`.
+   (With the pipe, a stdio pair of file descriptors 3 and 4 replaces the debugging port.)
+2. On the pipe (messages end with a NUL byte), send
+   `{"id":1,"method":"Extensions.loadUnpacked","params":{"path":"<repo>/agent"}}`.
+   The answer holds the extension ID, which is the receiver ID (its manifest `key` fixes it).
+3. Chrome also installs the packed agent 0.2.0 from the external file
+   `opt/google/chrome/extensions/ifhfjdmdbgbnmllffiadajepajbcdnai.json` of its tools folder in every
+   profile. Check that the hello of the receiver says the version of your branch.
+
+Start the stub server, the native host and the driver as `run.sh up` does, and replace only the
+Chromium start of the agent. The sender (operator) side stays on Chromium.
+
 ## What the run sets up
 
 | Piece | What it is |
@@ -66,7 +111,7 @@ too if you want a clean tree.
 | Two private displays | `Xvfb :N -nolisten tcp -auth <file>`, one for each Chromium. Each auth file (0600) holds one FamilyWild MIT-MAGIC-COOKIE-1 entry from `os.urandom`; the cookie never enters an argv. The script checks that a client without the cookie is refused. |
 | The agent Chromium | `--user-data-dir=<run>/agent --no-first-run --no-default-browser-check --password-store=basic --load-extension=<repo>/agent --silent-debugger-extension-api "--host-resolver-rules=MAP www.plain.test 127.0.0.1"`, headed, no remote debugging. Its profile holds the native host manifest `NativeMessagingHosts/sh.agentwatch.browser.json` (allowed origin: the receiver ID), whose `path` is a 0700 wrapper that runs `host.py`. |
 | The operator Chromium | A copy of `operator/` in `<run>/sender-copy/`, whose manifest gains a test-only `commands._execute_action` shortcut (Ctrl+Shift+U) so that xdotool can open the popup. The `key` stays, so the ID stays. The committed `operator/` is never changed. |
-| `server.py` | One HTTP server on 127.0.0.1, routed by the Host header: the test sites, and the stub box at `box.localhost` (`/login` sets a made-up login cookie; `GET /api/browser/targets`; `POST /api/browser/send` checks `Origin` and the cookie, caps the body at 33,554,432 bytes, then asks the stub daemon to add the domain to the allowlist and to import). The stub daemon listens on `<sockets>/daemon.sock` (0600) and speaks contract C4: it sends each request as parts of 700,000 bytes, one main request at a time. On channel `bridge` it sends the driver's bridge requests (C10) at the same time, and it logs each bridge event by its name, tab and outcome (of a paused request its id and path), never a header, a body or other params. A control socket `<sockets>/ctl.sock` serves the driver. |
+| `server.py` | One HTTP server on 127.0.0.1, routed by the Host header: the test sites, and the stub box at `box.localhost` (`/login` sets a made-up login cookie; `GET /api/browser/targets`; `POST /api/browser/send` checks `Origin` and the cookie, caps the body at 33,554,432 bytes, then asks the stub daemon to add the domain to the list (`set_scopes`) and to import). The stub daemon listens on `<sockets>/daemon.sock` (0600) and speaks contract C4: it sends each request as parts of 700,000 bytes, one main request at a time. On channel `bridge` it sends the driver's bridge requests (C10) at the same time, and it logs each bridge event by its name, tab and outcome (of a paused request its id and path), never a header, a body or other params. A control socket `<sockets>/ctl.sock` serves the driver. |
 | `host.py` | The native messaging host for this test only: Chrome's stdio messages to one NDJSON line each on the stub daemon's socket, and back. After each connect it tells the receiver `{"t":"link","up":true}`. |
 | `live.py` | The driver: xdotool on each display, the control socket, and the checks. |
 
@@ -99,6 +144,25 @@ The test sites:
   a page with the one frame `/f/<name>`.
 
 ## Results
+
+Run of 2026-11-05 on taylor (Debian 13), Chromium from `/usr/bin/chromium`, `HOLD_TRIALS=10
+test/live/run.sh` (`all` mode) in two private Xvfb displays, against the unpacked `agent/` of board
+task ab-v16.56's branch (receiver 0.3.3, hello `features ["scopes"]`): **74 checks, 73 passed, 1
+failed**. The one failure is the accepted test-site limit (the partitioned cookie of an http
+`*.localhost` site, below). Every case runs on the per-scope contract (see "The per-scope contract in
+this harness"). Changes against the run of 2026-11-04: the `link` case has one more check (the
+hello's features); the first `set_scopes` answers `rules` 2; the case `hold` has no row for
+`tabs.create` with a URL (the receiver opens `about:blank` only), and the page with a frame is held
+and released as a blank tab that a client navigates. The hold, measured (`hold.json`):
+
+| New tab | Caught | Trigger to `tabs.onCreated` (min, median, max) |
+| --- | --- | --- |
+| `tabs.create` with `about:blank`, then a client's `Page.navigate` before the release | 10 of 10 | 36, 42, 73 ms |
+| `window.open` from an attached page (with `userGesture`) | 10 of 10 | 36, 40, 42 ms |
+| a link with `target=_blank` (`noopener`) | 10 of 10 | 117, 127, 153 ms |
+
+The tables below are the earlier runs. They keep the wording of their time (`set_allowlist`, a
+`tabs.create` with a URL).
 
 Run of 2026-11-04 on taylor (Debian 13), Chromium 156.0.8078.79, `HOLD_TRIALS=10 test/live/run.sh`
 (`all` mode) from a clean run folder, against the agent package of board task ab-v16.17 (stage 2

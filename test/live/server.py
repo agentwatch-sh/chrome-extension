@@ -32,6 +32,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PART_BYTES = 700000
+LIVE_SCOPE = "live"  # the one scope and the one list name of the harness (see set_scopes)
 MAX_SEND_BYTES = 33554432
 LOGIN_COOKIE = "aw_test_login"
 BOX_HOST = "box.localhost"
@@ -96,6 +97,7 @@ class StubDaemon:
         self._cv = threading.Condition()
         self._conn: socket.socket | None = None
         self._hello: str | None = None
+        self._features: list | None = None
         self._results: dict[tuple[str, str], dict] = {}  # (channel, id) -> res
         self._one = threading.Lock()  # one main request at a time (C4)
         self._write = threading.Lock()  # the parts of one request go in one go
@@ -154,8 +156,10 @@ class StubDaemon:
         if t == "hello":
             with self._cv:
                 self._hello = str(msg.get("version"))
+                self._features = msg.get("features")
                 self._cv.notify_all()
-            self.events.add("hello", v=msg.get("v"), version=msg.get("version"), channels=msg.get("channels"))
+            self.events.add("hello", v=msg.get("v"), version=msg.get("version"), channels=msg.get("channels"),
+                            features=msg.get("features"))
         elif t == "res":
             with self._cv:
                 self._results[(str(msg.get("ch") or "main"), str(msg.get("id")))] = msg
@@ -169,7 +173,7 @@ class StubDaemon:
 
     def state(self) -> dict:
         with self._cv:
-            return {"connected": self._conn is not None, "hello": self._hello, "allow": list(self.allow)}
+            return {"connected": self._conn is not None, "hello": self._hello, "features": self._features, "allow": list(self.allow)}
 
     def wait_hello(self, timeout: float) -> bool:
         deadline = time.time() + timeout
@@ -236,14 +240,20 @@ class StubDaemon:
                         error=out.get("error"), secs=out["secs"], data=summary)
         return out
 
-    def set_allowlist(self, domains: list[str]) -> dict:
+    def set_scopes(self, domains: list[str]) -> dict:
+        """The harness keeps one list of sites. It sends it as the per-scope
+        contract (C4): one list, named after the one scope of every tab that
+        the harness opens through the bridge. The same list is the default and
+        the operator value: the tab that the driver types into (a tab that
+        starts at chrome://newtab/ has the operator mark, C10) has that list."""
         self.allow = sorted(set(domains))
-        return self.request("set_allowlist", domains=self.allow)
+        return self.request("set_scopes", lists={LIVE_SCOPE: self.allow}, scopes={LIVE_SCOPE: LIVE_SCOPE},
+                            default=LIVE_SCOPE, operator=LIVE_SCOPE)
 
 
 def _summary_data(op: str, data: object) -> object:
     # Import and allowlist results hold counts and "<name>: <reason>" errors only.
-    return data if op in ("ping", "set_allowlist", "import") else None
+    return data if op in ("ping", "set_scopes", "import") else None
 
 
 def _path(url: object) -> str | None:
@@ -944,9 +954,9 @@ def make_handler(world: World) -> type:
                 return self._json(400, {"ok": False, "error_code": "browser_payload_invalid"})
             summary = payload_summary(payload)
             added = domain not in world.daemon.allow
-            allow = world.daemon.set_allowlist(world.daemon.allow + [domain])
+            allow = world.daemon.set_scopes(world.daemon.allow + [domain])
             if not allow.get("ok"):
-                world.events.add("box-send", status=502, bytes=len(body), step="set_allowlist", payload=summary)
+                world.events.add("box-send", status=502, bytes=len(body), step="set_scopes", payload=summary)
                 return self._json(502, {"ok": False, "error_code": "browser_import_failed"})
             res = world.daemon.request("import", state=payload)
             if not res.get("ok"):
@@ -1088,7 +1098,7 @@ def control(world: World, req: dict) -> object:
     if op == "ping":
         return world.daemon.request("ping")
     if op == "allow":
-        return world.daemon.set_allowlist(list(req.get("domains") or []))
+        return world.daemon.set_scopes(list(req.get("domains") or []))
     if op == "bridge":
         return world.daemon.bridge(str(req.get("call")), list(req.get("args") or []), req.get("wait"))
     if op == "import":
