@@ -2340,7 +2340,8 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
     `tabs.onReplaced`, after a raise that reached its limit, and after any client's
     `Browser.setWindowBounds`. The held buttons: a tab holds a CDP button from a `mousePressed` until
     Chrome answered its `mouseReleased`, or until the tab closes, the link changes, the client's
-    connection closes, or the tab is detached.
+    connection closes, or the tab is detached. Each page's kept geometry: its last usable geometry
+    from the relay's own reads (below).
   - The activation step, with the paths on, one step at a time for all connections.
     `Page.bringToFront` and `Target.activateTarget` go through it too: they wait for the chain and for
     their tab's gate, as an input does, and answer after the step.
@@ -2352,18 +2353,22 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
        decides as above, and no path plays. A path can play when a page comes under the pointer and
        the relay knows both last points: S of the front page and T of the page that comes forward.
     3. Wait and hold, only when a path can play, all within one `ACTIVATE_MAX_MS = 2000`; at the
-       limit, no path. When the front page holds a button, wait for its release; no path when its
-       tab's next call waits in the activation chain (its gate is set, or becomes set during the
-       wait). No other page's button counts. Wait for the end of a catch-up that runs in the front
-       page. Then chain the front page's gate on its old gate, so that its later calls wait behind the
-       step in order. Last, wait for the answers of both pages' pointer input that already went to
-       Chrome.
+       limit, no path. When the front page holds a button, wait for its release. The rule "no path
+       when its tab's next call waits in the activation chain (its gate is set, or becomes set
+       during the wait)" applies only while the front page holds a button, because only then does
+       the release wait behind this step (ab-lead's decision in board ab-v16.71). No other page's
+       button counts. Wait for the end of a catch-up that runs in the front page. Then chain the
+       front page's gate on its old gate, so that its later calls wait behind the step in order.
+       Last, wait for the answers of both pages' pointer input that already went to Chrome.
     4. Plan. Read both geometries (below) and, when it is unknown, `at`. No path when S or T is
-       outside the front page's viewport (2 px inside its edges); none is needed when `at` is T. The
-       path follows agent-browser's `src/input.ts` generator from S to T, sampled every 16 ms, each
-       point clamped 2 px inside the front page's viewport, each `dt` at most 250 ms, stretched in
-       time until no step is over 50 px, with a first step of 2 px or more; when S is T and `at` is
-       not, a short out-and-back of 2 to 4 px. No path when it does not fit C10's limits.
+       outside the front page's content box (its viewport less its scrollbars, 2 px inside its
+       edges; ab-lead's decision in board ab-v16.71); none is needed when `at` is T. The path
+       follows agent-browser's `src/input.ts` generator from S to T, sampled every 16 ms, each point
+       clamped 2 px inside the front page's content box, in whole pixels (a page gets no mouse event
+       over its scrollbars, so a path over one gave an unexplained change live), each `dt` at most
+       250 ms, stretched in time until no step is over 50 px, with a first step of 2 px or more; when
+       S is T and `at` is not, a short out-and-back of 2 to 4 px. No path when it does not fit C10's
+       limits.
     5. Play: send `daemon.movePointer`, and wait for its answer, at most its wait.
     6. Record (the X records). On `ok` the answered position is the last point of both pages
        (unknown for the front page when it is outside its viewport). With no path because `at` is T:
@@ -2386,30 +2391,51 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
     `Input.dispatchMouseEvent` or `Input.dispatchDragEvent` for a page whose point is an X record is a
     move more than 50 px from it, or a press or a wheel more than 2 px from it, the relay first sends CDP
     `mouseMoved` events (no button) along a path of the same generator from the recorded point to the
-    event's point, with C10's path limits (else no catch-up). The relay decides it when the event leaves
-    the tab's gate, against the page's point at that time. For a move, the client's move is the path's
-    last step; for another event, the path ends with a move at its point. The catch-up runs once after
-    each X record: never between a client's own events, and never while the page holds a button. It is a
-    step of the tab's gate: the client's event and the tab's later calls wait behind it. A tab has at
-    most `CATCH_UP_MAX_UNANSWERED = 4` catch-up moves without an answer: no catch-up starts while the tab
-    has unanswered catch-up moves, and when a move is due while 4 wait (a page with an open dialog
-    answers none), the catch-up stops and the client's event goes as with the paths off. So the tab's 64
-    requests in flight (C10) never fill in front of the client's `Page.handleJavaScriptDialog`. A step
-    and a catch-up never overlap on one page.
+    event's point, with C10's path limits (else no catch-up), each point clamped 2 px inside the page's
+    content box as in step 4 (from the page's kept geometry, else a read; with neither, no clamp),
+    except the event's own point, which stays where the client sent it. The relay decides it when the
+    event leaves the tab's gate, against the page's point at that time. For a move, the client's move
+    is the path's last step; for another event, the path ends with a move at its point. The catch-up
+    runs once after each X record: never between a client's own events, and never while the page holds
+    a button. It is a step of the tab's gate: the client's event and the tab's later calls wait behind
+    it. A tab has at most `CATCH_UP_MAX_UNANSWERED = 4` catch-up moves without an answer: no catch-up
+    starts while the tab has unanswered catch-up moves, and when a move is due while 4 wait (a page with
+    an open dialog answers none), the catch-up stops and the client's event goes as with the paths off.
+    So the tab's 64 requests in flight (C10) never fill in front of the client's
+    `Page.handleJavaScriptDialog`. A step and a catch-up never overlap on one page.
   - The geometry read: one `Runtime.evaluate` in the relay's own isolated world
     (`Page.createIsolatedWorld` on the main frame), only for a bridge tab, one in flight per tab, with
     no `Page.enable` or `Runtime.enable` of the relay's own, and with C10's default wait. The relay
     stops waiting after `GEOMETRY_WAIT_MS` and drops the late answer, and no client sees the world's
-    events. A geometry is not usable when the ratio or the scale is not 1, the window is minimized,
-    the screen size is not the display's, a read is in flight, or a device-metrics override is in
-    force on the tab.
+    events. The read also gives the content box: `visualViewport.width` and `height` (the viewport
+    less its scrollbars, at a scale of 1; else `documentElement.clientWidth` and `clientHeight`). A
+    geometry is not usable when the ratio or the scale is not 1, the window is minimized, the screen
+    size is not the display's, a read is in flight, or a device-metrics override is in force on the
+    tab.
+  - The kept geometry (ab-lead's decision in board ab-v16.71). The relay keeps each page's last usable
+    geometry from its own reads. Step 4 uses it for a page that is no bridge tab (agent-browser's CLI
+    ends its connection after each command, and the relay then detaches its page), and the catch-up
+    uses it before a read. The relay drops it at every window event that it sees: any client's
+    `Browser.setWindowBounds`, a viewport call on the page's own session
+    (`Emulation.setDeviceMetricsOverride` and its clear, `setVisibleSize`, `setPageScaleFactor`,
+    `setScrollbarsHidden`), the page's `Page.frameResized`, its `tabs.onReplaced` (the new tab has
+    none) and a link change. When a page that is no bridge tab has no kept geometry, the step sends no
+    path. The limit: a window that moves or changes its size with no event that the relay sees gives a
+    wrong mapping, and a page that got or lost a scrollbar since the read has an old content box (on
+    the agent browser's Xvfb only the relay and the receiver place windows).
   - When the relay sends no path, that activation is as with the paths off: the paths are off or unknown;
     the front page, a last point or `at` is unknown (the first activation after the relay's start, after
-    a link change, and after the paths turn on); a geometry is not usable; S or T is outside the front
-    page's viewport; the path does not fit the limits; step 3 found a gate or reached its limit; or the
-    daemon refused. The page then enters at the X pointer: one unexplained position change at most, never
-    a jump. With an older daemon (`unknown op`, `not connected`) the paths stay off. On the Mac the relay
-    sends no `daemon.` op.
+    a link change, and after the paths turn on); a geometry is missing or not usable; S or T is outside
+    the front page's content box; the path does not fit the limits; step 3 found a gate or reached its
+    limit; or the daemon refused. A page that never had a pointer event then enters with its first
+    pointer event, which is no position change. A page whose point was known or became unknown enters
+    at the X pointer: one unexplained position change at most, or one jump. The entry carries the
+    movement from the page's last point when Chrome still has that point as the base of the movement
+    (the page got pointer input since its window last lost the pointer), so it is a jump when the X
+    pointer is more than 100 px from that point (measured in board ab-v16.71: a press held 3 s, whose
+    step ended at its limit with no path, gave the entering page a jump of 304 px). With an older
+    daemon (`unknown op`, `not connected`) the paths stay off. On the Mac the relay sends no `daemon.`
+    op.
 
 **Permissions and content settings.**
 

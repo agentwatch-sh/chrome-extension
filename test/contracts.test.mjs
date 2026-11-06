@@ -1475,12 +1475,12 @@ test("C11 states the pointer at an activation (board ab-v16.70): the paths' stat
     "2. Decide. With the front page known, a page comes under the pointer when it is not the front page, or, for `Target.activateTarget`, when its tab is not active and its window is the front page's window.",
     "With the front page unknown, the focus decides as above, and no path plays.",
     "3. Wait and hold, only when a path can play, all within one `ACTIVATE_MAX_MS = 2000`; at the limit, no path.",
-    "no path when its tab's next call waits in the activation chain (its gate is set, or becomes set during the wait). No other page's button counts.",
+    "No other page's button counts.",
     "Wait for the end of a catch-up that runs in the front page. Then chain the front page's gate on its old gate",
     "Last, wait for the answers of both pages' pointer input that already went to Chrome.",
     "4. Plan.",
-    "No path when S or T is outside the front page's viewport (2 px inside its edges); none is needed when `at` is T.",
-    "sampled every 16 ms, each point clamped 2 px inside the front page's viewport, each `dt` at most 250 ms, stretched in time until no step is over 50 px, with a first step of 2 px or more",
+    "none is needed when `at` is T. The path follows agent-browser's `src/input.ts` generator from S to T, sampled every 16 ms,",
+    "each `dt` at most 250 ms, stretched in time until no step is over 50 px, with a first step of 2 px or more",
     "5. Play: send `daemon.movePointer`, and wait for its answer, at most its wait.",
     "6. Record (the X records). On `ok` the answered position is the last point of both pages",
     "On `pointer moved` the answered position is `at` and the entering page's last point, and the front page's point is unknown.",
@@ -1514,6 +1514,39 @@ test("C11 states the pointer at an activation (board ab-v16.70): the paths' stat
   const longest = PK.POINTER_START_MS + PK.POINTER_PATH_MAX_MS + PK.POINTER_KILL_MS + PK.POINTER_SLACK_MS;
   assert.ok(longest <= 3000, "the path's wait is at most 3 s");
   assert.equal(Math.round((3 * endpoint.constants.ACTIVATE_MAX_MS + 2 * PK.POINTER_READ_WAIT_MS + 3000) / 100) / 10, 11.4, "the worst case");
+});
+
+// ab-lead's decisions on agent-browser PR #68 (board ab-v16.71), in C11 by board ab-v16.77.
+test("C11 states ab-lead's decisions of board ab-v16.71 (board ab-v16.77): the content box, the kept geometry, a jump with no path and the gate rule", () => {
+  const has = (list) => { for (const s of list) assert.ok(says(C11, s), `C11 says: ${s}`); };
+  // The content box: the tests and the clamp of the path, the clamp of the catch-up, and where it comes from.
+  has([
+    "No path when S or T is outside the front page's content box (its viewport less its scrollbars, 2 px inside its edges; ab-lead's decision in board ab-v16.71); none is needed when `at` is T.",
+    "each point clamped 2 px inside the front page's content box, in whole pixels (a page gets no mouse event over its scrollbars, so a path over one gave an unexplained change live)",
+    "each point clamped 2 px inside the page's content box as in step 4 (from the page's kept geometry, else a read; with neither, no clamp), except the event's own point, which stays where the client sent it.",
+    "The read also gives the content box: `visualViewport.width` and `height` (the viewport less its scrollbars, at a scale of 1; else `documentElement.clientWidth` and `clientHeight`).",
+    "S or T is outside the front page's content box; the path does not fit the limits",
+  ]);
+  for (const s of ["2 px inside the front page's viewport", "S or T is outside the front page's viewport"]) assert.ok(!says(C11, s), `C11: no ${s}`);
+  // The kept geometry: what the relay keeps, who uses it, where it goes, no path without it, and its limit.
+  has([
+    "Each page's kept geometry: its last usable geometry from the relay's own reads (below).",
+    "The kept geometry (ab-lead's decision in board ab-v16.71). The relay keeps each page's last usable geometry from its own reads.",
+    "Step 4 uses it for a page that is no bridge tab (agent-browser's CLI ends its connection after each command, and the relay then detaches its page), and the catch-up uses it before a read.",
+    "The relay drops it at every window event that it sees: any client's `Browser.setWindowBounds`, a viewport call on the page's own session (`Emulation.setDeviceMetricsOverride` and its clear, `setVisibleSize`, `setPageScaleFactor`, `setScrollbarsHidden`), the page's `Page.frameResized`, its `tabs.onReplaced` (the new tab has none) and a link change.",
+    "When a page that is no bridge tab has no kept geometry, the step sends no path.",
+    "The limit: a window that moves or changes its size with no event that the relay sees gives a wrong mapping, and a page that got or lost a scrollbar since the read has an old content box",
+    "a geometry is missing or not usable;",
+  ]);
+  // A step with no path can show one jump or one unexplained change.
+  has([
+    "A page that never had a pointer event then enters with its first pointer event, which is no position change. A page whose point was known or became unknown enters at the X pointer: one unexplained position change at most, or one jump.",
+    "The entry carries the movement from the page's last point when Chrome still has that point as the base of the movement (the page got pointer input since its window last lost the pointer), so it is a jump when the X pointer is more than 100 px from that point",
+  ]);
+  assert.ok(!says(protocol, "never a jump"), "docs/protocol.md: no 'never a jump'");
+  // The gate rule applies only while the front page holds a button.
+  has(["When the front page holds a button, wait for its release. The rule \"no path when its tab's next call waits in the activation chain (its gate is set, or becomes set during the wait)\" applies only while the front page holds a button, because only then does the release wait behind this step"]);
+  assert.ok(!says(C11, "wait for its release; no path when"), "C11: the gate rule is no rule of every step");
 });
 
 // ---- C11: the endpoint ----
