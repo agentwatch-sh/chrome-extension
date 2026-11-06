@@ -465,8 +465,6 @@ test("each request vector is a valid bridge request, and its res has the C10 sha
     else if (req.op === "tabs.remove") {
       // The receiver's close of the per-scope build (C10, board ab-v16.41): Target.closeTarget through chrome.debugger.
       assert.deepEqual([v.chrome[0], v.chrome[1][0], v.chrome[1][1], Object.keys(v.chrome[1][2])], ["debugger.sendCommand", { tabId: req.args[0] }, "Target.closeTarget", ["targetId"]], `${req.id}: the receiver's close`);
-      // The receiver before part 1a called chrome.tabs.remove (chromeToday); test/bridge.test.mjs no longer uses it.
-      assert.deepEqual(v.chromeToday, ["tabs.remove", [req.args[0]]], `${req.id}: today's chrome call`);
     } else assert.ok(Array.isArray(v.chrome) && v.chrome[0].startsWith(req.op.split(".")[0] + "."), `${req.id}: chrome call`);
   }
   assert.deepEqual([...seen].sort(), [...opByName.keys()].sort(), "every op has a request vector");
