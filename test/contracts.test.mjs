@@ -364,8 +364,21 @@ test("C4 names the result parts and the limits of C10", () => {
 
 test("C10's op table names exactly the ops of the vector, with the same args, result and default wait", () => {
   const rows = table(C10, "| Op | Args | Result | Default wait | What the receiver does |");
-  assert.deepEqual([...rows.keys()].sort(), [...opByName.keys()].sort());
+  // The receiver's ops, then the daemon's own ops (board ab-v16.70): rows of the same table, never ops of the receiver.
+  const daemonByName = new Map(bridge.daemonOps.map((o) => [o.op, o]));
+  assert.deepEqual([...rows.keys()].sort(), [...opByName.keys(), ...daemonByName.keys()].sort());
+  for (const name of opByName.keys()) assert.ok(!name.startsWith("daemon."), `${name}: the prefix daemon. is reserved`);
   for (const [name, cells] of rows) {
+    const d = daemonByName.get(name);
+    if (d) {
+      assert.ok(name.startsWith("daemon."), name);
+      assert.equal(cells[0], "`[" + d.args.join(", ") + "]`", `${name}: args`);
+      assert.equal(cells[1], d.result, `${name}: result`);
+      assert.equal(cells[2], d.wait, `${name}: wait`);
+      assert.equal(d.inFlightKey, "pointer", `${name}: its own in-flight key`);
+      assert.ok(cells[3].startsWith("Nothing: the daemon answers it itself and never forwards it") && cells[3].includes("A receiver that gets one answers `unknown op`."), `${name}: the receiver's part`);
+      continue;
+    }
     const o = opByName.get(name);
     assert.equal(cells[0], "`[" + o.args.join(", ") + "]`", `${name}: args`);
     assert.equal(cells[1], o.result, `${name}: result`);
@@ -1103,6 +1116,402 @@ test("review-18's notes (board ab-v16.50): the file of ended scopes, the freed n
 
 test("the bridge vector names all three sides", () => {
   for (const stage of ["stage 2", "stage 3", "stage 4"]) assert.ok(bridge.contract.includes(stage), stage);
+});
+
+// ---- C10 and C11: the agent pointer (board ab-v16.70) ----
+
+// The daemon's own ops (C10): a reference of the daemon's checks, in the order of C10's table. The pointer vectors
+// must get its answers; the daemon (agentwatch task age-0kh.28) and the relay (board ab-v16.71) test against the
+// same vectors.
+const PK = bridge.pointerConstants;
+const DAEMON_OPS = new Set(bridge.daemonOps.map((o) => o.op));
+const POINTER_CHECKS = ["unknown op", "bad args", "no display", "wrong display", "out of bounds", "busy", "not now", "too many moves", "pointer moved", "too late"];
+const isInt = (x) => typeof x === "number" && Number.isInteger(x);
+const isPoint = (q, keys) => isObj(q) && Object.keys(q).length === keys.length && keys.every((k) => Object.hasOwn(q, k) && isInt(q[k]));
+const dist2 = (a, b) => (a.x - b.x) ** 2 + (a.y - b.y) ** 2; // a distance is Euclidean, in integers
+const inside = (q, w, h) => q.x >= 0 && q.x < w && q.y >= 0 && q.y < h;
+const MOVE_KEYS = ["at", "from", "path", "width", "height", "notAfter", "views"];
+// The arg of daemon.movePointer: exactly its keys, integers, the path's limits, at inside the request's own size, notAfter.
+function moveFits(m, now) {
+  if (!isObj(m) || Object.keys(m).length !== MOVE_KEYS.length || !MOVE_KEYS.every((k) => Object.hasOwn(m, k))) return false;
+  if (!isInt(m.width) || m.width < 1 || !isInt(m.height) || m.height < 1 || !isInt(m.views) || m.views < 0) return false;
+  if (!isPoint(m.at, ["x", "y"]) || !inside(m.at, m.width, m.height) || !isPoint(m.from, ["x", "y"])) return false;
+  const path = m.path;
+  if (!Array.isArray(path) || path.length < 1 || path.length > PK.POINTER_PATH_MAX_POINTS) return false;
+  if (!path.every((q) => isPoint(q, ["x", "y", "dt"]) && q.dt >= PK.POINTER_DT_MIN_MS && q.dt <= PK.POINTER_DT_MAX_MS)) return false;
+  if (path.reduce((s, q) => s + q.dt, 0) > PK.POINTER_PATH_MAX_MS) return false;
+  if (!path.every((q, i) => dist2(i === 0 ? m.from : path[i - 1], q) <= PK.POINTER_STEP_MAX_PX ** 2)) return false;
+  return isInt(m.notAfter) && m.notAfter >= 0 && m.notAfter - now <= PK.POINTER_AHEAD_MAX_MS;
+}
+// How a play that started ends (the world's play): an end position, or a failure or a kill and its answer (null: none).
+const PLAY_ENDS = { fails: "no display", timeout: "no display", operatorInput: "not now", unitStop: "no display", linkChange: "disconnected", relayEnd: null, daemonStop: null };
+const scriptOf = (path) => [...path.flatMap((q) => [`sleep ${q.dt / 1000}`, `mousemove ${q.x} ${q.y}`]), "getmouselocation"];
+// The daemon's answer to a request in a world: { res, read, script }. skip: checks to leave out (for the order checks).
+function daemonAnswer(req, w, skip = new Set()) {
+  const fails = (name, cond) => !skip.has(name) && cond;
+  const res = (body) => (body === null ? null : { t: "res", ch: "bridge", id: req.id, ...body });
+  const no = (error, extra = {}) => ({ res: res({ ok: false, error, ...(extra.data ? { data: extra.data } : {}) }), read: extra.read ?? false, script: null });
+  if (!DAEMON_OPS.has(req.op)) return no("unknown op");
+  const move = req.op === "daemon.movePointer";
+  const args = req.args ?? [];
+  const m = Array.isArray(args) ? args[0] : undefined;
+  if (fails("bad args", !Array.isArray(args) || (move ? !(args.length === 1 && moveFits(m, w.now)) : args.length !== 0))) return no("bad args");
+  if (fails("no display", w.xvfb === null || !w.xdotool)) return no("no display");
+  if (move && fails("wrong display", m.width !== w.xvfb.width || m.height !== w.xvfb.height)) return no("wrong display");
+  if (move && fails("out of bounds", ![m.from, ...m.path].every((q) => inside(q, m.width, m.height)))) return no("out of bounds");
+  if (fails("busy", w.xCall)) return no("busy");
+  const lv = w.liveView;
+  if (move && fails("not now", lv !== null && (m.views !== lv.views || (lv.lastInputMs !== null && lv.lastInputMs < PK.POINTER_VIEW_QUIET_MS)))) return no("not now");
+  if (fails("too many moves", move ? w.started.paths >= PK.POINTER_PATHS_PER_S : w.started.reads >= PK.POINTER_READS_PER_S)) return no("too many moves");
+  const views = lv?.views ?? 0;
+  if (w.pointer === null) return no("no display", { read: true }); // the read failed or did not end in POINTER_READ_MS
+  if (!move) return { res: res({ ok: true, data: { x: w.pointer.x, y: w.pointer.y, width: w.xvfb.width, height: w.xvfb.height, views } }), read: true, script: null };
+  if (fails("pointer moved", dist2(w.pointer, m.at) > PK.POINTER_NEAR_PX ** 2)) return no("pointer moved", { read: true, data: { x: w.pointer.x, y: w.pointer.y, views } });
+  if (fails("too late", w.playAt > m.notAfter)) return no("too late", { read: true });
+  const script = scriptOf(m.path);
+  if (isObj(w.play)) return { res: res({ ok: true, data: { x: w.play.end.x, y: w.play.end.y, views } }), read: true, script };
+  assert.ok(Object.hasOwn(PLAY_ENDS, w.play), `a known end of a play: ${w.play}`);
+  return { res: PLAY_ENDS[w.play] === null ? null : res({ ok: false, error: PLAY_ENDS[w.play] }), read: true, script };
+}
+// A script's lines: a sleep line compares as a number of seconds, every other line as text.
+const sameScript = (a, b) => (a === null || b === null ? a === b : a.length === b.length && a.every((l, i) => {
+  const s = /^sleep (\d+(?:\.\d+)?)$/.exec(l), t = /^sleep (\d+(?:\.\d+)?)$/.exec(b[i]);
+  return s && t ? Number(s[1]) === Number(t[1]) : l === b[i];
+}));
+const worldOfVector = (v) => ({ ...bridge.pointerWorld, ...(v.world ?? {}) });
+const errorOf = (v) => (v.res === null ? "no answer" : v.res.ok ? "ok" : v.res.error);
+
+test("C10 states the daemon's own ops (board ab-v16.70): the prefix, its place, the X calls, both ops, the play, the counts, the kills, the waits, the key and the data rule", () => {
+  for (const [name, value] of Object.entries(PK)) assert.ok(C10.includes(`\`${name} = ${value}\``), `C10 has \`${name} = ${value}\``);
+  for (const s of [
+    // The prefix and its place (aw-lead's answer 1).
+    "The prefix `daemon.` is reserved: an op that starts with it is an op that the daemon answers itself. The daemon never forwards a `daemon.` op to the receiver, and it answers an unknown one `unknown op` itself.",
+    "Its place in the daemon's handling of a relay line: after the parse and the duplicate-id check (the requests, above), before the link checks, and outside the daemon's queue and `MAX_BYTES_IN_FLIGHT`.",
+    "So the daemon answers a `daemon.` op also while the link is down, and no bridge request waits behind it. The daemon does not use its `wait`.",
+    "It also drops a line whose `id` still waits for its answer (the duplicate-id check), also the `id` of a `daemon.` op that runs.",
+    "Then it answers a `daemon.` op itself, before its link checks (`not connected`, `disconnected`)",
+    // The X calls (aw-lead's answer 2 and the build notes of mail mbf51aeb).
+    "The X calls run in a task of their own, one at a time, off the read lock of the relay's lines",
+    "Each call runs `xdotool` by its absolute path, with no shell and no `--sync`, in an environment of only `DISPLAY=:<N>` and `XAUTHORITY=<the unit's X auth file>`.",
+    "Its commands come from the checked integers only: absolute pointer moves and reads of the pointer, never a button, a key or a read of pixels.",
+    "The daemon reads a failure from the exit code, not from standard error; a `getmouselocation` whose `x` and `y` it cannot parse is a failure too.",
+    "the daemon records it in `unit.json` when it starts the Xvfb, and reads it from X once for an adopted unit; never from the current config",
+    "Only the relay's link reaches the ops: no gateway route, CLI verb, socket or receiver message. No client method of C11 reaches a `daemon.` op.",
+    // The two ops and their fields.
+    "`daemon.pointerAt`, args `[]`: one `xdotool getmouselocation`, with a timeout of `POINTER_READ_MS = 1000`.",
+    "`views`, the count of the operator's live-view inputs (0 while there is no live view). The relay sends it as a probe at each link up",
+    "`daemon.movePointer`, args `[move]`. `move` is an object with exactly these keys:",
+    "`{x, y}` in `0..width-1` and `0..height-1` of the request's `width` and `height`. A relay that does not know the place sends `daemon.pointerAt` first.",
+    "The daemon does not play it: the first step is measured from it.",
+    "(120 is the parse bound)",
+    "so a path holds at most 93 points (93 x 16 = 1488 ms). Each step (from `from` to the first point, then from point to point) is at most `POINTER_STEP_MAX_PX = 50` px",
+    "`notAfter`: whole ms on `CLOCK_MONOTONIC`, which every process of the box shares, so a step of the wall clock does not change it.",
+    "The relay reads it as `process.hrtime.bigint() / 1000000n` (Linux), never with `performance.now()`",
+    "and sends its clock plus `POINTER_START_MS = 300`. The daemon reads its clock as `time.monotonic_ns() // 1000000` (injected for its tests). The daemon starts no path after `notAfter`.",
+    "Each number of `move` is an integer: a JSON number with no fraction part (`true` and `false` are no numbers). A distance is Euclidean: two points are at most `d` px apart when `dx*dx + dy*dy <= d*d`, in integers.",
+    // The order and the play.
+    "The checks, in this order. The first check that fails gives the answer, and the daemon makes no later X call.",
+    "`no display` for a failed or killed X call comes at that call: the read (of either op) or the play.",
+    "the daemon plays nothing and answers `pointer moved` with `data` `{\"x\":<int>,\"y\":<int>,\"views\":<int>}`, the read position and the current `views`. The daemon keeps no state of the place.",
+    "Else it checks `notAfter` against its clock after the read, so a slow read ends in `too late`, never in a late play.",
+    "Then it runs one script on `xdotool -` (standard input, one command a line; an argv only if the live check finds that standard input fails): `sleep <dt/1000>` (seconds) and `mousemove <x> <y>` for each point, then `getmouselocation`.",
+    "Its timeout is the path's total time plus `POINTER_KILL_MS = 1000`; at the timeout the daemon kills the call and answers `no display`.",
+    "The `ok` answer comes after the last point: `{\"x\":<int>,\"y\":<int>,\"views\":<int>}`, the position that the script's `getmouselocation` read.",
+    "The counts of `too many moves`: a play counts when it starts, and a read of `daemon.pointerAt` when its X call starts. The read before a play does not count, and the two counts are apart: a play counts only against the plays, and a read only against the reads. A refusal does not count.",
+    // The kills (aw-lead's answer 7) and the live view (answers 4 and 5).
+    "The daemon kills a playing path at a relay end (the relay's epoch changes: no answer), at a unit stop (`no display`; the kill comes before the unit's stop steps), at a link change (`disconnected`), at its own stop (no answer: the relay's standard input ends), and at the operator's live-view input (`not now`). After a kill or any failed X call the pointer's place is unknown.",
+    "The live view, when it exists (it is not built yet; its rows stay): `not now` for an old `views` and for `POINTER_VIEW_QUIET_MS = 10000` after the operator's last live-view input",
+    // The waits and the key (aw-lead's answer 6).
+    "`daemon.movePointer` has, per request, `POINTER_START_MS` plus the path's total time plus `POINTER_KILL_MS` plus `POINTER_SLACK_MS = 200` (1565 ms for the example above).",
+    "The relay sends that `wait`, and waits at most that long with its own timer: then it goes on with no answer, takes the place as unknown, and drops a late answer. No path can still play then",
+    "`daemon.movePointer` and `daemon.pointerAt` have the key `pointer` of their own, so the shared key's queue never holds them back.",
+    "A `daemon.` op is outside this limit and the daemon's queue: it never goes to the receiver.",
+    "The relay sends each op's default wait. The two `daemon.` ops are the exception: the relay sends `POINTER_READ_WAIT_MS` for `daemon.pointerAt` and a wait per request for `daemon.movePointer`, and the daemon uses neither",
+    // review-29 notes N2, N5 and the words of aw-lead's (c).
+    "`views`: the `views` that the relay last read, an integer of 0 or more (`not now`, below).",
+    "`width`, `height`: the screen size that the relay used (the pages' `screen.width` and `screen.height`), 1 or more.",
+    "A `daemon.` op gets the daemon's own answer (the daemon's own ops, below), or none when the relay ends or the daemon stops.",
+    "For a `daemon.` op the relay's own timer ends the wait",
+    // The data rule (aw-lead's answer 9) and the logs.
+    "An error `res` of a `daemon.` op may also carry `\"data\"` (an object): `{\"t\":\"res\",\"ch\":\"bridge\",\"id\":\"<id>\",\"ok\":false,\"error\":\"<text>\",\"data\":{...}}`. A reader ignores `data` on an error that it does not know. The daemon sends `data` only with `pointer moved`",
+    "No side logs a point of a `daemon.` op",
+    "The daemon logs the op, the text and a count: one line for each text a minute, never a point. The relay logs each text at most once in 5 minutes.",
+    "The vectors: `daemonOps`, `pointerConstants`, `pointerWorld` and `pointerVectors` in `test/vectors/bridge.json`, and the bad requests b49 and b50",
+  ]) assert.ok(says(C10, s), `C10 says: ${s}`);
+  // The numbers that the text derives from the constants.
+  assert.equal(Math.floor(PK.POINTER_PATH_MAX_MS / PK.POINTER_DT_MIN_MS), 93, "at most 93 points");
+  assert.ok(PK.POINTER_PATH_MAX_POINTS >= 93, "the parse bound is above the most points");
+  assert.equal(PK.POINTER_READ_WAIT_MS, PK.POINTER_READ_MS + PK.POINTER_SLACK_MS, "the read's wait is its timeout and the slack");
+  // The example of the text is the sample of the first move vector, with its wait.
+  const example = /`daemon\.movePointer`, args `\[move\]`\. `move` is an object with exactly these keys:\s*```json\s*(\{.*\})\s*```/s.exec(C10);
+  assert.ok(example, "C10 shows an example of move");
+  const sample = bridge.pointerVectors.find((v) => v.req.op === "daemon.movePointer" && errorOf(v) === "ok");
+  assert.deepEqual(JSON.parse(example[1]), sample.req.args[0], "the example is the first move vector's arg");
+  assert.equal(sample.req.wait, 1565, "the example's wait");
+  // The intro names the build, the design and who builds each side.
+  assert.ok(says(protocol, "The agent pointer (board task ab-v16.70; the design: agent-browser `docs/superpowers/specs/2026-11-06-agent-pointer-move-design.md`, board ab-v16.37, merged at agent-browser `6bb6838`) is in C10 and C11."), "the intro");
+  assert.ok(says(protocol, "agentwatch builds the daemon side in its task age-0kh.28 (aw-lead), and the relay its side in board ab-v16.71"), "the intro: the sides");
+  assert.ok(says(protocol, "Until the daemon side ships, a `daemon.` op goes to the receiver as any op, the receiver answers `unknown op`, and the relay turns its paths off"), "the intro: an older daemon");
+});
+
+test("the checks of the daemon's own ops: C10's table has them in the reference's order, and its op and pointer cells agree with the vectors", () => {
+  const rows = table(C10, "| Text | Op | When | The pointer |");
+  assert.deepEqual([...rows.keys()], POINTER_CHECKS, "the rows are the checks, in their order");
+  // Each "When" cell, word for word (review-29 note N1): the reference above follows these cells.
+  const WHEN = {
+    "unknown op": "an unknown `daemon.` op; also the answer of a daemon from before this build, whose receiver answers it",
+    "bad args": "the args are not exactly the fields above (for `daemon.pointerAt`: not `[]`); a limit of the path is broken; `at` is outside `0..width-1` and `0..height-1` of the request's `width` and `height`; or `notAfter` is negative, not an integer, or more than `POINTER_AHEAD_MAX_MS = 2000` ahead of the daemon's clock",
+    "no display": "no unit Xvfb (also on the Mac) or no `xdotool`; or an X call failed or was killed",
+    "wrong display": "`width` and `height` are not the running Xvfb's size",
+    "out of bounds": "`from` or a point is outside `0..width-1` and `0..height-1`",
+    "busy": "another X call of the daemon runs (also a playing path)",
+    "not now": "the live view exists, and `views` is not its current count or the operator's last live-view input is less than `POINTER_VIEW_QUIET_MS` old; or that input killed the playing path",
+    "too many moves": "`POINTER_PATHS_PER_S = 5` plays (move) or `POINTER_READS_PER_S = 10` reads (read) started in the last second",
+    "pointer moved": "the read before the play is more than `POINTER_NEAR_PX` px from `at` (with `data`)",
+    "too late": "the daemon's clock is past `notAfter` when the play would start, after the read",
+  };
+  for (const [text, cells] of rows) assert.equal(cells[1], WHEN[text], `${text}: the When cell`);
+  const vs = bridge.pointerVectors.map((v) => ({ v, err: errorOf(v) }));
+  for (const [text, [op, , pointer]] of rows) {
+    assert.ok(["both", "move"].includes(op), `${text}: both or move`);
+    if (text === "unknown op") continue; // an unknown daemon. op (below)
+    assert.ok(vs.some(({ v, err }) => err === text && v.req.op === "daemon.movePointer"), `${text}: a vector of daemon.movePointer`);
+    assert.equal(vs.some(({ v, err }) => err === text && v.req.op === "daemon.pointerAt"), op === "both", `${text}: a vector of daemon.pointerAt only when the row says both`);
+    const of = vs.filter(({ err }) => err === text);
+    if (pointer === "not moved" || pointer === "not moved by the op") assert.ok(of.every(({ v }) => v.script === null), `${text}: nothing plays`);
+    if (pointer === "not moved, or place unknown after a kill") {
+      assert.ok(of.some(({ v }) => v.script === null) && of.some(({ v }) => v.script !== null), `${text}: both cases`);
+      assert.ok(of.every(({ v }) => v.script === null || worldOfVector(v).play === "operatorInput"), `${text}: only the operator's input kills`);
+    }
+    if (pointer === "place unknown") assert.ok(of.some(({ v }) => v.script !== null) && of.some(({ v }) => v.read && v.script === null) && of.some(({ v }) => !v.read), `${text}: before an X call, at the read, and at the play`);
+  }
+  // The unknown daemon. op: also with args that no op takes.
+  assert.ok(vs.some(({ v, err }) => err === "unknown op" && v.req.op.startsWith("daemon.") && !DAEMON_OPS.has(v.req.op) && Array.isArray(v.req.args) && v.req.args.length > 1), "unknown op before bad args");
+  // A daemon. op at the receiver: the receiver answers unknown op (bridge.test.mjs runs b49 and b50 against it).
+  const atReceiver = bridge.badRequests.filter((v) => v.req.op.startsWith("daemon."));
+  assert.deepEqual(atReceiver.map((v) => v.req.op).sort(), [...DAEMON_OPS].sort(), "each daemon. op at the receiver");
+  for (const v of atReceiver) assert.equal(v.error, "unknown op", v.req.id);
+  // The error texts that are not checks: the kills of a play.
+  for (const v of bridge.pointerVectors) {
+    const err = errorOf(v);
+    if (!["ok", "no answer", ...POINTER_CHECKS].includes(err)) assert.ok(err === "disconnected" && C10.includes("`disconnected`"), `${v.req.id}: a text of C10`);
+  }
+});
+
+test("each pointer vector gets the answer of C10's checks, in their order (board ab-v16.70)", () => {
+  const ids = new Set();
+  assert.deepEqual(Object.keys(bridge.pointerWorld).sort(), ["liveView", "now", "play", "playAt", "pointer", "started", "xCall", "xdotool", "xvfb"], "the world's keys");
+  for (const v of bridge.pointerVectors) {
+    const { req } = v;
+    assert.ok(!ids.has(req.id), `${req.id}: a unique id`);
+    ids.add(req.id);
+    assert.ok(typeof v.note === "string" && v.note.length > 0, `${req.id}: a note`);
+    for (const k of Object.keys(v.world ?? {})) assert.ok(Object.hasOwn(bridge.pointerWorld, k), `${req.id}: the world key ${k}`);
+    assert.equal(req.t, "req", req.id);
+    assert.ok(req.op.startsWith("daemon."), `${req.id}: a daemon. op`);
+    assert.ok(int(req.wait) && req.wait >= 1 && req.wait <= K.WAIT_MAX_MS, `${req.id}: the relay always sends a wait`);
+    const w = worldOfVector(v);
+    const want = daemonAnswer(req, w);
+    assert.deepEqual(v.res, want.res, `${req.id}: ${v.note}`);
+    assert.equal(v.read, want.read, `${req.id}: read`);
+    assert.ok(sameScript(v.script, want.script), `${req.id}: script`);
+    for (const l of v.script ?? []) assert.ok(/^(sleep \d+\.\d{3}|mousemove \d+ \d+|getmouselocation)$/.test(l), `${req.id}: a script line ${l}`);
+    // The wait that the relay sends (C10, the waits and the key), also in a request that the daemon refuses: the sum of
+    // the integer dt of its path (0 with no path).
+    if (req.op === "daemon.pointerAt") assert.equal(req.wait, PK.POINTER_READ_WAIT_MS, `${req.id}: the read's wait`);
+    else {
+      const path = Array.isArray(req.args) && isObj(req.args[0]) && Array.isArray(req.args[0].path) ? req.args[0].path : [];
+      const total = path.reduce((s, q) => s + (isObj(q) && isInt(q.dt) ? q.dt : 0), 0);
+      assert.equal(req.wait, PK.POINTER_START_MS + total + PK.POINTER_KILL_MS + PK.POINTER_SLACK_MS, `${req.id}: the move's wait`);
+    }
+    // The answers' shapes: data only on ok and with pointer moved.
+    if (v.res !== null) {
+      const keys = Object.keys(v.res).sort();
+      if (v.res.ok) {
+        assert.deepEqual(keys, ["ch", "data", "id", "ok", "t"], req.id);
+        const result = bridge.daemonOps.find((o) => o.op === req.op).result;
+        assert.deepEqual(Object.keys(v.res.data), [...result.matchAll(/"(\w+)":/g)].map((m) => m[1]), `${req.id}: the result of C10's row`);
+      } else if (v.res.error === "pointer moved") {
+        assert.deepEqual(keys, ["ch", "data", "error", "id", "ok", "t"], req.id);
+        assert.deepEqual(Object.keys(v.res.data), ["x", "y", "views"], `${req.id}: the data of pointer moved`);
+      } else assert.deepEqual(keys, ["ch", "error", "id", "ok", "t"], `${req.id}: no data on another error`);
+    }
+  }
+});
+
+test("the pointer vectors cover each check, each bound and each order of C10 (board ab-v16.70)", () => {
+  const vs = bridge.pointerVectors.map((v) => ({ v, w: worldOfVector(v), m: v.req.args?.[0], err: errorOf(v), move: v.req.op === "daemon.movePointer", read: v.req.op === "daemon.pointerAt" }));
+  const has = (f) => vs.some(f);
+  const paths = (x) => x.move && isObj(x.m) && Array.isArray(x.m.path);
+  const okMove = (f) => has((x) => x.move && x.err === "ok" && f(x.m, x.w));
+  // A bad args vector of a move that breaks the rule of f, and only that rule: the repair fix makes it fit.
+  const badMove = (f, fix) => has((x) => paths(x) && x.err === "bad args" && f(x.m, x.w) && (!fix || moveFits(fix(structuredClone(x.m), x.w), x.w.now)));
+  const total = (m) => m.path.reduce((s, q) => s + q.dt, 0);
+  const steps = (m) => m.path.map((q, i) => ({ dx: q.x - (i === 0 ? m.from : m.path[i - 1]).x, dy: q.y - (i === 0 ? m.from : m.path[i - 1]).y }));
+  const at = (m) => isPoint(m.at, ["x", "y"]);
+  // The points and the times: each limit holds, and one past it is bad args.
+  const D = PK.POINTER_DT_MIN_MS;
+  assert.ok(okMove((m) => m.path.length === 93 && m.path.every((q) => q.dt === D)), "93 points of 16 ms");
+  assert.ok(badMove((m) => m.path.length === 94 && m.path.every((q) => q.dt === D), (c) => ((c.path.length = 93), c)), "94 points of 16 ms");
+  assert.ok(badMove((m) => m.path.length > PK.POINTER_PATH_MAX_POINTS, (c) => ((c.path.length = 93), c)), "above the parse bound");
+  assert.ok(badMove((m) => m.path.length === 0), "no point");
+  assert.ok(okMove((m) => total(m) === PK.POINTER_PATH_MAX_MS), "the total time at its limit");
+  assert.ok(badMove((m) => total(m) === PK.POINTER_PATH_MAX_MS + 1, (c) => ((c.path.at(-1).dt -= 1), c)), "the total time 1 ms past it");
+  assert.ok(okMove((m) => m.path.some((q) => q.dt === D)) && badMove((m) => m.path.some((q) => q.dt === D - 1), (c) => (c.path.forEach((q) => { if (q.dt === D - 1) q.dt = D; }), c)), "dt at its least, and 1 ms less");
+  const DX = PK.POINTER_DT_MAX_MS;
+  assert.ok(okMove((m) => m.path.some((q) => q.dt === DX)) && badMove((m) => m.path.some((q) => q.dt === DX + 1), (c) => (c.path.forEach((q) => { if (q.dt === DX + 1) q.dt = DX; }), c)), "dt at its most, and 1 ms more");
+  // The steps: Euclidean, from from too.
+  const S = PK.POINTER_STEP_MAX_PX;
+  assert.ok(okMove((m) => steps(m).some(({ dx, dy }) => dx * dx + dy * dy === S * S && dx !== 0 && dy !== 0)), "a step of exactly 50 px on both axes");
+  assert.ok(badMove((m) => { const d = steps(m)[0]; return d !== undefined && d.dx * d.dx + d.dy * d.dy > S * S; }, (c) => ((c.path[0].x -= Math.sign(c.path[0].x - c.from.x)), c)), "a first step (from from) of 51 px");
+  assert.ok(badMove((m) => steps(m).some(({ dx, dy }, i) => i > 0 && dx * dx + dy * dy > S * S && Math.abs(dx) <= S && Math.abs(dy) <= S),
+    (c) => (c.path.forEach((q, i) => { if (i > 0) { const a = c.path[i - 1]; if (dist2(a, q) > S * S) Object.assign(q, { x: a.x + 30, y: a.y + 40 }); } }), c)), "a later step over 50 px whose axes are each 50 or less");
+  // at: inside the request's width and height.
+  assert.ok(okMove((m) => m.at.x === m.width - 1 && m.at.y === m.height - 1) && okMove((m) => m.at.x === 0 && m.at.y === 0), "at on the last and the first column and row");
+  assert.ok(badMove((m) => at(m) && m.at.x === m.width, (c) => ((c.at.x -= 1), c)) && badMove((m) => at(m) && m.at.y === -1, (c) => ((c.at.y = 0), c)), "at just outside the request's size");
+  assert.ok(badMove((m, w) => at(m) && m.at.x >= m.width && m.at.x < w.xvfb.width, (c) => ((c.at.x = c.width - 1), c)), "at inside the display but outside the request's width");
+  assert.ok(has((x) => x.err === "wrong display" && x.m.at.x >= x.w.xvfb.width && x.m.at.x < x.m.width), "at inside the request's width but outside the display: wrong display");
+  // from and the points: inside the display.
+  assert.ok(okMove((m) => m.path.some((q) => q.x === m.width - 1) && m.path.some((q) => q.y === m.height - 1)) && okMove((m) => m.path.some((q) => q.x === 0) && m.path.some((q) => q.y === 0) && m.from.x === 0), "points on the edges");
+  const oob = (f) => has((x) => x.err === "out of bounds" && f(x.m));
+  assert.ok(oob((m) => m.path.some((q) => q.x === m.width)) && oob((m) => m.path.some((q) => q.y === m.height)) && oob((m) => m.from.x === -1), "a point past each edge, and from");
+  // notAfter.
+  const A = PK.POINTER_AHEAD_MAX_MS;
+  assert.ok(okMove((m, w) => m.notAfter - w.now === A) && badMove((m, w) => m.notAfter - w.now === A + 1, (c) => ((c.notAfter -= 1), c)), "notAfter at its most ahead, and 1 ms more");
+  const now = (c, w) => ((c.notAfter = w.now), c);
+  assert.ok(badMove((m) => isInt(m.notAfter) && m.notAfter < 0, now) && badMove((m) => typeof m.notAfter === "number" && !Number.isInteger(m.notAfter), now) && badMove((m) => typeof m.notAfter === "string", now), "notAfter negative, a fraction, a string");
+  assert.ok(has((x) => x.err === "too late" && x.m.notAfter < x.w.now), "a notAfter in the past is no bad args: too late after the read");
+  assert.ok(okMove((m, w) => w.playAt === m.notAfter) && has((x) => x.err === "too late" && x.w.playAt === x.m.notAfter + 1), "the play at notAfter, and 1 ms after it");
+  // The read before the play: against at, never from.
+  const N = PK.POINTER_NEAR_PX;
+  assert.ok(okMove((m, w) => dist2(w.pointer, m.at) === N * N), "the read exactly 2 px from at");
+  assert.ok(okMove((m, w) => dist2(w.pointer, m.at) === 1 && dist2(w.pointer, m.from) > 100 * 100), "the read 1 px from at and far from from");
+  assert.ok(has((x) => x.err === "pointer moved" && Math.abs(x.w.pointer.x - x.m.at.x) <= N && Math.abs(x.w.pointer.y - x.m.at.y) <= N), "pointer moved: each axis within 2 px, the distance not");
+  assert.ok(has((x) => x.err === "pointer moved" && x.v.res.data.views > 0), "pointer moved with the live view's views");
+  // The live view, the counts and the other states.
+  const Q = PK.POINTER_VIEW_QUIET_MS;
+  assert.ok(okMove((m, w) => w.liveView?.lastInputMs === Q) && has((x) => x.err === "not now" && x.m.views === x.w.liveView.views && x.w.liveView.lastInputMs === Q - 1), "the operator's last input 10 s old, and 1 ms less");
+  assert.ok(has((x) => x.err === "not now" && x.m.views !== x.w.liveView.views && x.w.liveView.lastInputMs >= Q), "an old views, and nothing else");
+  assert.ok(okMove((m, w) => w.liveView === null && m.views !== 0), "no live view: views not compared");
+  assert.ok(okMove((m, w) => w.liveView !== null && w.liveView.lastInputMs === null), "a live view with no input yet");
+  assert.ok(has((x) => x.read && x.err === "ok" && x.w.liveView !== null && x.w.liveView.lastInputMs < Q), "a read gets no not now");
+  assert.ok(okMove((m, w) => w.started.paths === PK.POINTER_PATHS_PER_S - 1) && has((x) => x.move && x.err === "too many moves" && x.w.started.paths === PK.POINTER_PATHS_PER_S), "the 5th play, and the 6th");
+  assert.ok(has((x) => x.read && x.err === "ok" && x.w.started.reads === PK.POINTER_READS_PER_S - 1) && has((x) => x.read && x.err === "too many moves" && x.w.started.reads === PK.POINTER_READS_PER_S), "the 10th read, and the 11th");
+  for (const [f, name] of [[(w) => w.xvfb === null, "no unit Xvfb"], [(w) => !w.xdotool, "no xdotool"], [(w) => w.pointer === null, "a failed read"]]) {
+    for (const op of ["move", "read"]) assert.ok(has((x) => x[op] && x.err === "no display" && f(x.w)), `no display: ${name} (${op})`);
+  }
+  assert.ok(has((x) => x.err === "wrong display" && x.m.width === x.w.xvfb.width && x.m.height !== x.w.xvfb.height), "wrong display: the height only");
+  for (const end of Object.keys(PLAY_ENDS)) assert.ok(has((x) => x.w.play === end && x.v.script !== null), `a play that ends: ${end}`);
+  // The shapes of bad args. Each bad args vector of a move with an object arg differs in one key only from the arg of
+  // an ok move vector, except the ones above the most points (their only flaw is the count: the repair above).
+  const args = (x) => x.v.req.args ?? []; // a request without args has []
+  const oks = vs.filter((y) => y.move && y.err === "ok").map((y) => y.m);
+  const differ = (m, o) => [...new Set([...MOVE_KEYS, ...Object.keys(m)])].filter((k) => JSON.stringify(m[k]) !== JSON.stringify(o[k]));
+  for (const x of vs.filter((y) => y.move && y.err === "bad args" && args(y).length === 1 && isObj(y.m) && !(Array.isArray(y.m.path) && y.m.path.length > 93))) {
+    const keys = oks.map((o) => differ(x.m, o)).sort((a, b) => a.length - b.length)[0];
+    // The one with two: at outside a request's width that is smaller than the display (its only flaw is at).
+    const atOnly = keys.join() === "at,width" && moveFits({ ...x.m, at: { x: x.m.width - 1, y: x.m.at.y } }, x.w.now);
+    assert.ok(keys.length === 1 || atOnly, `${x.v.req.id}: one key differs from an ok move (${keys})`);
+  }
+  const bad = (f) => has((x) => x.err === "bad args" && f(x));
+  assert.ok(bad((x) => x.move && args(x).length === 0 && Object.hasOwn(x.v.req, "args")) && bad((x) => x.move && args(x).length === 2) && bad((x) => x.move && args(x).length === 1 && !isObj(x.m)), "no arg, two args, an arg that is not an object");
+  assert.ok(bad((x) => x.move && !Object.hasOwn(x.v.req, "args")), "a move with no args key: its args are [] (review-29 B1 item 4)");
+  // The integer rule in each field (review-29 B1 item 3): a fraction, and a boolean where the range would pass it.
+  const frac = (n) => typeof n === "number" && !Number.isInteger(n);
+  for (const [name, f] of [["at", (m) => isObj(m.at) && (frac(m.at.x) || frac(m.at.y))], ["from", (m) => isObj(m.from) && (frac(m.from.x) || frac(m.from.y))],
+    ["a point", (m) => m.path.some((q) => isObj(q) && (frac(q.x) || frac(q.y)))], ["dt", (m) => m.path.some((q) => isObj(q) && frac(q.dt))],
+    ["width", (m) => frac(m.width)], ["height", (m) => frac(m.height)], ["views", (m) => frac(m.views)], ["notAfter", (m) => frac(m.notAfter)]]) {
+    assert.ok(bad((x) => paths(x) && f(x.m)), `a fraction in ${name}`);
+  }
+  const bool = (n) => typeof n === "boolean";
+  for (const [name, f] of [["at", (m) => isObj(m.at) && (bool(m.at.x) || bool(m.at.y))], ["a point", (m) => m.path.some((q) => isObj(q) && (bool(q.x) || bool(q.y)))],
+    ["views", (m) => bool(m.views)], ["notAfter", (m) => bool(m.notAfter)]]) {
+    assert.ok(bad((x) => paths(x) && f(x.m)), `a boolean in ${name}`);
+  }
+  // The rest of review-29 B1: the counts apart (1), the width alone (2), the end read (5), the read's size (6), notAfter 0 (7).
+  assert.ok(okMove((m, w) => w.started.reads >= PK.POINTER_READS_PER_S) && has((x) => x.read && x.err === "ok" && x.w.started.paths >= PK.POINTER_PATHS_PER_S), "the plays and the reads count apart");
+  assert.ok(has((x) => x.err === "wrong display" && x.m.width !== x.w.xvfb.width && x.m.height === x.w.xvfb.height), "wrong display: the width only");
+  assert.ok(okMove((m, w) => isObj(w.play) && (w.play.end.x !== m.path.at(-1).x || w.play.end.y !== m.path.at(-1).y)), "the answer is the end read, not the last point");
+  assert.ok(has((x) => x.read && x.err === "ok" && (x.w.xvfb.width !== bridge.pointerWorld.xvfb.width || x.w.xvfb.height !== bridge.pointerWorld.xvfb.height)), "a read of another display size");
+  assert.ok(has((x) => x.err === "too late" && x.m.notAfter === 0 && x.v.read), "notAfter 0: no bad args, too late after the read");
+  for (const k of ["at", "views"]) assert.ok(bad((x) => paths(x) && !Object.hasOwn(x.m, k)), `a missing ${k}`);
+  assert.ok(bad((x) => paths(x) && Object.keys(x.m).some((k) => !MOVE_KEYS.includes(k))), "an extra key");
+  assert.ok(bad((x) => paths(x) && x.m.path.some((q) => isObj(q) && Object.keys(q).length > 3)), "a point with an extra key");
+  assert.ok(bad((x) => paths(x) && x.m.path.some((q) => typeof q.x === "number" && !Number.isInteger(q.x))), "a fraction in a point");
+  assert.ok(bad((x) => paths(x) && typeof x.m.from.y === "number" && !Number.isInteger(x.m.from.y)), "a fraction in from");
+  assert.ok(bad((x) => paths(x) && typeof x.m.views === "boolean"), "a boolean where the range would pass it");
+  assert.ok(bad((x) => paths(x) && typeof x.m.width === "string") && bad((x) => paths(x) && x.m.width === 0) && bad((x) => paths(x) && x.m.views === -1), "a string width, a width of 0, views below 0");
+  assert.ok(bad((x) => x.move && isObj(x.m) && Object.hasOwn(x.m, "path") && !Array.isArray(x.m.path)), "a path that is not a list");
+  assert.ok(bad((x) => x.read && Array.isArray(x.v.req.args) && x.v.req.args.length > 0), "daemon.pointerAt with an arg");
+  assert.ok(has((x) => x.read && x.err === "ok" && !Object.hasOwn(x.v.req, "args")), "a request without args has []");
+  // The order: for each two checks in turn, a vector that breaks both gets the first; without the first, the second.
+  for (const [op, checks] of [["daemon.movePointer", POINTER_CHECKS.slice(1)], ["daemon.pointerAt", ["bad args", "no display", "busy", "too many moves"]]]) {
+    for (let i = 0; i + 1 < checks.length; i++) {
+      const [first, second] = [checks[i], checks[i + 1]];
+      const without = (v) => { try { return errorOf({ res: daemonAnswer(v.req, worldOfVector(v), new Set([first])).res }); } catch { return null; } }; // a broken arg can stop the reference
+      assert.ok(bridge.pointerVectors.some((v) => v.req.op === op && errorOf(v) === first && without(v) === second), `${op}: ${first} before ${second}`);
+    }
+  }
+});
+
+test("C11 states the pointer at an activation (board ab-v16.70): the paths' states, the step, its waits and limits, the catch-up, the geometry and the fallback", () => {
+  for (const s of [
+    "The pointer at an activation (board ab-v16.70; the relay builds it in board ab-v16.71).",
+    "So, on Linux with one window per page, the relay has the daemon move the X pointer (C10, the daemon's own ops) along a person-shaped path, from the last point of the page under the pointer to the last point of the page that comes forward, before the window comes forward. It does this for every client.",
+    "(agent-browser `docs/superpowers/specs/2026-11-06-agent-pointer-move-design.md`, section 3) gives the reasons",
+    // The states: the probe, on, off (an older daemon) and unknown; the front page after the paths turn on.
+    "They are unknown until the first answer of the probe, `daemon.pointerAt`, which the relay sends at each link up. An answer turns them on, and gives `at`, the display's size and `views`.",
+    "`unknown op`, `wrong display` and `not connected` (an older daemon) turn them off until the next link up, and `no display` for 60 s. `busy`, `too many moves`, `disconnected` and the relay's own timer leave them unknown, and the next step that needs them probes again. Each time the paths turn on, the front page is unknown.",
+    "While the paths are off, the relay is exactly as the bullets above say: no geometry read, no wait, no catch-up and no path, and `Page.bringToFront` and `Target.activateTarget` go as above.",
+    // What it keeps.
+    "a wheel event more than 2 px from it, a child session's pointer input and touch input make it unknown",
+    "after a raise that reached its limit, and after any client's `Browser.setWindowBounds`",
+    "a tab holds a CDP button from a `mousePressed` until Chrome answered its `mouseReleased`",
+    // The step, its order and its waits.
+    "`Page.bringToFront` and `Target.activateTarget` go through it too: they wait for the chain and for their tab's gate, as an input does, and answer after the step.",
+    "1. Read the tab and its window (`tabs.get`, `windows.get`).",
+    "2. Decide. With the front page known, a page comes under the pointer when it is not the front page, or, for `Target.activateTarget`, when its tab is not active and its window is the front page's window.",
+    "With the front page unknown, the focus decides as above, and no path plays.",
+    "3. Wait and hold, only when a path can play, all within one `ACTIVATE_MAX_MS = 2000`; at the limit, no path.",
+    "no path when its tab's next call waits in the activation chain (its gate is set, or becomes set during the wait). No other page's button counts.",
+    "Wait for the end of a catch-up that runs in the front page. Then chain the front page's gate on its old gate",
+    "Last, wait for the answers of both pages' pointer input that already went to Chrome.",
+    "4. Plan.",
+    "No path when S or T is outside the front page's viewport (2 px inside its edges); none is needed when `at` is T.",
+    "sampled every 16 ms, each point clamped 2 px inside the front page's viewport, each `dt` at most 250 ms, stretched in time until no step is over 50 px, with a first step of 2 px or more",
+    "5. Play: send `daemon.movePointer`, and wait for its answer, at most its wait.",
+    "6. Record (the X records). On `ok` the answered position is the last point of both pages",
+    "On `pointer moved` the answered position is `at` and the entering page's last point, and the front page's point is unknown.",
+    "the relay reads the pointer (`daemon.pointerAt`) and records it as `at` and as the entering page's point, and after a failed path also as the front page's point",
+    "7. Bring the page forward: `tabs.update` and `windows.update`, the client's `Page.bringToFront`, or the `tabs.update` of `Target.activateTarget`. Then open the front page's gate.",
+    "8. The input goes. A press's catch-up, if any, runs inside its chain step, from step 6's record.",
+    "The limits: one `ACTIVATE_MAX_MS` for steps 1 and 2, one for step 3, 1.2 s for the reads of step 4 (the geometry's `GEOMETRY_WAIT_MS = 200`, and `daemon.pointerAt`), the path's wait (at most 3 s), 1.2 s for the read after a failed path, and one `ACTIVATE_MAX_MS` for step 7",
+    "The worst case is about 11.4 s",
+    // The catch-up and its bound per tab (review-63d B1, review-63e note E).
+    "a move more than 50 px from it, or a press or a wheel more than 2 px from it, the relay first sends CDP `mouseMoved` events (no button)",
+    "The relay decides it when the event leaves the tab's gate, against the page's point at that time.",
+    "The catch-up runs once after each X record: never between a client's own events, and never while the page holds a button.",
+    "A tab has at most `CATCH_UP_MAX_UNANSWERED = 4` catch-up moves without an answer: no catch-up starts while the tab has unanswered catch-up moves, and when a move is due while 4 wait (a page with an open dialog answers none), the catch-up stops and the client's event goes as with the paths off.",
+    "A step and a catch-up never overlap on one page.",
+    // The geometry read.
+    "one `Runtime.evaluate` in the relay's own isolated world (`Page.createIsolatedWorld` on the main frame), only for a bridge tab, one in flight per tab, with no `Page.enable` or `Runtime.enable` of the relay's own, and with C10's default wait",
+    "or a device-metrics override is in force on the tab",
+    // No path, the fallback and an older daemon (review-63e note C).
+    "When the relay sends no path, that activation is as with the paths off",
+    "(the first activation after the relay's start, after a link change, and after the paths turn on)",
+    "With an older daemon (`unknown op`, `not connected`) the paths stay off. On the Mac the relay sends no `daemon.` op.",
+    // The links from the existing text.
+    "With the paths on, the activation has the steps and the limits of the pointer at an activation (below).",
+    "With the paths on (Linux), both go through the activation step (the pointer at an activation, below).",
+  ]) assert.ok(says(C11, s), `C11 says: ${s}`);
+  // The catch-up's bound is per tab, never per catch-up (review-63e note E), and C10's per-tab limit is the 64 it protects.
+  assert.ok(!says(C11, "per catch-up"), "no bound per catch-up");
+  assert.ok(says(C11, "So the tab's 64 requests in flight (C10) never fill in front of the client's `Page.handleJavaScriptDialog`.") && K.MAX_IN_FLIGHT_PER_TAB === 64, "the 64 of C10");
+  assert.equal(endpoint.constants.ACTIVATE_MAX_MS, 2000, "the 2 s of the activation");
+  // The step's worst case: 2 + 2 + 1.2 + 3 + 1.2 + 2 s; the path's wait at most the longest move's wait.
+  const longest = PK.POINTER_START_MS + PK.POINTER_PATH_MAX_MS + PK.POINTER_KILL_MS + PK.POINTER_SLACK_MS;
+  assert.ok(longest <= 3000, "the path's wait is at most 3 s");
+  assert.equal(Math.round((3 * endpoint.constants.ACTIVATE_MAX_MS + 2 * PK.POINTER_READ_WAIT_MS + 3000) / 100) / 10, 11.4, "the worst case");
 });
 
 // ---- C11: the endpoint ----

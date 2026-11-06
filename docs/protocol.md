@@ -53,6 +53,16 @@ agentwatch in part 3. Today's relay (agent-browser main from its PR #51, before 
 the text that names it: the steps of the link up without `bridge.tabScopes` (C10, the daemon and the
 relay), and the last-window guard and the readiness of C11.
 
+The agent pointer (board task ab-v16.70; the design: agent-browser
+`docs/superpowers/specs/2026-11-06-agent-pointer-move-design.md`, board ab-v16.37, merged at
+agent-browser `6bb6838`) is in C10 and C11. When a window comes forward, the X server gives its page a
+real pointer event at the X pointer. So the daemon, which owns the agent display, moves the X pointer at
+the relay's request, along a path that the relay computes, before a window comes forward. The daemon
+answers the two ops itself (C10, the daemon's own ops), so the receiver does not change. agentwatch
+builds the daemon side in its task age-0kh.28 (aw-lead), and the relay its side in board ab-v16.71 (C11,
+the pointer at an activation). Until the daemon side ships, a `daemon.` op goes to the receiver as any
+op, the receiver answers `unknown op`, and the relay turns its paths off: it is then exactly as before.
+
 - Sender extension ID: `bpfkgknpndlpkcffmaaelkfcbpackiip`
 - Receiver extension ID: `ifhfjdmdbgbnmllffiadajepajbcdnai`
 
@@ -883,7 +893,10 @@ first document request of a new tab (below).
 - `wait` is the deadline (below). The relay always sends it.
 - The receiver ignores a request field that it does not know.
 - The daemon drops a line from the relay that is not a JSON object with `"t":"req"`, a string `id`
-  and a string `op`. It logs the line's length only.
+  and a string `op`. It also drops a line whose `id` still waits for its answer (the duplicate-id
+  check), also the `id` of a `daemon.` op that runs. It logs the line's length only. Then it answers
+  a `daemon.` op itself, before its link checks (`not connected`, `disconnected`): the daemon's own
+  ops, below.
 - The receiver checks a request in this order. A request that fails a check never reaches Chrome.
   1. The op: else `unknown op`.
   2. The args: their count, then the kind of each arg; else `bad args`.
@@ -981,12 +994,17 @@ first document request of a new tab (below).
 `{"t":"res","ch":"bridge","id":"<id>","ok":false,"error":"<text>"}`.
 
 - `data` is the op's result: an object, a list or `null`. It is never left out.
+- An error `res` of a `daemon.` op may also carry `"data"` (an object):
+  `{"t":"res","ch":"bridge","id":"<id>","ok":false,"error":"<text>","data":{...}}`. A reader ignores
+  `data` on an error that it does not know. The daemon sends `data` only with `pointer moved` (the
+  daemon's own ops, below); no other error `res` has `data`.
 - The receiver's error texts: `unknown op`, `bad args`, `bad wait`, `not an agent tab`,
   `not attached`, `no list for this scope` (`tabs.create`, `windows.create`: each tab's scope,
   below), `timeout`, `too large` (a res above `MAX_RESULT`), and the text of a `chrome.*` error as
   Chrome gives it (for example `No tab with id: 7.`).
-- The relay gets exactly one res for each request: the receiver's, or one from the daemon. The
-  daemon's answers have the same shape,
+- The relay gets exactly one res for each request: the receiver's, or one from the daemon. A `daemon.` op
+  gets the daemon's own answer (the daemon's own ops, below), or none when the relay ends or the daemon
+  stops. The daemon's answers have the same shape,
   `{"t":"res","ch":"bridge","id":"<id>","ok":false,"error":"<text>"}`, with these texts:
   - `not connected`: no receiver with channel `bridge` is connected. The daemon answers at once.
   - `disconnected`: the link dropped while the request waited or ran.
@@ -1012,7 +1030,8 @@ first document request of a new tab (below).
   `agent/wire.js`).
 
 **The ops.** An arg name with `?` is optional. The default wait is the deadline of a request without
-`wait`.
+`wait`. For the two `daemon.` ops (the last rows) the cell gives the wait that the relay sends and
+the receiver has no part (the daemon's own ops, below).
 
 | Op | Args | Result | Default wait | What the receiver does |
 | --- | --- | --- | --- | --- |
@@ -1036,6 +1055,8 @@ first document request of a new tab (below).
 | `bridge.attachNew` | `[on]` | `null` | `WAIT_DEFAULT_MS` | Turns the eager attach on or off (the hold, below). |
 | `bridge.release` | `[tabId]` | `null` | `WAIT_DEFAULT_MS` | Ends the hold of the tab (below). A tab with no hold also answers `null`. |
 | `bridge.tabScopes` | `[]` | `[{"tabId":<id>,"scope":"<scope>"}]` | `WAIT_DEFAULT_MS` | The receiver's own op (board ab-v16.41): every entry of the tab-to-scope map at the moment of the answer (each tab's scope, below). |
+| `daemon.pointerAt` | `[]` | `{"x":<int>,"y":<int>,"width":<int>,"height":<int>,"views":<int>}` | `POINTER_READ_WAIT_MS` | Nothing: the daemon answers it itself and never forwards it (board ab-v16.70; the daemon's own ops, below). A receiver that gets one answers `unknown op`. |
+| `daemon.movePointer` | `[move]` | `{"x":<int>,"y":<int>,"views":<int>}` | per request (below) | Nothing: the daemon answers it itself and never forwards it (board ab-v16.70; the daemon's own ops, below). A receiver that gets one answers `unknown op`. |
 
 - `bridge.tabScopes` answers one item for each tab that has a scope in the map, in no set order: a
   tab of no scope and a marked tab are not in it. The receiver sends its events in Chrome's order,
@@ -1108,14 +1129,17 @@ that tab still reach Chrome in the relay's order.
   MCP leaves the dialog open while its model decides. `Runtime.evaluate` and
   `Runtime.callFunctionOn` with `awaitPromise` wait for a promise. So a CDP command fails only after
   10 minutes.
-- The relay sends each op's default wait.
+- The relay sends each op's default wait. The two `daemon.` ops are the exception: the relay sends
+  `POINTER_READ_WAIT_MS` for `daemon.pointerAt` and a wait per request for `daemon.movePointer`, and the
+  daemon uses neither (the daemon's own ops, below).
 - The receiver answers `timeout` when an op runs `wait` ms.
 - The daemon counts from when it read the request. A request that waited q ms in the daemon's queue
   (`MAX_BYTES_IN_FLIGHT`, below) goes to the receiver with `wait` minus q. When that is 0 or less,
   the daemon answers `timeout` and does not send the request.
 - The daemon answers `timeout` itself when no res came `wait` + `WAIT_SLACK_MS = 2000` ms after it
   read the request. It then ignores the receiver's late res.
-- The relay waits for the res: the daemon always sends one.
+- The relay waits for the res: the daemon always sends one. For a `daemon.` op the relay's own timer
+  ends the wait (the daemon's own ops, below).
 - The waits of channel `main` stay as in C4 (10 s and 120 s).
 
 **What stops a handler.**
@@ -1172,13 +1196,15 @@ that tab still reach Chrome in the relay's order.
 - In flight, two limits, so that long waits on one tab never keep another tab back:
   - `MAX_IN_FLIGHT_PER_TAB = 64`, in the relay. The key of a request is its tab: the tab id of
     `debugger.attach`, `debugger.detach`, `debugger.sendCommand` (its `target`), `tabs.get`,
-    `tabs.update`, `tabs.remove` and `bridge.release`. Every other op has one shared key. The relay
-    keeps at most 64 requests in flight for each key. The next ones of that key wait in the relay,
-    in order.
+    `tabs.update`, `tabs.remove` and `bridge.release`. `daemon.movePointer` and `daemon.pointerAt`
+    have the key `pointer` of their own, so the shared key's queue never holds them back. Every
+    other op has one shared key. The relay keeps at most 64 requests in flight for each key. The
+    next ones of that key wait in the relay, in order.
   - `MAX_BYTES_IN_FLIGHT = 268435456` (256 MiB), in the daemon. The daemon sends a request when the
     bytes of the requests in flight (sent and not answered) and its own bytes are at most this, or
     when no request is in flight. The next ones wait in the daemon, in order. This limits the memory
-    of the daemon and of the receiver.
+    of the daemon and of the receiver. A `daemon.` op is outside this limit and the daemon's queue:
+    it never goes to the receiver.
 - The receiver sets no bound of its own (C4).
 
 **The hold of a new tab.** Measured in stage 2 on Chromium 156 (the live test's case `hold`,
@@ -1340,6 +1366,123 @@ hold it; the last bullet gives the numbers and what the relay does about it.
     link up, and the sweep still closes it at its scope's end (C5).
 - No side logs the args, the results or the event params of the bridge: they can contain page
   content and sign-in values. A log line contains an op, a CDP method, a tab id, a size or a time.
+  No side logs a point of a `daemon.` op (the daemon's own ops, below).
+
+**The daemon's own ops (board ab-v16.70).** On Linux the daemon owns the unit's Xvfb, the agent
+display. At the relay's request it moves the X pointer along a path that the relay computed (C11, the
+pointer at an activation), or reads the pointer's position. No agent makes an X call: only the relay,
+the daemon's own child, writes these requests, on its standard output. The reasons are in the agent
+pointer design (agent-browser `docs/superpowers/specs/2026-11-06-agent-pointer-move-design.md`,
+sections 2 and 4).
+
+- The prefix `daemon.` is reserved: an op that starts with it is an op that the daemon answers
+  itself. The daemon never forwards a `daemon.` op to the receiver, and it answers an unknown one
+  `unknown op` itself. The ops are `daemon.pointerAt` and `daemon.movePointer`.
+- Its place in the daemon's handling of a relay line: after the parse and the duplicate-id check (the
+  requests, above), before the link checks, and outside the daemon's queue and
+  `MAX_BYTES_IN_FLIGHT`. So the daemon answers a `daemon.` op also while the link is down, and no
+  bridge request waits behind it. The daemon does not use its `wait`.
+- The X calls run in a task of their own, one at a time, off the read lock of the relay's lines, so no
+  relay line waits for them. Each call runs `xdotool` by its absolute path, with no shell and no
+  `--sync`, in an environment of only `DISPLAY=:<N>` and `XAUTHORITY=<the unit's X auth file>`. Its
+  commands come from the checked integers only: absolute pointer moves and reads of the pointer,
+  never a button, a key or a read of pixels. The daemon reads a failure from the exit code, not from
+  standard error; a `getmouselocation` whose `x` and `y` it cannot parse is a failure too.
+- The display is the unit's own Xvfb, only while the unit runs. Its size is the running Xvfb's: the
+  daemon records it in `unit.json` when it starts the Xvfb, and reads it from X once for an adopted
+  unit; never from the current config. The Mac has no unit Xvfb.
+- Only the relay's link reaches the ops: no gateway route, CLI verb, socket or receiver message. No
+  client method of C11 reaches a `daemon.` op.
+- `daemon.pointerAt`, args `[]`: one `xdotool getmouselocation`, with a timeout of
+  `POINTER_READ_MS = 1000`. The answer, `{"x":<int>,"y":<int>,"width":<int>,"height":<int>,"views":<int>}`,
+  gives the pointer's position, the running Xvfb's size, and `views`, the count of the operator's
+  live-view inputs (0 while there is no live view). The relay sends it as a probe at each link up, and
+  when it does not know the pointer's place (C11).
+- `daemon.movePointer`, args `[move]`. `move` is an object with exactly these keys:
+
+  ```json
+  {"at":{"x":812,"y":431},"from":{"x":640,"y":410},"path":[{"x":652,"y":405,"dt":16},{"x":671,"y":398,"dt":16},{"x":700,"y":402,"dt":33}],"width":1280,"height":900,"notAfter":5839201300,"views":0}
+  ```
+
+  - `at`: the X pointer's place as the relay last learned it (its last `ok` answer, `pointer moved`
+    data or `daemon.pointerAt` answer), `{x, y}` in `0..width-1` and `0..height-1` of the request's
+    `width` and `height`. A relay that does not know the place sends `daemon.pointerAt` first.
+  - `from`: the path's start, `{x, y}`, the point where the page under the pointer last saw it. The
+    daemon does not play it: the first step is measured from it. The first move warps the pointer
+    from `at`, which no page sees.
+  - `path`: 1 to `POINTER_PATH_MAX_POINTS = 120` points `{x, y, dt}` (120 is the parse bound). `dt`
+    is the wait in ms before that point's move, from `POINTER_DT_MIN_MS = 16` to
+    `POINTER_DT_MAX_MS = 250`. The sum of the `dt` is at most `POINTER_PATH_MAX_MS = 1500`, so a path
+    holds at most 93 points (93 x 16 = 1488 ms). Each step (from `from` to the first point, then from
+    point to point) is at most `POINTER_STEP_MAX_PX = 50` px, so that two steps that Chrome merges
+    into one frame stay within 100 px (the jump rule of agent-browser's anti-detect probe).
+  - `width`, `height`: the screen size that the relay used (the pages' `screen.width` and
+    `screen.height`), 1 or more.
+  - `notAfter`: whole ms on `CLOCK_MONOTONIC`, which every process of the box shares, so a step of the
+    wall clock does not change it. The relay reads it as `process.hrtime.bigint() / 1000000n`
+    (Linux), never with `performance.now()` (whose origin is the process's own start), and sends its
+    clock plus `POINTER_START_MS = 300`. The daemon reads its clock as `time.monotonic_ns() // 1000000`
+    (injected for its tests). The daemon starts no path after `notAfter`.
+  - `views`: the `views` that the relay last read, an integer of 0 or more (`not now`, below).
+
+  Each number of `move` is an integer: a JSON number with no fraction part (`true` and `false` are no
+  numbers). A distance is Euclidean: two points are at most `d` px apart when
+  `dx*dx + dy*dy <= d*d`, in integers.
+- The checks, in this order. The first check that fails gives the answer, and the daemon makes no
+  later X call. `no display` for a failed or killed X call comes at that call: the read (of either
+  op) or the play.
+
+| Text | Op | When | The pointer |
+| --- | --- | --- | --- |
+| `unknown op` | both | an unknown `daemon.` op; also the answer of a daemon from before this build, whose receiver answers it | not moved |
+| `bad args` | both | the args are not exactly the fields above (for `daemon.pointerAt`: not `[]`); a limit of the path is broken; `at` is outside `0..width-1` and `0..height-1` of the request's `width` and `height`; or `notAfter` is negative, not an integer, or more than `POINTER_AHEAD_MAX_MS = 2000` ahead of the daemon's clock | not moved |
+| `no display` | both | no unit Xvfb (also on the Mac) or no `xdotool`; or an X call failed or was killed | place unknown |
+| `wrong display` | move | `width` and `height` are not the running Xvfb's size | not moved |
+| `out of bounds` | move | `from` or a point is outside `0..width-1` and `0..height-1` | not moved |
+| `busy` | both | another X call of the daemon runs (also a playing path) | not moved |
+| `not now` | move | the live view exists, and `views` is not its current count or the operator's last live-view input is less than `POINTER_VIEW_QUIET_MS` old; or that input killed the playing path | not moved, or place unknown after a kill |
+| `too many moves` | both | `POINTER_PATHS_PER_S = 5` plays (move) or `POINTER_READS_PER_S = 10` reads (read) started in the last second | not moved |
+| `pointer moved` | move | the read before the play is more than `POINTER_NEAR_PX` px from `at` (with `data`) | not moved by the op |
+| `too late` | move | the daemon's clock is past `notAfter` when the play would start, after the read | not moved |
+
+- The play. When the checks without an X call pass, the daemon reads the pointer
+  (`getmouselocation`, `POINTER_READ_MS`). When the read is more than `POINTER_NEAR_PX = 2` px from
+  `at`, someone else moved the pointer (the live view, another program on the display): the daemon
+  plays nothing and answers `pointer moved` with `data` `{"x":<int>,"y":<int>,"views":<int>}`, the
+  read position and the current `views`. The daemon keeps no state of the place. Else it checks
+  `notAfter` against its clock after the read, so a slow read ends in `too late`, never in a late
+  play. Then it runs one script on `xdotool -` (standard input, one command a line; an argv only if
+  the live check finds that standard input fails): `sleep <dt/1000>` (seconds) and
+  `mousemove <x> <y>` for each point, then `getmouselocation`. Its timeout is the path's total time
+  plus `POINTER_KILL_MS = 1000`; at the timeout the daemon kills the call and answers `no display`.
+  The `ok` answer comes after the last point: `{"x":<int>,"y":<int>,"views":<int>}`, the position that
+  the script's `getmouselocation` read. Board ab-v16.71's live check measures how well
+  `xdotool sleep` keeps `dt`, and its numbers come here.
+- The counts of `too many moves`: a play counts when it starts, and a read of `daemon.pointerAt` when its
+  X call starts. The read before a play does not count, and the two counts are apart: a play counts only
+  against the plays, and a read only against the reads. A refusal does not count.
+- The kills. The daemon kills a playing path at a relay end (the relay's epoch changes: no answer),
+  at a unit stop (`no display`; the kill comes before the unit's stop steps), at a link change
+  (`disconnected`), at its own stop (no answer: the relay's standard input ends), and at the
+  operator's live-view input (`not now`). After a kill or any failed X call the pointer's place is
+  unknown.
+- The live view, when it exists (it is not built yet; its rows stay): `not now` for an old `views` and
+  for `POINTER_VIEW_QUIET_MS = 10000` after the operator's last live-view input, and that input kills
+  a playing path.
+- The waits and the key. `daemon.pointerAt` has the wait `POINTER_READ_WAIT_MS = 1200`.
+  `daemon.movePointer` has, per request, `POINTER_START_MS` plus the path's total time plus
+  `POINTER_KILL_MS` plus `POINTER_SLACK_MS = 200` (1565 ms for the example above). The relay sends
+  that `wait`, and waits at most that long with its own timer: then it goes on with no answer, takes
+  the place as unknown, and drops a late answer. No path can still play then: it started at the
+  latest at `notAfter`, and the daemon killed it `POINTER_KILL_MS` after its total time. Both ops have
+  the in-flight key `pointer` (parts and sizes, above).
+- The logs. The daemon logs the op, the text and a count: one line for each text a minute, never a
+  point. The relay logs each text at most once in 5 minutes.
+- The vectors: `daemonOps`, `pointerConstants`, `pointerWorld` and `pointerVectors` in
+  `test/vectors/bridge.json`, and the bad requests b49 and b50 (a `daemon.` op at the receiver gets
+  `unknown op`). Each pointer vector gives the daemon's state, the request, the answer, whether the
+  daemon reads the pointer, and the lines that it plays. The daemon's and the relay's tests use the
+  same vectors.
 
 **Each tab's scope (board ab-v16.23).** The receiver keeps the scope of each tab, so that each tab is
 blocked by its own list (C5; the per-scope design, sections 4 and 5).
@@ -2143,7 +2286,8 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
   the input goes on. After the limit, that activation sends no `tabs.update` and no
   `windows.update`; one already sent still runs. When an activation fails, the relay logs the error,
   and the input goes on. Every other input (a move, a wheel event, a release, a key-up) needs no
-  activation. On the Mac every input goes to Chrome at once.
+  activation. On the Mac every input goes to Chrome at once. With the paths on, the activation has
+  the steps and the limits of the pointer at an activation (below).
 - The reason for the activation: on Linux Chrome raises a window for a press in it, but not for a
   key. A key into a window that does not have the focus gives its page the focus while another page
   keeps it.
@@ -2158,7 +2302,8 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
 - On Linux and on the Mac, `Target.activateTarget` only selects the tab in its window (`tabs.update`
   with `{"active":true}`). `Page.bringToFront` goes to Chrome, which selects the tab and focuses its
   window. On Linux the live test measured that `Page.bringToFront` focuses the page's window; it
-  measured no tab switch.
+  measured no tab switch. With the paths on (Linux), both go through the activation step (the pointer
+  at an activation, below).
 - A popup stays where the site opened it: a tab in the opener's window (`target=_blank`, or
   `window.open` with no features), or a window of its own. The relay never moves a tab to another
   window.
@@ -2170,6 +2315,101 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
   `Emulation.setFocusEmulationEnabled` reached Chrome. An activation took a median of 16 ms
   (`tabs.get` 3 ms, `windows.get` 13 ms), and `windows.update` 29 ms more when the window came
   forward.
+- The pointer at an activation (board ab-v16.70; the relay builds it in board ab-v16.71). When a
+  window comes forward, the X server gives its page a real pointer event, with no movement, at the X
+  pointer, and CDP input never moves the X pointer. So, on Linux with one window per page, the relay
+  has the daemon move the X pointer (C10, the daemon's own ops) along a person-shaped path, from the
+  last point of the page under the pointer to the last point of the page that comes forward, before
+  the window comes forward. It does this for every client. The agent pointer design (agent-browser
+  `docs/superpowers/specs/2026-11-06-agent-pointer-move-design.md`, section 3) gives the reasons.
+  - The paths are on, off or unknown. They are unknown until the first answer of the probe,
+    `daemon.pointerAt`, which the relay sends at each link up. An answer turns them on, and gives `at`,
+    the display's size and `views`. `unknown op`, `wrong display` and `not connected` (an older daemon)
+    turn them off until the next link up, and `no display` for 60 s. `busy`, `too many moves`,
+    `disconnected` and the relay's own timer leave them unknown, and the next step that needs them probes
+    again. Each time the paths turn on, the front page is unknown. While the paths are off, the relay is
+    exactly as the bullets above say: no geometry read, no wait, no catch-up and no path, and
+    `Page.bringToFront` and `Target.activateTarget` go as above.
+  - What the relay keeps, in memory. Each page's last point: the point that Chrome last saw in it. A
+    client's `Input.dispatchMouseEvent` or `Input.dispatchDragEvent` on the tab's own session sets it
+    when it is sent; a wheel event more than 2 px from it, a child session's pointer input and touch
+    input make it unknown. The pointer's place `at`, from the daemon's answers: unknown at the
+    relay's start, at a link change, and after a failed or killed path or the relay's timer. The front
+    page, the page under the pointer: the page of the last activation step, or a new tab that comes on
+    top; unknown at the relay's start, at a link change, at its `tabs.onRemoved` or
+    `tabs.onReplaced`, after a raise that reached its limit, and after any client's
+    `Browser.setWindowBounds`. The held buttons: a tab holds a CDP button from a `mousePressed` until
+    Chrome answered its `mouseReleased`, or until the tab closes, the link changes, the client's
+    connection closes, or the tab is detached.
+  - The activation step, with the paths on, one step at a time for all connections.
+    `Page.bringToFront` and `Target.activateTarget` go through it too: they wait for the chain and for
+    their tab's gate, as an input does, and answer after the step.
+    1. Read the tab and its window (`tabs.get`, `windows.get`).
+    2. Decide. With the front page known, a page comes under the pointer when it is not the front
+       page, or, for `Target.activateTarget`, when its tab is not active and its window is the front
+       page's window. The front page decides, not the focus, and the raise sends `windows.update`
+       with `{"focused":true}` also to a focused window. With the front page unknown, the focus
+       decides as above, and no path plays. A path can play when a page comes under the pointer and
+       the relay knows both last points: S of the front page and T of the page that comes forward.
+    3. Wait and hold, only when a path can play, all within one `ACTIVATE_MAX_MS = 2000`; at the
+       limit, no path. When the front page holds a button, wait for its release; no path when its
+       tab's next call waits in the activation chain (its gate is set, or becomes set during the
+       wait). No other page's button counts. Wait for the end of a catch-up that runs in the front
+       page. Then chain the front page's gate on its old gate, so that its later calls wait behind the
+       step in order. Last, wait for the answers of both pages' pointer input that already went to
+       Chrome.
+    4. Plan. Read both geometries (below) and, when it is unknown, `at`. No path when S or T is
+       outside the front page's viewport (2 px inside its edges); none is needed when `at` is T. The
+       path follows agent-browser's `src/input.ts` generator from S to T, sampled every 16 ms, each
+       point clamped 2 px inside the front page's viewport, each `dt` at most 250 ms, stretched in
+       time until no step is over 50 px, with a first step of 2 px or more; when S is T and `at` is
+       not, a short out-and-back of 2 to 4 px. No path when it does not fit C10's limits.
+    5. Play: send `daemon.movePointer`, and wait for its answer, at most its wait.
+    6. Record (the X records). On `ok` the answered position is the last point of both pages
+       (unknown for the front page when it is outside its viewport). With no path because `at` is T:
+       T. On `pointer moved` the answered position is `at` and the entering page's last point, and
+       the front page's point is unknown. After a failed path (`no display`, `not now` after a kill,
+       the relay's timer), and in each other step that brings a page under the pointer with no path,
+       the relay reads the pointer (`daemon.pointerAt`) and records it as `at` and as the entering
+       page's point, and after a failed path also as the front page's point; a failed read leaves
+       them unknown. The entering page is the front page now.
+    7. Bring the page forward: `tabs.update` and `windows.update`, the client's `Page.bringToFront`,
+       or the `tabs.update` of `Target.activateTarget`. Then open the front page's gate.
+    8. The input goes. A press's catch-up, if any, runs inside its chain step, from step 6's record.
+
+    The limits: one `ACTIVATE_MAX_MS` for steps 1 and 2, one for step 3, 1.2 s for the reads of
+    step 4 (the geometry's `GEOMETRY_WAIT_MS = 200`, and `daemon.pointerAt`), the path's wait (at most
+    3 s), 1.2 s for the read after a failed path, and one `ACTIVATE_MAX_MS` for step 7 (after it, no
+    `tabs.update` and no `windows.update`, as above). The worst case is about 11.4 s; the normal case
+    is the path's time (0.3 to 1.5 s) plus some 30 to 60 ms.
+  - The catch-up keeps each page's pointer events continuous. When a client's next
+    `Input.dispatchMouseEvent` or `Input.dispatchDragEvent` for a page whose point is an X record is a
+    move more than 50 px from it, or a press or a wheel more than 2 px from it, the relay first sends CDP
+    `mouseMoved` events (no button) along a path of the same generator from the recorded point to the
+    event's point, with C10's path limits (else no catch-up). The relay decides it when the event leaves
+    the tab's gate, against the page's point at that time. For a move, the client's move is the path's
+    last step; for another event, the path ends with a move at its point. The catch-up runs once after
+    each X record: never between a client's own events, and never while the page holds a button. It is a
+    step of the tab's gate: the client's event and the tab's later calls wait behind it. A tab has at
+    most `CATCH_UP_MAX_UNANSWERED = 4` catch-up moves without an answer: no catch-up starts while the tab
+    has unanswered catch-up moves, and when a move is due while 4 wait (a page with an open dialog
+    answers none), the catch-up stops and the client's event goes as with the paths off. So the tab's 64
+    requests in flight (C10) never fill in front of the client's `Page.handleJavaScriptDialog`. A step
+    and a catch-up never overlap on one page.
+  - The geometry read: one `Runtime.evaluate` in the relay's own isolated world
+    (`Page.createIsolatedWorld` on the main frame), only for a bridge tab, one in flight per tab, with
+    no `Page.enable` or `Runtime.enable` of the relay's own, and with C10's default wait. The relay
+    stops waiting after `GEOMETRY_WAIT_MS` and drops the late answer, and no client sees the world's
+    events. A geometry is not usable when the ratio or the scale is not 1, the window is minimized,
+    the screen size is not the display's, a read is in flight, or a device-metrics override is in
+    force on the tab.
+  - When the relay sends no path, that activation is as with the paths off: the paths are off or unknown;
+    the front page, a last point or `at` is unknown (the first activation after the relay's start, after
+    a link change, and after the paths turn on); a geometry is not usable; S or T is outside the front
+    page's viewport; the path does not fit the limits; step 3 found a gate or reached its limit; or the
+    daemon refused. The page then enters at the X pointer: one unexplained position change at most, never
+    a jump. With an older daemon (`unknown op`, `not connected`) the paths stay off. On the Mac the relay
+    sends no `daemon.` op.
 
 **Permissions and content settings.**
 
