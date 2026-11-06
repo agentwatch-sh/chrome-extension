@@ -37,10 +37,10 @@ The cases, in order:
 - flood: review-30b's case. The first marked tab shows its host (the operator's open page); a tab of
   scope D registers a worker on D's site (listed), and a tab of scope A one on a canary host of A's
   list. Two more marked tabs open pages with FLOOD_FRAMES frames each, of distinct hosts: the
-  record reaches its bound. The open page's worker and the listed workers stay. A set_scopes ends
-  D's list while the flood is open: the open page's worker stays (the list end's removal excludes
-  it); the canary shows whether that removal of every worker ran (a listed origin that the bound
-  evicted loses its worker there: the stated cost). The guard's times before and during the flood
+  record reaches its bound (it refuses the later origins; they wait in memory). The open page's
+  worker and the listed workers stay. A set_scopes ends D's list while the flood is open: D's
+  worker goes, and the open page's worker and the canary of A's list stay (the bound evicts no
+  recorded origin). The guard's times before and during the flood
   (review-30c B1): a client's Page.navigate of scope A's tab to a host with no worker (the blocked
   notice) and to the open page's host (its worker's page: commit to about:blank); the check's
   limits: notice at most FLOOD_NOTICE_MS (250), worker's page at most FLOOD_BLANK_MS (150). Then
@@ -1212,9 +1212,8 @@ def flood_case(a, op1, out):
     time.sleep(3)
     end = {"open_page": alive_marked(op1, FREE, "/flood-end"), "canary_a": alive_scope(c, CANARY, "/flood-end")}
     out["flood"]["list_end"] = end
-    check(f"flood: a set_scopes ends D's list while the flood is open: the open page's worker stays ({end['open_page']}); the canary of A's list: {end['canary_a']} "
-          "(network: the list end's removal of every worker ran and the bound had evicted the canary, the stated cost)",
-          ended and end["open_page"] == "worker", **end)
+    check(f"flood: a set_scopes ends D's list while the flood is open: the open page's worker stays ({end['open_page']}) and the canary of A's list stays ({end['canary_a']})",
+          ended and end["open_page"] == "worker" and end["canary_a"] == "worker", **end)
     phase(a, "flood-listend", ((SITED, "sw-d", NFLOOD_T, "own"),), out, after=True)
     left = leave(op3, "/leave-flood1") is not None and leave(op4, "/leave-flood2") is not None
     time.sleep(5)

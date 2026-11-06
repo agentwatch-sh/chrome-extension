@@ -143,7 +143,7 @@ example a timing run of another receiver with `RECEIVER`),
 each case, the logs, the screenshots and the screencast frames. The script deletes nothing.
 
 Result on taylor (2026-11-06, Chromium 156.0.8078.79, receiver 0.3.5 of the branch
-`ab-v16.74-sw-remove` after review-30c, `DISPLAY_N=142`, the defaults): 51 of 51 checks passed.
+`ab-v16.74-sw-remove` after review-30d, `DISPLAY_N=142`, the defaults): 51 of 51 checks passed.
 
 | Case | Trials | Worker's page committed (seen by the client) | Requests to the host |
 | --- | --- | --- | --- |
@@ -154,28 +154,28 @@ Result on taylor (2026-11-06, Chromium 156.0.8078.79, receiver 0.3.5 of the bran
 | after the leave, cached signed-in page | 40 | 0 | 0 |
 | frame: the host in a second marked tab's frame | 10 | 9 | 0 |
 | frame: after that page left | 10 | 0 | 0 |
-| race: `Page.navigate` 14 to 15 ms after the leave's request | 4 | 4 | 0 |
+| race: `Page.navigate` 14 to 17 ms after the leave's request | 4 | 4 | 0 |
 | race: 100 ms or 300 ms after it | 8 | 0 | 0 |
 | error: after a leave for an error page | 10 | 0 | 0 |
-| session: scope C's list in force | 10 | 10 | 0 |
+| session: scope C's list in force | 10 | 9 | 0 |
 | session: after the `set_scopes` that ended it | 10 | 0 | 0 |
 | flood: D's site after the `set_scopes` that ended D's list | 10 | 0 | 0 |
 | flood: the open page's host after the flood and the leave | 10 | 0 | 0 |
 
 Every trial ended at `about:blank` with one correct `blocked`. Before the leave, the worker's page
-stayed 22 to 44 ms from its commit to `about:blank`; the client read every page that committed (the
+stayed 22 to 59 ms from its commit to `about:blank`; the client read every page that committed (the
 title event and its init script). The case `site`: the second marked tab's new frames of
 `www.nolist3.localhost` got the frame's worker in 3 of 3 before and 3 of 3 after the first tab left
 the other origin of the site; after the second tab left the site too, the next frame went to the
-network. The case `flood` (1200 frames in 30 s): the open page's worker, D's listed worker and the
+network. The case `flood` (1200 frames in 22 s): the open page's worker, D's listed worker and the
 canary on A's list answered before, during the flood and after one more new origin; at D's list end
-the open page's worker stayed and the canary went to the network (the bound had evicted it: C5's
-residue (3)). The guard's times (a client's `Page.navigate`, 5 each): before the flood, the blocked
-notice 21 to 27 ms after the command and the worker's page 21 to 33 ms from its commit to
-`about:blank`; during the flood, 26 to 31 ms and 20 to 39 ms (limits 250 ms and 150 ms). With only
-`Page.enable` (`READERS=0 CASES=flood`, review-30c's method), during the flood: this head 25 to 29 ms
-and 25 to 33 ms; receiver 0.3.4 (`RECEIVER` = main 8a3b66f's `agent/`) 26 to 40 ms and 19 to 24 ms.
-After the leave, the marked tab's next navigation to the host was a network request (no worker).
+the open page's worker and the canary stayed (the bound refuses and evicts no recorded origin). The
+guard's times (a client's `Page.navigate`, 5 each): before the flood, the blocked notice 22 to 26 ms
+after the command and the worker's page 24 to 29 ms from its commit to `about:blank`; during the
+flood, 29 to 39 ms and 22 to 31 ms (limits 250 ms and 150 ms). With only `Page.enable`
+(`READERS=0 CASES=flood`, review-30c's method), one run after the other, during the flood: this
+head 28 to 39 ms and 17 to 40 ms; receiver 0.3.4 (`RECEIVER` = main 8a3b66f's `agent/`) 26 to 91 ms
+and 22 to 51 ms. After the leave, the marked tab's next navigation to the host was a network request (no worker).
 
 ## What the run sets up
 

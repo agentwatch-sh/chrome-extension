@@ -2,7 +2,7 @@
 // bounded call, and the removal of the workers of each recorded origin that no
 // list covers and whose site no marked tab shows (board ab-v16.74; the
 // operator's answer ab-214: "Remove such a site's worker when your tab leaves
-// it"; review-30, review-30b and ab-lead's decisions).
+// it"; review-30, -30b, -30c, -30d and ab-lead's decisions).
 //
 // A site's service worker answers a navigation before DNR sees it. A worker
 // that the operator's marked tab ("*") registered for a host on no list
@@ -15,18 +15,20 @@
 //   chrome.storage.session, one key per origin ("worker:<origin>"), so a worker
 //   that starts again knows it; the start's one read of the copy (tabmap.js)
 //   gives it back. At most RECORD_MAX origins (the bound, below).
-// - The check: the receiver reads the frames of each marked tab
+// - The check: the receiver reads the frames of the marked tabs
 //   (webNavigation.getAllFrames; a page in the back/forward cache or one that
-//   is going shows nothing; an origin committed during that read counts as
-//   shown). It removes the workers of each recorded origin that no list of
-//   the last applied set_scopes covers (the lists at the removal, not at the
-//   check's start) and whose site no marked tab shows in any frame (the site
-//   rule): browsingData.remove({origins}, {serviceWorkers: true}); the
-//   origins leave the record. Chrome's origin filter removes the origin's own
-//   worker and every partitioned worker whose top-level site is the origin's
-//   site, so the site rule keeps the workers that the operator's open pages of
-//   that site use. A listed origin stays recorded: the set_scopes that takes it
-//   off every list removes it.
+//   is going shows nothing) and keeps the last read of each tab: it reads a
+//   tab again only after an event of its frames (the version is taken before
+//   the read). The shown sites are those of these reads and of the marked
+//   tabs' commits during the running check, never the record's. It removes
+//   the workers of each recorded or waiting origin that no list of the last
+//   applied set_scopes covers and whose site no marked tab shows in any frame
+//   (the site rule): browsingData.remove({origins}, {serviceWorkers: true}),
+//   in calls of at most SLICE origins; the origins leave the record. Chrome's
+//   origin filter removes the origin's own worker and every partitioned worker
+//   whose top-level site is the origin's site, so the site rule keeps the
+//   workers that the operator's open pages of that site use. A listed origin
+//   stays: the set_scopes that takes it off every list removes it.
 // - The site: the scheme and the last two labels of the host (an IP address
 //   or a host of one or two labels as it is). The receiver has no public
 //   suffix list, so this is the registrable domain or wider (two labels under
@@ -36,28 +38,25 @@
 //   of any tab, a marked tab's close or replace, a tab that loses the mark or
 //   gets it at tabs.onCreated or tabs.onReplaced, each set_scopes (after its
 //   answer), the worker's start (no tab is marked then: the marks have no
-//   copy), and the follow-up check RECHECK_MS after a removal (a page can
-//   register its worker after the check of its own commit). One check runs at
-//   a time; the events while one runs start one more after it.
+//   copy), and the follow-up check after a removal (a page can register its
+//   worker after the check of its own commit; one timer at a time). One check
+//   runs at a time; the events while one runs start one more after it.
 // - The limits: each frame read and each removal has REMOVAL_WAIT_MS. A read
 //   that fails or comes late removes nothing (a shown origin could break the
 //   operator's open page); a removal that fails or comes late keeps its
 //   origins. Each logs one line (no origin), and the next event's check tries
-//   again.
-// - The bound (review-30b B1; ab-lead's decision: no page content can make
-//   the receiver remove a worker of a site that a marked tab shows, or of an
-//   origin that a list covers while that list is in force). At RECORD_MAX a
-//   new origin evicts the oldest recorded origin that no list covers and whose
-//   site no marked tab shows, else the oldest listed origin whose site no
-//   marked tab shows. It never evicts an origin whose site a marked tab shows.
-//   An evicted origin, and a new origin that finds no room, get their own
-//   check at the next check: the workers go unless a list covers the origin
-//   or a marked tab shows its site. A listed one keeps its list entries: at
-//   the end of one of them, one removal of every worker that excludes the
-//   origins that the marked tabs show, the origins of their sites and the
-//   listed origins of the record. A new origin of a shown site that finds no
-//   room is not recorded (the residue). A removal of every worker comes only
-//   from a list's end.
+//   again. Every loop of a check pauses (one task) after SLICE items, so
+//   Chrome's queued events (the guard's) run between its parts.
+// - The bound (ab-lead's decisions after review-30b and review-30d: no page
+//   content can make the receiver remove a worker of a site that a marked tab
+//   shows, or of an origin that a list covers while that list is in force; a
+//   simple bound): at RECORD_MAX the record refuses a new origin, and never
+//   evicts one. A refused origin waits in memory (the pending set, at most
+//   pendingMax) with the record's rules. Beyond that, a listed origin keeps
+//   its list entries: at the end of one of them, one removal of every worker
+//   that excludes the origins that the marked tabs show, the origins of their
+//   sites and the listed origins; an origin on no list is the residue. A
+//   removal of every worker comes only from a list's end.
 //
 // C5's own worker removal of a set_scopes (allowlist.js: every origin) uses
 // the same bounded call; neither waits for the other or fails the other.
