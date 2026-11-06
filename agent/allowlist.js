@@ -5,20 +5,23 @@
 //    the reference of the checks of a new entry, before the sweep's query.
 // 2. The rule update: rule 5 (with the removal of the old ids 2 and 4) and
 //    every scope rule, from the map. A failure fails closed.
-// 3. The worker removal, when C5 needs it.
+// 3. The worker removal, when C5 needs it (workers.js: the bounded call that
+//    the removal at a marked tab's leave uses too).
 // 4. One item of the removal queue: the closing rule and, for an applied
 //    object, the sweep. A tab of the sweep that the item does not close
 //    leaves the map and the copy, and joins the orphan set.
 // 5. The copy's key removals of the sweep (and the ones that failed
 //    before), each within REMOVAL_WAIT_MS.
 // The answer comes after all of them: {rules, closed, refused}, or the
-// first failure after the tabs closed.
+// first failure after the tabs closed. After it, the removal at a marked
+// tab's leave checks its recorded origins against the new lists (workers.js).
 import { importState } from "./importer.js";
 import { covers } from "./lib/domains.js";
 import { receiver } from "./receiver.js";
 import { REMOVAL_WAIT_MS } from "./removals.js";
 import { ANY, parseScopes, shrinks } from "./scopes.js";
 import { tabUrl } from "./tabs.js";
+import { removeWorkers } from "./workers.js";
 
 // Per Receiver: the chain of set_scopes, the last one that applied in full,
 // and a worker removal that is still owed.
@@ -54,6 +57,9 @@ export function setScopes(chrome, msg) {
   const s = stateOf(r);
   const run = s.chain.then(() => r.map.whenRestored(() => apply(r, s, msg)));
   s.chain = run.then(() => {}, () => {});
+  // A recorded origin that the new lists no longer cover (workers.js); in its
+  // own chain, so a set_scopes never waits for it.
+  void s.chain.then(() => r.workers.schedule());
   return run;
 }
 
@@ -95,7 +101,6 @@ function within(r, promise) {
 }
 
 async function apply(r, s, msg) {
-  const chrome = r.chrome;
   const next = parseScopes(msg);
   r.map.current = next;
   if (next.applied) r.map.applyReference(next);
@@ -110,15 +115,14 @@ async function apply(r, s, msg) {
   } catch (e) {
     fail(e);
   }
-  // The worker removal, within REMOVAL_WAIT_MS: a failed or late one fails
-  // the call after the tabs closed, and the next set_scopes removes again.
+  // The worker removal of every origin, within REMOVAL_WAIT_MS: a failed or
+  // late one fails the call after the tabs closed (with a log line), and the
+  // next set_scopes removes again.
   if (s.workersOwed || shrinks(s.lastFull, next)) {
-    const removed = new Promise((resolve) => resolve(chrome.browsingData.remove({}, { serviceWorkers: true }))).then(() => true);
-    if (await within(r, removed)) {
+    if (await removeWorkers(r, null)) {
       s.workersOwed = false;
     } else {
       // The failure below makes the removal owed (the end of apply).
-      console.warn("agentwatch receiver: the service worker removal failed or did not end in time");
       fail(new Error("service worker removal failed"));
     }
   }

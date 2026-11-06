@@ -18,6 +18,11 @@
 // hold the DNR rules.
 // When fake.autoNavigate is true, the import's last script (leaveRestorePage)
 // fires webNavigation.onCommitted for its URL.
+//
+// For the worker removal at a marked tab's leave (C5): webNavigation.getAllFrames
+// gives fake.frames_.get(tabId) when the test set it, else the main frame of a
+// tab of fake.tabs_ at its url, and null for a tab that does not exist (as
+// Chrome does).
 
 function makeEvent() {
   const listeners = [];
@@ -68,6 +73,7 @@ export function makeFakeChrome() {
     sessionRules_: [],
     dynamicRules_: [],
     trackNewTabs: false,
+    frames_: new Map(), // tabId -> the frames that webNavigation.getAllFrames gives
     created_: new Map(), // tabId -> windowId: the tabs of tabs.create, with trackNewTabs
     chrome: null,
   };
@@ -274,6 +280,11 @@ export function makeFakeChrome() {
       onErrorOccurred: makeEvent(),
     },
     webNavigation: {
+      getAllFrames: rec("webNavigation.getAllFrames", async ({ tabId }) => {
+        if (fake.frames_.has(tabId)) return structuredClone(fake.frames_.get(tabId));
+        const t = fake.tabs_.find((x) => x.id === tabId);
+        return t ? [{ frameId: 0, parentFrameId: -1, url: t.url ?? "", documentLifecycle: "active", frameType: "outermost_frame" }] : null;
+      }),
       onErrorOccurred: makeEvent(),
       onCompleted: makeEvent(),
       onCommitted: makeEvent(),

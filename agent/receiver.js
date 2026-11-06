@@ -1,8 +1,9 @@
 // The receiver's state per worker (one per chrome object): the attachments
 // (attach.js), the tab-to-scope map and its copy (tabmap.js), the session
-// rules (dnr.js), the removal queue (removals.js) and the popups with their
-// retry (popups.js), with the chrome events that change the map and the
-// operator marks. The bridge (bridge.js), set_scopes (allowlist.js) and the
+// rules (dnr.js), the removal queue (removals.js), the popups with their
+// retry (popups.js) and the worker removal at a marked tab's leave
+// (workers.js), with the chrome events that change the map and the operator
+// marks. The bridge (bridge.js), set_scopes (allowlist.js) and the
 // import (importer.js) share it.
 //
 // The operator mark (C10, each tab's scope; choice 3 of the design, part 1d):
@@ -21,6 +22,7 @@ import { Popups } from "./popups.js";
 import { Removals } from "./removals.js";
 import { ANY } from "./scopes.js";
 import { TabMap } from "./tabmap.js";
+import { Workers } from "./workers.js";
 
 export const NO_LIST = "no list for this scope";
 // The URL of a tab that the operator opens (Ctrl+T, Ctrl+N, the new-tab
@@ -59,6 +61,9 @@ export class Receiver {
     this.removals = new Removals(chrome, { att: this.att, map: this.map, clock });
     this.popups = new Popups(this);
     this.guard = new Guard(this);
+    this.workers = new Workers(this);
+    // The start's one read of the copy gives the record of workers.js back too.
+    this.map.onCopy = (data) => this.workers.restored(data);
     this.att.holds.onKept = (tabId) => this.popups.paused(tabId);
     this.#listen();
   }
@@ -99,8 +104,11 @@ export class Receiver {
     return this.map.current.operator;
   }
 
+  // A tab got or lost the mark: the rules of the marks, and a check of the
+  // worker removal (an origin that no marked tab shows any more).
   #markRules() {
     void this.rules.replaceLists([this.markList()]).catch(() => {});
+    void this.workers.schedule();
   }
 
   // A tab's list under set (a ScopeSet; C5): ANY (every host: a marked tab
@@ -259,8 +267,11 @@ export class Receiver {
         void this.dropKey(removedTabId);
         void this.rules.replaceLists([this.listName(before)]).catch(() => {});
       }
-      // The added tab's mark replaced the rules of the marks already.
+      // The added tab's mark replaced the rules of the marks already; its
+      // pages join the record of workers.js, and the removed tab's other
+      // origins go.
       if (marked && !(got && got.mark)) this.#markRules();
+      if (got && got.mark) void this.workers.schedule({ learn: true });
     }));
     // A popup takes the scope of its sourceTabId (never chrome.tabs'
     // openerTabId: it names the active tab): the entry is in the map in the
@@ -288,6 +299,8 @@ export class Receiver {
     // these events (popups.js, the relay's events).
     c.webNavigation.onBeforeNavigate.addListener((d) => this.guard.beforeNavigate(d));
     c.webNavigation.onCommitted.addListener((d) => this.guard.committed(d));
+    // A frame of a marked tab commits: the worker removal's record and check (workers.js).
+    c.webNavigation.onCommitted.addListener((d) => this.workers.committed(d));
     c.webNavigation.onErrorOccurred.addListener((d) => this.guard.errorOccurred(d));
   }
 }
