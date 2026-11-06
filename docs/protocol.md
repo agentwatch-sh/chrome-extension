@@ -54,8 +54,9 @@ the text that names it: the steps of the link up without `bridge.tabScopes` (C10
 relay), and the last-window guard and the readiness of C11.
 
 The agent pointer (board task ab-v16.70; the design: agent-browser
-`docs/superpowers/specs/2026-11-06-agent-pointer-move-design.md`, board ab-v16.37, merged at
-agent-browser `6bb6838`) is in C10 and C11. When a window comes forward, the X server gives its page a
+`docs/superpowers/specs/2026-11-06-agent-pointer-move-design.md`, board ab-v16.37, first merged at
+agent-browser `6bb6838`; its build decisions are in agent-browser PR #68, board ab-v16.71) is in C10
+and C11. When a window comes forward, the X server gives its page a
 real pointer event at the X pointer. So the daemon, which owns the agent display, moves the X pointer at
 the relay's request, along a path that the relay computes, before a window comes forward. The daemon
 answers the two ops itself (C10, the daemon's own ops), so the receiver does not change. agentwatch
@@ -1456,8 +1457,12 @@ sections 2 and 4).
   `mousemove <x> <y>` for each point, then `getmouselocation`. Its timeout is the path's total time
   plus `POINTER_KILL_MS = 1000`; at the timeout the daemon kills the call and answers `no display`.
   The `ok` answer comes after the last point: `{"x":<int>,"y":<int>,"views":<int>}`, the position that
-  the script's `getmouselocation` read. Board ab-v16.71's live check measures how well
-  `xdotool sleep` keeps `dt`, and its numbers come here.
+  the script's `getmouselocation` read. Board ab-v16.71's live check measured how well
+  `xdotool sleep` keeps `dt` (taylor, Chromium 156 in the live test's own Xvfb, six runs; the agent
+  pointer design, section 7.1): the times of the moves that the leaving page saw kept the planned `dt`
+  to within 1 ms (median 0 ms, p90 1 ms over 5132 pairs of moves; at most 5 ms, except once 116 ms
+  under the load of the whole live suite), and one script's start on `xdotool -` costs 20 to 26 ms
+  (median). Standard input works: no argv is needed.
 - The counts of `too many moves`: a play counts when it starts, and a read of `daemon.pointerAt` when its
   X call starts. The read before a play does not count, and the two counts are apart: a play counts only
   against the plays, and a read only against the reads. A refusal does not count.
@@ -2416,26 +2421,30 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
     geometry from its own reads. Step 4 uses it for a page that is no bridge tab (agent-browser's CLI
     ends its connection after each command, and the relay then detaches its page), and the catch-up
     uses it before a read. The relay drops it at every window event that it sees: any client's
-    `Browser.setWindowBounds`, a viewport call on the page's own session
-    (`Emulation.setDeviceMetricsOverride` and its clear, `setVisibleSize`, `setPageScaleFactor`,
-    `setScrollbarsHidden`), the page's `Page.frameResized`, its `tabs.onReplaced` (the new tab has
-    none) and a link change. When a page that is no bridge tab has no kept geometry, the step sends no
-    path. The limit: a window that moves or changes its size with no event that the relay sees gives a
-    wrong mapping, and a page that got or lost a scrollbar since the read has an old content box (on
-    the agent browser's Xvfb only the relay and the receiver place windows).
+    `Browser.setWindowBounds`; on the page's own session, a client's
+    `Emulation.setDeviceMetricsOverride`, `Emulation.clearDeviceMetricsOverride`,
+    `Emulation.setVisibleSize`, `Emulation.setPageScaleFactor`, `Emulation.setScrollbarsHidden`,
+    `Page.setDeviceMetricsOverride` or `Page.clearDeviceMetricsOverride`; the page's
+    `Page.frameResized`; its `tabs.onReplaced` (the new tab has none) and its `tabs.onRemoved`; and a
+    link change. When a page that is no bridge tab has no kept geometry, the step sends no path. A
+    front page whose `document.visibilityState` is `"hidden"` (in the read, or in the read that gave
+    its kept geometry) has no usable geometry, so the step sends no path. The limit: a window that
+    moves or changes its size with no event that the relay sees gives a wrong mapping, and a page that
+    got or lost a scrollbar since the read has an old content box (on the agent browser's Xvfb only the
+    relay and the receiver place windows).
   - When the relay sends no path, that activation is as with the paths off: the paths are off or unknown;
     the front page, a last point or `at` is unknown (the first activation after the relay's start, after
-    a link change, and after the paths turn on); a geometry is missing or not usable; S or T is outside
-    the front page's content box; the path does not fit the limits; step 3 found a gate or reached its
-    limit; or the daemon refused. A page that never had a pointer event then enters with its first
-    pointer event, which is no position change. A page whose point was known or became unknown enters
-    at the X pointer: one unexplained position change at most, or one jump. The entry carries the
-    movement from the page's last point when Chrome still has that point as the base of the movement
-    (the page got pointer input since its window last lost the pointer), so it is a jump when the X
-    pointer is more than 100 px from that point (measured in board ab-v16.71: a press held 3 s, whose
-    step ended at its limit with no path, gave the entering page a jump of 304 px). With an older
-    daemon (`unknown op`, `not connected`) the paths stay off. On the Mac the relay sends no `daemon.`
-    op.
+    a link change, and after the paths turn on); a geometry is missing or not usable (a hidden front
+    page has no usable geometry); S or T is outside the front page's content box; the path does not fit
+    the limits; step 3 found a gate or reached its limit; or the daemon refused. A page that never had
+    a pointer event then enters with its first pointer event, which is no position change. A page whose
+    point was known or became unknown enters at the X pointer: one unexplained position change at
+    most, or one jump. The entry carries the movement from the page's last point when Chrome still has
+    that point as the base of the movement (the page got pointer input since its window last lost the
+    pointer), so it is a jump when the X pointer is more than 100 px from that point (measured in board
+    ab-v16.71: a press held 3 s, whose step ended at its limit with no path, gave the entering page a
+    jump of 304 px). With an older daemon (`unknown op`, `not connected`) the paths stay off. On the Mac
+    the relay sends no `daemon.` op.
 
 **Permissions and content settings.**
 

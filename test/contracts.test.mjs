@@ -1249,7 +1249,7 @@ test("C10 states the daemon's own ops (board ab-v16.70): the prefix, its place, 
   assert.deepEqual(JSON.parse(example[1]), sample.req.args[0], "the example is the first move vector's arg");
   assert.equal(sample.req.wait, 1565, "the example's wait");
   // The intro names the build, the design and who builds each side.
-  assert.ok(says(protocol, "The agent pointer (board task ab-v16.70; the design: agent-browser `docs/superpowers/specs/2026-11-06-agent-pointer-move-design.md`, board ab-v16.37, merged at agent-browser `6bb6838`) is in C10 and C11."), "the intro");
+  assert.ok(says(protocol, "The agent pointer (board task ab-v16.70; the design: agent-browser `docs/superpowers/specs/2026-11-06-agent-pointer-move-design.md`, board ab-v16.37, first merged at agent-browser `6bb6838`; its build decisions are in agent-browser PR #68, board ab-v16.71) is in C10 and C11."), "the intro");
   assert.ok(says(protocol, "agentwatch builds the daemon side in its task age-0kh.28 (aw-lead), and the relay its side in board ab-v16.71"), "the intro: the sides");
   assert.ok(says(protocol, "Until the daemon side ships, a `daemon.` op goes to the receiver as any op, the receiver answers `unknown op`, and the relay turns its paths off"), "the intro: an older daemon");
 });
@@ -1533,10 +1533,11 @@ test("C11 states ab-lead's decisions of board ab-v16.71 (board ab-v16.77): the c
     "Each page's kept geometry: its last usable geometry from the relay's own reads (below).",
     "The kept geometry (ab-lead's decision in board ab-v16.71). The relay keeps each page's last usable geometry from its own reads.",
     "Step 4 uses it for a page that is no bridge tab (agent-browser's CLI ends its connection after each command, and the relay then detaches its page), and the catch-up uses it before a read.",
-    "The relay drops it at every window event that it sees: any client's `Browser.setWindowBounds`, a viewport call on the page's own session (`Emulation.setDeviceMetricsOverride` and its clear, `setVisibleSize`, `setPageScaleFactor`, `setScrollbarsHidden`), the page's `Page.frameResized`, its `tabs.onReplaced` (the new tab has none) and a link change.",
+    "The relay drops it at every window event that it sees: any client's `Browser.setWindowBounds`; on the page's own session, a client's `Emulation.setDeviceMetricsOverride`, `Emulation.clearDeviceMetricsOverride`, `Emulation.setVisibleSize`, `Emulation.setPageScaleFactor`, `Emulation.setScrollbarsHidden`, `Page.setDeviceMetricsOverride` or `Page.clearDeviceMetricsOverride`; the page's `Page.frameResized`; its `tabs.onReplaced` (the new tab has none) and its `tabs.onRemoved`; and a link change.",
     "When a page that is no bridge tab has no kept geometry, the step sends no path.",
+    "A front page whose `document.visibilityState` is `\"hidden\"` (in the read, or in the read that gave its kept geometry) has no usable geometry, so the step sends no path.",
     "The limit: a window that moves or changes its size with no event that the relay sees gives a wrong mapping, and a page that got or lost a scrollbar since the read has an old content box",
-    "a geometry is missing or not usable;",
+    "a geometry is missing or not usable (a hidden front page has no usable geometry);",
   ]);
   // A step with no path can show one jump or one unexplained change.
   has([
@@ -1547,6 +1548,12 @@ test("C11 states ab-lead's decisions of board ab-v16.71 (board ab-v16.77): the c
   // The gate rule applies only while the front page holds a button.
   has(["When the front page holds a button, wait for its release. The rule \"no path when its tab's next call waits in the activation chain (its gate is set, or becomes set during the wait)\" applies only while the front page holds a button, because only then does the release wait behind this step"]);
   assert.ok(!says(C11, "wait for its release; no path when"), "C11: the gate rule is no rule of every step");
+});
+
+// Board ab-v16.71's measure of `xdotool sleep` (the design's section 7.1 at agent-browser 4400370) in C10, by board ab-v16.77.
+test("C10 states board ab-v16.71's measure of xdotool sleep (board ab-v16.77)", () => {
+  assert.ok(says(C10, "Board ab-v16.71's live check measured how well `xdotool sleep` keeps `dt` (taylor, Chromium 156 in the live test's own Xvfb, six runs; the agent pointer design, section 7.1): the times of the moves that the leaving page saw kept the planned `dt` to within 1 ms (median 0 ms, p90 1 ms over 5132 pairs of moves; at most 5 ms, except once 116 ms under the load of the whole live suite), and one script's start on `xdotool -` costs 20 to 26 ms (median). Standard input works: no argv is needed."), "C10: the measure");
+  assert.ok(!says(protocol, "its numbers come here"), "docs/protocol.md: the numbers are in");
 });
 
 // ---- C11: the endpoint ----
