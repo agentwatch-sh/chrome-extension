@@ -982,7 +982,7 @@ test("C11's scope's session holds the design's rules: the self-test, the peer re
   has(["a dynamic `import(\"node:ffi\")`, never a static import", "`ERR_UNKNOWN_BUILTIN_MODULE`", "A relay without `--peer-check` never loads `node:ffi`",
     "It makes a folder of mode 0700 with `mkdtemp` next to the endpoint socket", "The socket's path is at most 103 bytes, as the endpoint's; a longer path fails the test",
     "It starts a child process (`process.execPath` with a few lines of script) that connects to that socket and stays until the relay has read the connection",
-    "the pid (the child's pid), the uid (the relay's), the peer's parent (the relay's own pid) and its start time (field 22 of `/proc/<pid>/stat`, or `proc_pidinfo` on the Mac: it must be readable)",
+    "the pid (the child's pid), the uid (the relay's), the peer's parent (the relay's own pid) and the peer's start time (field 22 of `/proc/<pid>/stat`, or `proc_pidinfo` on the Mac: the relay must be able to read it)",
     "and, when `SO_PEERPIDFD` gives a pidfd, the pid that the pidfd names (the `Pid:` line of `/proc/self/fdinfo/<pidfd>`) and a `poll` of that pidfd, which must return 0 (the child lives; review-19 note 5)", "A connection from the relay to itself would not do",
     "a pidfd of the child selects the **pidfd form**; `ENOPROTOOPT` (a kernel before 6.5) selects the **stat form**, which is not a failure; any other error fails the test",
     "The whole test has a time limit, `SELF_TEST_MS = 5000`", "In every path (a pass, a failure, the time limit) the relay stops the child and removes the folder",
@@ -1017,7 +1017,7 @@ test("C11's scope's session holds the design's rules: the self-test, the peer re
     "When the import, the `dlopen`, a symbol, the listen, the child, the read, a compare or the time limit fails, the relay admits no connection",
     "The design's W2 (the relay asks the daemon over Node's IPC channel) is a later build, only if this test fails on a box that agentwatch runs",
     "a `getsockopt` that fails, no pid (0), a uid other than the relay's, and in the stat form and on the Mac a start time that the relay cannot read",
-    "A root counts only while it lives", "A `(pid, start)` that two scopes name counts for neither scope", "A root that is an ancestor of another root (the walk from the other root reaches it) does not count, for the walk or the cgroup",
+    "A root counts only while it lives", "A `(pid, start)` that two scopes name counts for neither scope", "A root that is an ancestor of another root (the walk from the other root reaches it, with the walk's own stop rules from its first hop: a parent whose start time is later than the other root's start time is no parent, so it is no ancestor; review-19b note 7) does not count, for the walk or the cgroup",
     "A root's cgroup counts only when its pane has a scope of its own: the cgroup is not the cgroup of the root's parent", "no live root of another scope has the same cgroup, and no other live root's cgroup is under it (a nested scope)",
     "A root whose cgroup does not count still counts for the walk", "At a check the relay reads again only the scope's own roots (one `stat` and one cgroup read each)",
     "its cgroup only while it is the cgroup of the line's read"]);
@@ -1034,7 +1034,7 @@ test("C11's scope's session holds the design's rules: the self-test, the peer re
     "Such a line comes only after the first `ok` on the current connection (review-19 note 6)", "Before that `ok`, the new root goes into the line that follows it",
     "`tmux respawn-pane -k` gives the pane a new process and a new scope, so the old pane's jobs (in the old scope, under no live root) are refused, also by their cgroup",
     "At a session's end the daemon drops the scope's roots in the line that drops the scope", "Already before that line the pane has ended, so its root matches no process and its cgroup counts for no connection",
-    "for its own scope it gets the session's 403 until that line, and after it the no-list 503 (step 5) with 5 a or the session's 403 with 5 b (the line names the scope `null` and gives it no root: step 6 comes before step 7; review-19 note 2); for any other scope it gets the session's 403",
+    "for its own scope it gets the session's 403 until that line, and after it the no-list 503 (step 5) with 5 a. With 5 b it gets the session's 403 only until the line of C4's rule 3 drops the `null` entry: the line that ends the session names the scope `null` and gives it no root, so step 6 comes before step 7 (review-19 note 2), and after the rule 3 line the scope is unnamed and step 5 gives the no-list 503 (review-19b note 5); for any other scope it gets the session's 403",
     "A session that agentwatch only stops (its agent ends, its pane stays) keeps its pane and its root until agentwatch ends the session",
     "Over a daemon restart the daemon reads the pane of each live session again and sends its roots in its next line"]);
   // What others get, the jobs, the limit, age-4ks.
@@ -1131,8 +1131,8 @@ const key = (pid, start) => `${pid}:${start}`;
 // The walk from pid (hop 0) through its parents: the first process that matches a root of `named`
 // (by pid and start), or null when it reaches pid 1, a pid that has gone, a parent 0, a parent whose
 // start time is later than its child's (its pid came back), or 32 hops.
-function walk(w, pid, named) {
-  let child = null;
+function walk(w, pid, named, child = null) {
+  // child: the process whose parent pid is the first hop (its start time bounds the parent's).
   for (let hop = 0; hop <= MAX_HOPS; hop++) {
     const s = w.get(pid);
     if (!s || (child !== null && s.start > child.start)) return null;
@@ -1163,7 +1163,7 @@ function rootsThatCount(roots, w) {
   for (const r of named.values()) {
     if (!r.live) continue;
     const rest = new Map([...named].filter(([k]) => k !== key(r.pid, r.start)));
-    const above = walk(w, w.get(r.pid).ppid, rest);
+    const above = walk(w, w.get(r.pid).ppid, rest, w.get(r.pid)); // the root's parent is compared with the root (review-19b note 7)
     if (above) ancestors.add(above);
   }
   const live = [...named.values()].filter((r) => r.live);
@@ -1227,8 +1227,8 @@ function admit(c) {
   if (a.failClosed) return "rootsWithout";
   if (c.peerCheck && !Object.hasOwn(a.scopes, scope)) return "noList"; // 5
   if (c.peerCheck && sessionCheck(c, a, scope) === null) return "session"; // 6
-  if (a.listOf(scope) === null) return "noList"; // 7
-  return 101;
+  if (a.listOf(scope) === null || (relay.ended ?? []).includes(scope)) return "noList"; // 7
+  return c.request.upgrade === false ? "notFound" : 101; // 8: a plain request gets no connection
 }
 
 test("before the upgrade: each check vector gets the answer of C11's order", () => {
@@ -1261,8 +1261,10 @@ test("the session check: each world is a process table, and each rule of C11 has
   }
   for (const c of endpoint.upgradeChecks) {
     for (const k of Object.keys(c)) assert.ok(["note", "peerCheck", "relay", "request", "peer", "world", "procs", "answer"].includes(k), `${c.note}: a known field ${k}`);
-    for (const k of Object.keys(c.relay)) assert.ok(["link", "bridge", "line", "selfTest"].includes(k), `${c.note}: a known relay field ${k}`);
+    for (const k of Object.keys(c.relay)) assert.ok(["link", "bridge", "line", "selfTest", "ended"].includes(k), `${c.note}: a known relay field ${k}`);
+    for (const k of Object.keys(c.request)) assert.ok(["path", "headers", "upgrade"].includes(k), `${c.note}: a known request field ${k}`);
     for (const k of Object.keys(c.peer ?? {})) assert.ok(["read", "pid", "uid", "pidfd", "start"].includes(k), `${c.note}: a known peer field ${k}`);
+    if (isObj(c.peer?.pidfd)) for (const k of Object.keys(c.peer.pidfd)) assert.ok(["poll", "fdinfoPid"].includes(k), `${c.note}: a known pidfd field ${k} (review-19b note 8)`);
   }
   const checked = endpoint.upgradeChecks.filter((c) => c.peerCheck);
   for (const c of checked) {
@@ -1326,6 +1328,16 @@ test("the session check: each world is a process table, and each rule of C11 has
   assert.ok(by("session", (c, w) => c.relay.line === "peer" && (c.procs ?? []).some((p) => p.pid === 3100 && !p.gone && p.start === 6000 && !w.has(p.ppid)) && proc(c, w)?.ppid === 1144), "a root whose parent the relay cannot read: no cgroup (V19)");
   assert.ok(by("session", (c, w) => (c.procs ?? []).some((p) => p.pid === proc(c, w)?.ppid && p.start > proc(c, w).start)) && by(101, (c, w) => (c.procs ?? []).some((p) => p.pid === proc(c, w)?.ppid && p.start === proc(c, w).start)), "a parent later than its child stops the walk; the same start does not (note 7)");
   assert.ok(by("session", (c) => c.relay.line === "peerLeadNull" && (c.procs ?? []).some((p) => p.pid === 3100 && p.gone)), "the ended session with 5 b: the session's 403 after the line (note 2)");
+  // review-19b note 2: the walk compares each parent with its own child (hop 1 is later than hop 2, the peer is later than both).
+  assert.ok(by("session", (c, w) => { const a = proc(c, w), b = w.get(a?.ppid), d = w.get(b?.ppid); return a && b && d && b.start < a.start && d.start > b.start && a.start > d.start; }), "a parent later than its child, though not later than the peer (note 2)");
+  // review-19b note 7: the ancestor rule compares a root's parent with the root.
+  assert.ok(by(101, (c, w) => { const all = Object.values(applyLine(endpoint.lines[c.relay.line], true).roots).flat(); return all.some((r) => { const x = w.get(r.pid), up = x && w.get(x.ppid); return up && up.start > x.start && all.some((o) => o.pid === x.ppid && o.start === up.start); }); }), "a root whose parent is a root that started later: no ancestor (note 7)");
+  // The refusal after end_scope is step 7, and a plain request has the same order.
+  assert.ok(checked.some((c) => c.answer === "noList" && (c.relay.ended ?? []).includes(scopeOf(c))) && by("session", (c) => (c.relay.ended ?? []).includes(scopeOf(c))), "an ended scope: step 6 before step 7");
+  assert.ok(endpoint.upgradeChecks.some((c) => !c.peerCheck && c.answer === "noList" && (c.relay.ended ?? []).includes(scopeOf(c))), "an ended scope without the peer check");
+  for (const answer of ["notFound", "session", "noList"]) assert.ok(checked.some((c) => c.request.upgrade === false && c.answer === answer), `a plain request gets ${answer} with the peer check`);
+  assert.ok(endpoint.upgradeChecks.some((c) => !c.peerCheck && c.request.upgrade === false && c.answer === "notFound"), "a plain request that is admitted gets the 404");
+  assert.ok(endpoint.upgradeChecks.every((c) => c.request.upgrade !== false || c.answer !== 101), "a plain request never gets an upgrade");
   assert.ok(by("session", (c) => (c.procs ?? []).some((p) => p.pid === 3100 && !p.gone && p.start !== 6000)), "a root pid with another start");
   assert.ok(by("session", (c) => c.peer.pid === 3203 && c.request.path.endsWith("/md-lead")) && by(101, (c) => c.peer.pid === 3203 && c.request.path.endsWith("/md-worker")), "the walk decides over a joined cgroup");
   assert.ok(by(101, (c) => c.peer.pid === 3302 && c.request.path.endsWith("/md-lead")), "the cost: the server path counts as the server's session (review-54)");
@@ -1336,6 +1348,39 @@ test("the session check: each world is a process table, and each rule of C11 has
   // Step 6 comes before step 7, and step 5 before step 6.
   assert.ok(by("session", (c) => c.request.path.endsWith("/md-none")) && checked.some((c) => c.answer === "noList" && c.request.path.endsWith("/md-none")), "step 6 before step 7");
   assert.ok(checked.some((c) => c.answer === "noList" && c.peer.pid === 3500), "step 5 before step 6");
+});
+
+test("the refusal after end_scope: each sequence follows C11", () => {
+  const ids = new Set(Object.keys(endpoint.lines));
+  let admits = 0, refuses = 0;
+  for (const c of endpoint.endScopes) {
+    let ended = new Set(), line = null;
+    for (const st of c.steps) {
+      if (st.line !== undefined) {
+        assert.ok(ids.has(st.line), `${c.note}: a known line`);
+        line = applyLine(endpoint.lines[st.line], c.peerCheck);
+        for (const sc of [...ended]) if (Object.hasOwn(line.scopes, sc)) ended.delete(sc); // a line that names it, also with null
+      } else if (st.endScope !== undefined) {
+        ended.add(st.endScope);
+      } else {
+        assert.equal(st.restart, true, c.note);
+        ended = new Set();
+        line = null;
+      }
+    }
+    assert.ok(line !== null, `${c.note}: a line came`);
+    const refused = (c.peerCheck && !Object.hasOwn(line.scopes, c.scope)) || ended.has(c.scope) || line.listOf(c.scope) === null;
+    assert.equal(refused ? "noList" : "admit", c.answer, c.note);
+    if (refused) refuses++; else admits++;
+  }
+  assert.ok(admits >= 4 && refuses >= 4, "both answers");
+  const has = (f) => endpoint.endScopes.some(f);
+  assert.ok(has((c) => !c.peerCheck && c.answer === "admit" && c.steps.some((s) => s.line === "plainLeadDropped") && c.steps.some((s) => s.line === "plainLeadNull")), "5 b: the default list admits the scope after the null entry is dropped");
+  assert.ok(has((c) => c.peerCheck && c.answer === "noList" && c.steps.some((s) => s.line === "peerLeadGone")), "with the peer check, an unnamed scope gets the no-list 503");
+  assert.ok(has((c) => c.answer === "noList" && c.steps.some((s) => s.line === "plainLeadDropped") && !c.steps.some((s) => s.line === "plainLeadNull")), "a line that does not name the scope keeps the refusal");
+  assert.ok(has((c) => c.answer === "admit" && c.steps.some((s) => s.restart)) && has((c) => c.answer === "noList" && c.steps.some((s) => s.restart)), "the limit: a restart loses the set; a replayed null entry is safe");
+  assert.ok(has((c) => c.answer === "admit" && c.steps.some((s) => s.restart) && c.steps.at(-1).line === "plainLeadDropped"), "the limit: after a restart a line that does not name the scope admits it by default");
+  assert.ok(has((c) => c.answer === "admit" && c.steps.some((s) => s.endScope === "md-worker")), "an end_scope of another scope does not touch this one");
 });
 
 test("at each allowlist line: each close vector follows C11", () => {
@@ -1612,4 +1657,41 @@ test("C10 states part 1d's operator mark as built: where the mark comes from, wh
   // Part 1d built the mark in 0.3.2; a later part raises the version (part 1c: 0.3.3).
   const [maj, min, pat] = JSON.parse(read("agent/manifest.json")).version.split(".").map(Number);
   assert.ok(maj > 0 || min > 3 || (min === 3 && pat >= 2), "the manifest's version is 0.3.2 or later");
+});
+
+// The contract states the operator's answers and the collected notes (board task ab-v16.55).
+test("the contract states choices 3 and 6 as decided", () => {
+  assert.ok(says(protocol, "and this file states both as decided"), "the intro");
+  assert.ok(says(C4, "The operator's own tabs (the design's choice 3, decided in ab-dm6): the tabs that the operator opens in the live view open any site. So the daemon sends `\"operator\":\"*\"` in each `set_scopes`."), "choice 3 in C4");
+  assert.ok(says(C4, "A send (C2) adds its site to no list (the design's choice 6, decided in ab-dm6). A sent sign-in joins no repo's list"), "choice 6 in C4");
+  assert.ok(says(C4, "So the import (C6) adds the site to no list"), "the import adds the site to no list");
+  assert.ok(says(C4, "until the operator adds it to a list in the web viewer"), "only the operator adds the site");
+  for (const gone of ["agentwatch decides which list a sent site joins", "its recommendation: no list", "depend on choice 3 of the", "with the design's choice 3"]) assert.ok(!says(protocol, gone), `no open choice: ${gone}`);
+});
+
+test("C11 states the refusal after end_scope, its order and the plain request", () => {
+  for (const t of [
+    "From the `end_scope` on, the relay refuses each new connection of that scope with the no-list 503 (step 7), also over a link change, until a later `allowlist` line names the scope again",
+    "also with a `null` entry",
+    "without the peer check the `default` list then admits the scope again, and with the peer check step 5 gives it the no-list 503",
+    "The relay keeps this set of ended scopes in memory only.",
+    "the line that the daemon replays to a restarted relay must not name an ended scope with a list",
+    "With the peer check this refusal is step 7 too, after the session check: a process of another session gets the session's 403 first",
+    "8. A request that passes steps 1 to 7 and is no WebSocket upgrade (a plain HTTP request)",
+    "So a plain request gets the same checks in the same order as an upgrade, and the 404 only when the scope is admitted.",
+    "`endScopes` in `test/vectors/endpoint.json`",
+  ]) assert.ok(says(C11, t), t);
+  assert.ok(says(C4, "From the `end_scope` on, the relay refuses new connections of the scope with the no-list 503 until a later `allowlist` line names it again, also with a `null` entry"), "C4");
+  assert.ok(says(C4, "the relay keeps that in memory only, so the line that the daemon replays to a restarted relay must not name an ended scope with a list"), "C4: the limit");
+  assert.ok(says(C11, "gets no connection: the 404 of step 2"), "step 8: the 404");
+  assert.ok(says(C10, "until a later line names it again (C11)"), "C10");
+});
+
+test("C11 holds review-19b's notes", () => {
+  assert.ok(says(C11, "The daemon does not hold a respawn for that `ok` (review-19b note 3)"), "note 3");
+  assert.ok(says(C11, "the agent gets the 503 of step 4 (`its extension has not confirmed the allowlist`)"), "note 3: step 4");
+  assert.ok(says(C11, "the peer's parent (the relay's own pid) and the peer's start time"), "note 4");
+  assert.ok(says(C11, "With 5 b it gets the session's 403 only until the line of C4's rule 3 drops the `null` entry"), "note 5");
+  assert.ok(says(C11, "after the rule 3 line the scope is unnamed and step 5 gives the no-list 503 (review-19b note 5)"), "note 5: step 5");
+  assert.ok(says(C11, "a parent whose start time is later than the other root's start time is no parent, so it is no ancestor; review-19b note 7"), "note 7");
 });
