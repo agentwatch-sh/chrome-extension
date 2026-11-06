@@ -352,8 +352,10 @@ export class Workers {
     const r = this.#r;
     const second = this.#due;
     this.#due = new Set();
+    // The due follow-ups that this check did not remove yet: kept for the next check.
+    const doneDue = new Set();
     const keepDue = () => {
-      for (const o of second) this.#due.add(o);
+      for (const o of second) if (!doneDue.has(o)) this.#due.add(o);
     };
     const idle = this.#record.size === 0 && this.#pending.size === 0 && this.#listedGone.size === 0 && second.size === 0;
     if (idle && !this.#learn) return;
@@ -495,7 +497,8 @@ export class Workers {
         this.#pending.delete(o);
         // The follow-up check, once for each removal (a page can register its
         // worker after the check of its own commit).
-        if (!second.has(o)) followUp.push(o);
+        if (second.has(o)) doneDue.add(o);
+        else followUp.push(o);
       }
       if (followUp.length > 0) this.#followUp(followUp);
     }

@@ -973,6 +973,92 @@ test("a list end's removal of every worker with more than SLICE origins: a queue
   assert.equal(atEnd, true, "a task queued during the call ran before the check ended");
 });
 
+test("a tab that gets the mark during a pause of a list end's loops and shows Z: that check does not run its removal of every worker without Z", async () => {
+  const s = await setup();
+  s.r.workers.max = 2;
+  s.r.workers.pendingMax = 600;
+  operatorTab(s, 20);
+  await flush();
+  commit(s, 20, X + "/home");
+  commit(s, 7, "https://www.a.example/");
+  for (let i = 0; i < 602; i++) commit(s, 7, `https://cdn${i}.a.example/f`, { frameId: 100 + i, parentFrameId: 0 }); // the last one dropped: md's entry kept
+  s.f.tabs_.push({ id: 30, windowId: 1, url: "https://www.z.example/" });
+  commit(s, 30, "https://www.z.example/"); // a tab with no mark yet shows Z
+  s.f.tabs_.find((t) => t.id === 30).url = "about:blank"; // (the closing rule judges the tab's URL: it keeps tab 30 open)
+  await flush(20);
+  const held = [];
+  s.f.impl["webNavigation.getAllFrames"] = (q) => new Promise((resolve) => held.push({ q, resolve }));
+  commit(s, 20, X + "/again"); // a check that reads tab 20 (held)
+  await flush();
+  await s.set(SESSION_END); // md ends while the read waits: that check runs the list end
+  delete s.f.impl["webNavigation.getAllFrames"];
+  setTimeout(() => {
+    // At the first pause of the list end's loops: tab 30 takes tab 20's mark.
+    s.f.tabs_ = s.f.tabs_.filter((t) => t.id !== 20);
+    s.f.frames_.delete(20);
+    s.f.chrome.tabs.onReplaced.fire(30, 20);
+  }, 0);
+  for (const h of held.splice(0)) h.resolve(structuredClone(s.f.frames_.get(h.q.tabId) ?? []));
+  await flush(40);
+  assert.equal(s.r.map.isMarked(30), true);
+  const e = excluding(s);
+  assert.ok(e.length >= 1);
+  for (const x of e) assert.ok(x.includes("https://www.z.example"), "every removal of every worker keeps Z: " + JSON.stringify(x.slice(0, 5)));
+});
+
+test("a popup that gets the mark during a removal call stops the check, and one more check removes the rest (no other event comes)", async () => {
+  const s = await setup();
+  operatorTab(s, 20);
+  await flush();
+  commit(s, 20, "https://www.x.example/");
+  await flush(20);
+  const held = [];
+  s.f.impl["browsingData.remove"] = (d) => new Promise((resolve) => held.push({ d, resolve }));
+  for (let i = 0; i < 600; i++) commit(s, 3, `https://u${i}.example/f`, { frameId: 100 + i, parentFrameId: 0 });
+  await flush(20);
+  assert.equal(held.length, 1, "part 1's call");
+  // A popup of marked tab 20: it gets the mark at its navigation target, with no check of its own.
+  s.f.tabs_.push({ id: 31, windowId: 1, url: "", pendingUrl: "https://www.x.example/p" });
+  s.f.chrome.tabs.onCreated.fire({ id: 31, windowId: 1, url: "", pendingUrl: "https://www.x.example/p", openerTabId: 20 });
+  s.f.chrome.webNavigation.onCreatedNavigationTarget.fire({ ...NAV_TARGET.chrome[1][0], sourceTabId: 20, tabId: 31, url: "https://www.x.example/p" });
+  await flush(2);
+  assert.equal(s.r.map.isMarked(31), true);
+  delete s.f.impl["browsingData.remove"];
+  held[0].resolve();
+  await flush(40);
+  for (let i = 0; i < 600; i++) assert.ok(removedAny(s).has(`https://u${i}.example`), `u${i} removed`);
+});
+
+test("a follow-up check that a new mark stops keeps the due origins that it did not remove yet for the next check", async () => {
+  const s = await setup();
+  operatorTab(s, 20);
+  await flush();
+  commit(s, 20, "https://www.x.example/");
+  await flush(20);
+  for (let i = 0; i < 500; i++) commit(s, 3, `https://u${i}.example/f`, { frameId: 100 + i, parentFrameId: 0 });
+  await flush(40);
+  const count = (o) => leaves(s).flat().filter((x) => x === o).length;
+  assert.equal(count("https://u499.example"), 1);
+  const held = [];
+  s.f.impl["browsingData.remove"] = (d) => new Promise((resolve) => held.push({ d, resolve }));
+  // The follow-up timer, and one more origin to remove before the check starts: part 1 is w and u0 to u498, part 2 is u499.
+  const [t] = s.pending(RECHECK_MS);
+  t.cleared = true;
+  t.fn();
+  commit(s, 3, "https://w.example/");
+  await flush(4);
+  assert.equal(held.length, 1, "part 1's call waits");
+  assert.equal(held[0].d.origins.length, 500);
+  // A popup of marked tab 20 gets the mark during part 1's call: the check stops before part 2.
+  s.f.tabs_.push({ id: 31, windowId: 1, url: "", pendingUrl: "https://www.x.example/p" });
+  s.f.chrome.tabs.onCreated.fire({ id: 31, windowId: 1, url: "", pendingUrl: "https://www.x.example/p", openerTabId: 20 });
+  s.f.chrome.webNavigation.onCreatedNavigationTarget.fire({ ...NAV_TARGET.chrome[1][0], sourceTabId: 20, tabId: 31, url: "https://www.x.example/p" });
+  delete s.f.impl["browsingData.remove"];
+  held[0].resolve();
+  await flush(40);
+  assert.equal(count("https://u499.example"), 2, "u499's follow-up came at the next check");
+});
+
 // ---- review-30e B3: the rules of round 4 with no test (G1 to G6) ----
 
 test("1200 origins to remove go in calls of at most 500 origins", async () => {
