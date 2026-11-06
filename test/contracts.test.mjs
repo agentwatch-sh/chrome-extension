@@ -222,6 +222,10 @@ test("each guard vector follows C5's guard: the host that it judges and the cove
   assert.ok(says(C5, "closes every tab whose `http:`/`https:` host its list does not cover (a `blob:` page counts by its inner origin's host, as for the guard below"), "C5: the closing rule and blob:");
   assert.ok(says(section("C6"), "Close every tab whose origin equals `origin` (a `blob:` page by its inner origin"), "C6: the import's close and blob:");
   assert.ok(says(C5, "So in the own-page form the worker's page commits and runs its scripts before layer 3 sends it away (80 of 80)"), "C5: the fact of Q3");
+  // The operator's decision on ab-7wg (2026-11-06): service workers stay on; C5 states it and its residue, and waits on no answer.
+  assert.ok(says(C5, "The operator chose to keep service workers on (board item ab-7wg, 2026-11-06, the recommended option)"), "C5: the decision of ab-7wg");
+  assert.ok(says(C5, "a worker of another scope's site can answer a navigation of a scope's tab from its cache (no request); that page commits and runs its scripts for some tens of ms (the measures above) before layer 3 sends the tab away, and a client attached to the tab can read it meanwhile. Both scopes are the operator's own agents, and no site outside the lists is reached"), "C5: the residue of ab-7wg");
+  for (const s of ["asked the operator again", "this text changes when the answer changes the build", "can replace it with a block of service workers"]) assert.ok(!says(C5, s), `C5 no longer says: ${s}`);
 });
 
 test("C4's blocked holds from (board ab-v16.33), each notice vector has C4's shape, and C5 states from and the once rule", () => {
