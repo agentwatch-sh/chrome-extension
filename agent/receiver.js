@@ -105,7 +105,7 @@ export class Receiver {
   }
 
   // A tab got or lost the mark: the rules of the marks, and a check of the
-  // worker removal (an origin that no marked tab shows any more).
+  // worker removal (a site that no marked tab shows any more).
   #markRules() {
     void this.rules.replaceLists([this.markList()]).catch(() => {});
     void this.workers.schedule();
@@ -299,9 +299,11 @@ export class Receiver {
     // these events (popups.js, the relay's events).
     c.webNavigation.onBeforeNavigate.addListener((d) => this.guard.beforeNavigate(d));
     c.webNavigation.onCommitted.addListener((d) => this.guard.committed(d));
-    // A frame of a marked tab commits: the worker removal's record and check (workers.js).
-    c.webNavigation.onCommitted.addListener((d) => this.workers.committed(d));
     c.webNavigation.onErrorOccurred.addListener((d) => this.guard.errorOccurred(d));
+    // A frame of any tab commits, or its navigation ends on an error page: the
+    // worker removal's record and check (workers.js).
+    c.webNavigation.onCommitted.addListener((d) => this.workers.committed(d));
+    c.webNavigation.onErrorOccurred.addListener((d) => this.workers.errorOccurred(d));
   }
 }
 

@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { NEW_TAB_URL } from "../agent/receiver.js";
 import { REMOVAL_WAIT_MS } from "../agent/removals.js";
-import { WORKER_KEY } from "../agent/workers.js";
+import { WORKER_KEY, siteOf } from "../agent/workers.js";
 import { flush, startReceiver } from "./receiver-harness.mjs";
 
 const B = JSON.parse(readFileSync(new URL("./vectors/bridge.json", import.meta.url), "utf8"));
@@ -73,7 +73,7 @@ function quietWarn() {
 
 // ---- which origins ----
 
-test("a marked tab's commits record their web origins (the top frame and each sub-frame, a blob: page by its inner origin) in memory and in the copy; other schemes and the commits of other tabs record nothing", async () => {
+test("every tab's commits record their web origins (the top frame and each sub-frame, a blob: page by its inner origin) in memory and in the copy; other schemes record nothing", async () => {
   const s = await setup();
   operatorTab(s, 20);
   await flush();
@@ -82,14 +82,30 @@ test("a marked tab's commits record their web origins (the top frame and each su
   commit(s, 20, "blob:https://b2.example/0d2b8c6e", { frameId: 6, parentFrameId: 0 });
   commit(s, 20, Z + "/inner", { frameId: 9, parentFrameId: 5 });
   for (const [id, u] of [[7, "about:blank"], [8, "about:srcdoc"], [10, "data:text/html,x"], [11, "blob:null/0d2b8c6e"], [12, "chrome-error://chromewebdata/"]]) commit(s, 20, u, { frameId: id, parentFrameId: 0 });
-  // A tab of a scope, a tab of no scope and no mark: not the operator's tabs.
+  // A tab of a scope (a listed origin), a tab of no scope and no mark (an origin on no list).
   commit(s, 7, "https://a.example/");
+  commit(s, 7, "https://cdn.a.example/f", { frameId: 3, parentFrameId: 0 });
   commit(s, 3, "https://u.example/");
   await flush();
-  const want = [X, Y, "https://b2.example", Z].sort();
-  assert.deepEqual(recorded(s), want);
+  const want = [X, Y, "https://b2.example", Z, "https://a.example", "https://cdn.a.example"].sort();
+  assert.deepEqual(recorded(s), want, "u.example went: on no list, and no marked tab shows its site");
   assert.deepEqual(copyKeys(s), keysOf(...want), "the copy, one key per origin");
-  assert.deepEqual(leaves(s), [], "every origin is still shown");
+  assert.deepEqual(leaves(s), [["https://u.example"]], "every origin of the marked tab is still shown; a.example is listed");
+});
+
+// review-30 B2: a sub-frame's origin joins the record at its commit, not only at the check's frame read.
+test("a sub-frame that commits an origin and goes before the check reads the frames: that origin is recorded at its commit, and the leave removes it", async () => {
+  const s = await setup();
+  operatorTab(s, 20);
+  await flush();
+  commit(s, 20, "https://p.example/");
+  await flush();
+  // Frame 5 commits X, then Y, before any check runs: no frame read ever shows X.
+  commit(s, 20, X + "/frame", { frameId: 5, parentFrameId: 0 });
+  commit(s, 20, Y + "/frame", { frameId: 5, parentFrameId: 0 });
+  await flush();
+  assert.deepEqual(leaves(s), [[X]]);
+  assert.deepEqual(recorded(s), ["https://p.example", Y].sort());
 });
 
 test("the record does not depend on the operator value: a marked tab with a list name or with null records its commits too", async () => {
@@ -159,6 +175,46 @@ test("the tab closes: its origins go", async () => {
   await flush();
   assert.deepEqual(leaves(s), [[X]]);
   assert.deepEqual(recorded(s), []);
+});
+
+// review-30 B1: Chrome sends webNavigation.onErrorOccurred, not onCommitted, for a navigation that ends on an error page.
+test("the top frame leaves for an error page (onErrorOccurred, no commit): its origins go; an error of a sub-frame or of another tab starts a check too", async () => {
+  const s = await setup();
+  operatorTab(s, 20);
+  operatorTab(s, 21);
+  await flush();
+  commit(s, 20, X + "/");
+  commit(s, 21, Y + "/");
+  await flush();
+  // A typing error: the connection is refused, and the tab shows Chrome's error page.
+  s.f.frames_.set(20, [{ frameId: 0, parentFrameId: -1, url: "chrome-error://chromewebdata/", documentLifecycle: "active" }]);
+  s.f.chrome.webNavigation.onErrorOccurred.fire({ tabId: 20, frameId: 0, url: "http://www.down.localhost:8798/err", error: "net::ERR_CONNECTION_REFUSED" });
+  await flush();
+  assert.deepEqual(leaves(s), [[X]]);
+  // A sub-frame of tab 21 that leaves Y for an error page.
+  commit(s, 21, "https://q.example/");
+  commit(s, 21, Y + "/f", { frameId: 4, parentFrameId: 0 });
+  await flush();
+  s.f.frames_.set(21, [{ frameId: 0, parentFrameId: -1, url: "https://q.example/", documentLifecycle: "active" }, { frameId: 4, parentFrameId: 0, url: "chrome-error://chromewebdata/", documentLifecycle: "active" }]);
+  s.f.chrome.webNavigation.onErrorOccurred.fire({ tabId: 21, frameId: 4, url: "https://down.example/", error: "net::ERR_NAME_NOT_RESOLVED" });
+  await flush();
+  assert.deepEqual(leaves(s), [[X], [Y]]);
+  // An error of a tab of a scope (DNR's block) starts a check too: here the retry of a failed removal.
+  s.f.impl["browsingData.remove"] = async () => {
+    throw new Error("busy");
+  };
+  const log = quietWarn();
+  try {
+    commit(s, 21, "https://r.example/");
+    await flush();
+    delete s.f.impl["browsingData.remove"];
+    assert.ok(recorded(s).includes("https://q.example"), "the failed removal kept q.example");
+    s.f.chrome.webNavigation.onErrorOccurred.fire({ tabId: 7, frameId: 0, url: "https://z.example/", error: "net::ERR_BLOCKED_BY_CLIENT" });
+    await flush();
+    assert.ok(!recorded(s).includes("https://q.example"), "the error's check removed it");
+  } finally {
+    log.restore();
+  }
 });
 
 test("the tab loses its mark (a page's navigation target names its opener): its origins go", async () => {
@@ -295,6 +351,125 @@ test("a tab that gets the mark while a check reads the frames (tabs.onReplaced):
   assert.equal(s.r.map.isMarked(30), true);
   assert.deepEqual(leaves(s), [], "tab 30 shows X");
   assert.ok(s.f.callsTo("webNavigation.getAllFrames").some(([q]) => q.tabId === 30), "the next check read tab 30");
+});
+
+// ---- the site rule (review-30 B3 b; ab-lead's decision) ----
+
+test("siteOf: the scheme and the last two labels of the host, the port dropped; an IP address or a host of one or two labels as it is", () => {
+  assert.equal(siteOf("http://www.pp.localhost:8799"), "http://pp.localhost");
+  assert.equal(siteOf("http://www.pp.localhost:8797"), "http://pp.localhost");
+  assert.equal(siteOf("https://login.a.example"), "https://a.example");
+  assert.equal(siteOf("https://a.example"), "https://a.example");
+  assert.notEqual(siteOf("http://a.example"), siteOf("https://a.example"), "the scheme counts");
+  assert.equal(siteOf("https://x.y.example.co.uk"), "https://co.uk", "no public suffix list: wider than the registrable domain");
+  assert.equal(siteOf("http://localhost:8771"), "http://localhost");
+  assert.equal(siteOf("http://127.0.0.1:8771"), "http://127.0.0.1");
+  assert.equal(siteOf("http://[::1]:8771"), "http://[::1]");
+});
+
+// review-30's probe 2: Chrome's origin filter also removes every partitioned worker whose top-level site is the origin's site.
+test("an origin whose site a marked tab shows in any frame keeps its workers: the same site on another port or subdomain, also in a sub-frame; when no marked tab shows the site, every origin of it goes", async () => {
+  const s = await setup();
+  operatorTab(s, 20);
+  operatorTab(s, 21);
+  await flush();
+  const R = "http://www.pp.localhost:8799";
+  const P = "http://www.pp.localhost:8797";
+  const W3 = "http://www.nolist3.localhost:8797";
+  commit(s, 20, R + "/r1");
+  commit(s, 21, P + "/embed");
+  commit(s, 21, W3 + "/sw-reg", { frameId: 5, parentFrameId: 0 });
+  await flush();
+  commit(s, 20, "https://other.example/"); // tab 20 leaves R; tab 21 shows P, of R's site
+  await flush();
+  assert.deepEqual(leaves(s), [], "R stays: its removal would also remove W3's partitioned worker under P's site");
+  // Tab 21 shows the site only in a sub-frame now.
+  commit(s, 21, "https://q.example/");
+  commit(s, 21, "http://login.pp.localhost:8797/frame", { frameId: 6, parentFrameId: 0 });
+  await flush();
+  assert.deepEqual(leaves(s), [[W3]], "R and P stay (a frame of their site); W3's own site is not shown");
+  commit(s, 21, "https://q.example/next");
+  await flush();
+  assert.deepEqual(leaves(s), [[W3], ["http://login.pp.localhost:8797", P, R].sort()]);
+});
+
+// ---- every tab: a scope's list that ends (ab-lead's decision after review-30) ----
+
+test("a scope's tab's origins stay recorded while a list covers them; the set_scopes that ends that list removes them unless a marked tab shows their site", async () => {
+  const s = await setup({ tabs: [blank(7), blank(8), blank(3)], copy: { "tab:7": "md-lead", "tab:8": "v-lead" }, scopes: scopesWith("*", { lists: { ...LISTS, v: ["v.example"] }, scopes: { "md-lead": "md", "v-lead": "v" } }) });
+  operatorTab(s, 20);
+  await flush();
+  commit(s, 8, "https://www.v.example/sw-reg"); // scope v-lead's tab registers a worker on its own site
+  commit(s, 8, "https://cdn.v.example/f", { frameId: 2, parentFrameId: 0 });
+  commit(s, 7, "https://a.example/");
+  commit(s, 20, "https://shop.v.example/"); // the operator's tab on the same site
+  await flush();
+  assert.deepEqual(leaves(s), []);
+  // The session of v-lead ends: its scope has no list, and no list covers v.example any more.
+  await s.set(scopesWith("*", { scopes: { "md-lead": "md", "v-lead": null } }));
+  await flush();
+  assert.equal(fullRemovals(s).length, 1, "no shrink: C5's removal of every worker does not run");
+  assert.deepEqual(leaves(s), [], "the marked tab shows v.example's site");
+  commit(s, 20, "https://other.example/");
+  await flush();
+  assert.deepEqual(leaves(s), [["https://cdn.v.example", "https://shop.v.example", "https://www.v.example"]]);
+  assert.ok(recorded(s).includes("https://a.example"), "a listed origin stays");
+});
+
+test("a scope's tab that commits a page on no list (a worker's page before layer 3): its origin goes at once, unless a marked tab shows its site", async () => {
+  const s = await setup();
+  operatorTab(s, 20);
+  await flush();
+  commit(s, 20, X + "/");
+  await flush();
+  commit(s, 7, X + "/sw-own/page"); // the gap of board ab-v16.73: kept while the operator's tab is on that site
+  commit(s, 7, "http://www.other.localhost:8771/p");
+  await flush();
+  assert.deepEqual(leaves(s), [["http://www.other.localhost:8771"]]);
+  assert.deepEqual(recorded(s), [X]);
+});
+
+// ---- the bound ----
+
+test("the bound: a new origin at the limit evicts the oldest listed origin, and the removal of every worker is owed until a list loses an entry that covered it", async () => {
+  const s = await setup();
+  s.r.workers.max = 3;
+  commit(s, 7, "https://a.example/");
+  commit(s, 7, "https://www.a.example/");
+  commit(s, 3, "https://o.example/");
+  await flush();
+  assert.deepEqual(recorded(s), ["https://a.example", "https://o.example", "https://www.a.example"]);
+  commit(s, 3, "https://s.example/");
+  await flush();
+  assert.deepEqual(recorded(s), ["https://o.example", "https://s.example", "https://www.a.example"], "a.example, the oldest listed origin, went");
+  assert.deepEqual(copyKeys(s), keysOf("https://o.example", "https://s.example", "https://www.a.example"));
+  const full = fullRemovals(s).length;
+  await s.set(scopesWith("*", { lists: { ...LISTS, spare: ["s.example", "t.example"] } })); // a.example's entry stays
+  await flush();
+  assert.equal(fullRemovals(s).length, full, "nothing owed yet");
+  await s.set(scopesWith("*", { lists: { md: ["b.example"], ops: ["o.example"], spare: ["s.example"] } })); // md loses a.example
+  await flush();
+  // C5's own removal ran for the shrink of md; the owed one runs once in the next check.
+  assert.equal(fullRemovals(s).length, full + 2);
+  assert.deepEqual(leaves(s), [["https://www.a.example"]]);
+  await s.set(scopesWith("*", { lists: { md: ["b.example"], ops: ["o.example"], spare: ["s.example"] } }));
+  await flush();
+  assert.equal(fullRemovals(s).length, full + 2, "owed once");
+});
+
+test("the bound with no listed origin: the oldest origin goes, and the removal of every worker runs at the next check", async () => {
+  const s = await setup();
+  s.r.workers.max = 2;
+  operatorTab(s, 20);
+  await flush();
+  commit(s, 20, X + "/");
+  commit(s, 20, Y + "/", { frameId: 4, parentFrameId: 0 });
+  await flush();
+  const full = fullRemovals(s).length;
+  commit(s, 20, Z + "/", { frameId: 5, parentFrameId: 0 });
+  await flush();
+  assert.deepEqual(recorded(s), [Y, Z].sort());
+  assert.equal(fullRemovals(s).length, full + 1, "X's workers are not known any more: every worker goes");
 });
 
 // ---- a listed origin ----
@@ -453,7 +628,7 @@ test("C5's worker removal of a set_scopes stays browsingData.remove({}, {service
   }
 });
 
-test("no tab ever marked, or nothing recorded: no frame read and no leave removal at a set_scopes, a close or a commit", async () => {
+test("with no marked tab no frame is read; a listed origin of a scope's tab stays recorded with no removal at a commit, a set_scopes or a close", async () => {
   const s = await setup();
   commit(s, 7, "https://a.example/");
   await s.set(scopesWith("*", { lists: { ...LISTS, md: ["a.example", "c.example"] } }));
@@ -461,4 +636,5 @@ test("no tab ever marked, or nothing recorded: no frame read and no leave remova
   await flush();
   assert.deepEqual(s.f.callsTo("webNavigation.getAllFrames"), []);
   assert.deepEqual(leaves(s), []);
+  assert.deepEqual(recorded(s), ["https://a.example"]);
 });
