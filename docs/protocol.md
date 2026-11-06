@@ -583,10 +583,11 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
   list), and the new list lacks an entry of the old one. Three changes do not remove the workers. A
   new scope: no list of it loses an entry. A scope that leaves the map, and a scope whose new list
   is none (an ended session's `null`, a list that is gone): its tabs are blocked and close (the
-  sweep, below), so no tab of that scope reaches a worker of a site of its old list; but those
-  workers stay, and a tab of another scope that follows a link to such a site can still get the
-  worker's page until layer 3 of the guard sends it away, as for a worker of another scope's site
-  (the guard's residues, below). The `operator` value counts as one more scope's list: a change
+  sweep, below), so no tab of that scope reaches a worker of a site of its old list. Those workers
+  stay at this removal; the removal of the recorded origins (below) removes them when no list
+  covers their host any more and no marked tab shows their site (before receiver 0.3.5 they stayed,
+  and a tab of another scope that followed a link to such a site got the worker's page until layer
+  3 of the guard sent it away). The `operator` value counts as one more scope's list: a change
   from `"*"` to a list, or a list that loses an entry, removes the workers too. The entries count, not the list names; "the last" is the
   last `set_scopes` that applied in full. A failed removal, or one that has not ended within
   `REMOVAL_WAIT_MS` (C10), fails the call (`ok: false`) after the tabs closed, and the receiver logs
@@ -597,73 +598,123 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
   list closed that tab (the closing rule); a new tab of scope B was then blocked by DNR at the host
   (no worker's page, no request) with `blocked` naming scope B; with the host back on the list its
   page came from the network: the worker was gone.
-- The worker removal at a marked tab's leave (board ab-v16.74, receiver 0.3.5; the operator chose on
+- The worker removal of the recorded origins (board ab-v16.74, receiver 0.3.5; the operator chose on
   board item ab-214, 2026-11-06, the recommended option: remove such a site's workers when the
-  operator's tab leaves it). A worker that a marked tab registered for a host on no list answers a
-  navigation of a scope's tab with its page, until layer 3 of the guard sends the tab away (the
-  guard, below). So the receiver keeps a **record of origins**: each web origin (`http:`/`https:`,
-  and a `blob:` URL's inner origin) that a frame of a marked tab commits
+  operator's tab leaves it; after review-30, ab-lead's decisions added the site rule and the origins
+  of every tab). A worker that a marked tab registered for a host on no list answers a navigation of
+  a scope's tab with its page, until layer 3 of the guard sends the tab away (the guard, below). So
+  does a worker of a scope's site after that scope's list ended, and the removal of every worker
+  (above) does not run then. So the receiver keeps a **record of origins**: each web origin
+  (`http:`/`https:`, and a `blob:` URL's inner origin) that a frame of any tab commits
   (`webNavigation.onCommitted`, the top frame and every sub-frame: a frame can register a worker for
-  its own origin), whatever the `operator` value. The record lives in memory and in
-  `chrome.storage.session`, one key per origin (`worker:<origin>`, the value `true`), so a worker
-  that starts again knows it: the start's one read of the copy (C10, the map's restore) gives it
-  back, and a key that is no origin leaves the copy. The code: `agent/workers.js`.
+  its own origin): the marked tabs whatever the `operator` value, the tabs of a scope, the restore
+  tab of an import and every other tab. The record lives in memory and in `chrome.storage.session`,
+  one key per origin (`worker:<origin>`, the value `true`), so a worker that starts again knows it:
+  the start's one read of the copy (C10, the map's restore) gives it back, and a key that is no
+  origin leaves the copy. The code: `agent/workers.js`.
+  - Chrome's origin filter: `browsingData.remove({origins: [o]})` removes the worker of `o` itself
+    (its first-party storage key) and every partitioned worker whose top-level site is the site of
+    `o` (Chromium's `BrowsingDataFilterBuilder`, its default `kThirdPartiesIncluded`, and
+    `StorageKey::MatchesOriginForTrustedStorageDeletion`; review-30). It does not remove a worker that
+    a frame of `o` registered under the top-level site of another page.
+  - **The site rule** (ab-lead's decision on review-30 B3): the receiver never removes the workers of
+    an origin while a marked tab shows a frame of the same site. So the operator's open pages of that
+    site keep their workers, also the partitioned workers of their frames: this is ab-214's "the gap
+    stays open while your tab is on that site". The site here is the scheme and the last two labels
+    of the host (an IP address, or a host of one or two labels, as it is); the port does not count.
+    The receiver has no public suffix list, so this site is the registrable domain or wider: under a
+    public suffix of two labels, such as `co.uk` or `github.io`, every site under that suffix counts
+    as one. The rule then keeps more workers, never fewer.
   - The check. The receiver reads the frames of each marked tab (`webNavigation.getAllFrames`). A
-    frame of a page in the back/forward cache (`documentLifecycle` `cached`) or of a document that
-    is going (`pending_deletion`) shows nothing. An origin that a marked tab commits during that
-    read counts as shown. A web origin that the read gives joins the record too (for example a page
-    of a tab that takes a mark at `tabs.onReplaced`). For each recorded origin that no marked tab
-    shows and that no list of the last applied `set_scopes` covers, the receiver calls
-    `browsingData.remove({origins: [...]}, {serviceWorkers: true})`, one call for all of them; on
-    success they leave the record and the copy, except an origin that a marked tab committed again
-    during the call. A list covers an origin when an entry covers its host (the entry and every
-    subdomain); every list of `lists` counts, also the `operator` list and a list that no scope
-    names (the listed sites keep their workers, board item ab-7wg); with no applied `set_scopes`
-    since the worker's start no list covers it. A listed origin stays in the record, so the
-    `set_scopes` that takes its host off every list removes its workers.
-  - When: at each commit of a frame of a marked tab (its top frame or a frame leaves the host), at a
-    marked tab's `tabs.onRemoved` and `tabs.onReplaced`, when a tab gets or loses the mark, after
-    each `set_scopes` (after its answer: a `set_scopes` never waits for it), and at the worker's
-    start. No tab is marked at a start (the marks have no copy), so each recorded origin goes then,
-    except one that a tab marked since the start shows. One check runs at a time; the events during
-    a check start one more after it. A frame that a page script removes sends no event: its origin
-    goes at the next check.
-  - The limits. Each frame read and each removal has `REMOVAL_WAIT_MS` (C10). A read that fails or
-    comes late removes nothing: a worker of a shown origin would break the operator's open page. A
-    removal that fails or comes late keeps its origins in the record. Each logs one line with no
-    origin, and the next check removes again. A read of the copy that fails at the start loses the
-    record; the removal of every worker at the first `set_scopes` after the start (above) covers it.
+    frame of a page in the back/forward cache (`documentLifecycle` `cached`; Chromium's
+    `getAllFrames` gives none) or of a document that is going (`pending_deletion`) shows nothing. An
+    origin that a tab commits during that read counts as shown. A web origin that the read gives
+    joins the record too (for example a page of a tab that takes a mark at `tabs.onReplaced`). For
+    each recorded origin whose site no marked tab shows and that no list of the last applied
+    `set_scopes` covers, the receiver calls `browsingData.remove({origins: [...]}, {serviceWorkers:
+    true})`, one call for all of them; on success they leave the record and the copy, except an
+    origin that a tab committed again during the call. A list covers an origin when an entry covers
+    its host (the entry and every subdomain); every list of `lists` counts, also the `operator` list
+    and a list that no scope names (the listed sites keep their workers, board item ab-7wg); with no
+    applied `set_scopes` since the worker's start no list covers it. A listed origin stays in the
+    record, so the `set_scopes` that takes its host off every list removes its workers: for example
+    at the end of a session, when its scope's list becomes `null` (the removal of every worker, above,
+    does not run then).
+  - When: at each commit and at each navigation error (`webNavigation.onErrorOccurred`: a navigation
+    that ends on an error page sends no `onCommitted`; review-30 B1) of a frame of any tab, at a
+    marked tab's `tabs.onRemoved` and `tabs.onReplaced`, when a tab loses the mark or gets it at its
+    `tabs.onCreated` or `tabs.onReplaced` (a popup that gets the mark at its navigation target starts
+    no check: its own commits do), after each `set_scopes` (after its answer: a `set_scopes` never
+    waits for it), and at the worker's start. No tab is marked at a start (the marks have no copy),
+    so each recorded origin goes then, except one whose site a tab marked since the start shows. One
+    check runs at a time; the events during a check start one more after it.
+  - The windows. The check after an event ends after its frame read and its removal, each within
+    `REMOVAL_WAIT_MS` (C10). When it waits for a check that runs, the removal ends at most about 4 x
+    `REMOVAL_WAIT_MS` (8 s) after the event while each call ends in time (6 x when the bound's
+    removal of every worker, below, is owed, a rare case) (measured: a client's
+    `Page.navigate` that started 4 to 16 ms after the leave's request reached the site got the
+    worker's page in 4 of 4; one that started 100 ms or 300 ms after it, in 0 of 8). A frame that a
+    page script removes sends no event: its origin goes at the next check, at the latest at that
+    tab's next commit, navigation error, close or replace (for a frame of the same site the tab is
+    then still on that site). A read that fails or comes late removes nothing: a worker of a shown
+    origin would break the operator's open page. A removal that fails or comes late keeps its origins
+    in the record (Chrome can still end it later). Each logs one line with no origin, and the next
+    check removes again; until then the case stays open.
+  - The bound. The record holds at most `RECORD_MAX` = 1000 origins. At the bound a new origin
+    evicts the oldest origin that a list covers (else the oldest one), and the receiver owes one
+    removal of every worker: at the next check for an evicted origin that no list covered, else at
+    the first check whose lists no longer hold an entry that covered an evicted origin. The cost: one
+    `chrome.storage.session` write for each new origin and one key removal for each origin that goes
+    (some tens of bytes per origin, about 50 KB at the bound), one frame read of each marked tab for
+    each check, and one `browsingData.remove` for each check that finds origins to remove. The
+    origins on no list that the frames of a scope's pages commit (for example a third-party frame, or
+    a worker's page before layer 3) go at the next check, one call for all of them.
   - The two removals share one bounded call (`removeWorkers`): the removal of every worker at a
-    `set_scopes` (above) and the removal at a marked tab's leave. Neither waits for the other, and a
-    failure of one does not fail the other: the answer of a `set_scopes` depends only on its own
-    removal, and the record keeps an origin until its own removal succeeds. After a `set_scopes`
-    that removed every worker, the leave's removal can remove a recorded origin once more (nothing
-    is left to remove). The closing rule can close a marked tab (with a list name or `null`); its
-    `tabs.onRemoved` starts a check.
-  - The residue. While the operator's own tab (a marked tab) shows the host, in its top frame or in
-    a frame, the worker stays, and a scope's tab that follows a link there gets the worker's page as
-    measured (the guard, below). After the tab leaves, the case stays open until the removal ends:
-    a client's `Page.navigate` that started 15 to 17 ms after the leave's request reached the site
-    got the worker's page in 4 of 4; one that started 100 ms or 300 ms after it, in 0 of 8.
+    `set_scopes` (above) and of the bound, and the removal of the recorded origins. Neither waits for
+    the other, and a failure of one does not fail the other: the answer of a `set_scopes` depends
+    only on its own removal, and the record keeps an origin until its own removal succeeds. After a
+    `set_scopes` that removed every worker, the removal of the recorded origins can remove an origin
+    once more (nothing is left to remove). The closing rule can close a marked tab (with a list name
+    or `null`); its `tabs.onRemoved` starts a check.
+  - The residue. While a marked tab shows a frame of the host's site, the worker stays, and a
+    scope's tab that follows a link there gets the worker's page as measured (the guard, below);
+    then the windows above. A worker that a frame of the host registered under the top-level site of
+    another page stays (Chrome's origin filter): a frame of such a host under a page of a listed
+    site, in a scope's tab, got that worker's page in 5 of 5 (review-30; O11: the guard does not
+    check frames). Two narrow cases (review-30 notes 5 and 6): a marked tab's navigation to a
+    recorded origin that is in flight while the last marked tab on that site leaves it (the removal
+    can take the worker that answers that navigation; the page then loads from the network); and an
+    origin that only an `about:blank` or `about:srcdoc` document holds counts as not shown.
   - The cost: in the agent browser, the operator's sites on no list lose their service workers when
-    the operator's tab leaves them, so their offline pages and push stop; such a site registers its
-    worker again at the next visit.
+    no marked tab shows a frame of their site any more, and the sites of a list lose theirs when no
+    list covers them any more: their offline pages and push stop, and such a site registers its
+    worker again at the next visit. A removal also takes the pages of that origin out of the
+    back/forward cache (review-30 note 7: a back navigation then loads from the network).
   - Measured (board ab-v16.74's live check, `test/live/workers.py`: Chromium 156, the unpacked agent
     0.3.5 of the branch, a stub daemon and no relay, `*.localhost` hosts only; lists
     `sitea.localhost` for scope A and `siteb.localhost` for scope B, operator `"*"`; one marked tab
     registered an own-page worker of `www.nolist.localhost` and a second one signed in to
     `app.nolist2.localhost` with a made-up cookie and registered a worker that answers with the
     cached signed-in page; a client-attached tab of scope A with every reader of ab-v16.73; a
-    client's `Page.navigate` and a page script's link click). While the marked tabs showed the
-    hosts (the residue): every navigation ended at `about:blank` with one `blocked`, but the
-    worker's own page committed and ran in 39 of 40 and the cached signed-in page in 19 of 20 (its
-    request sent the cookie in 19 of 19); for the 58 pages that committed, the client got the
+    client's `Page.navigate` and a page script's link click; 42 of 42 checks). While the marked tabs
+    showed the hosts (the residue): every navigation ended at `about:blank` with one `blocked`, but
+    the worker's own page committed and ran in 40 of 40 and the cached signed-in page in 18 of 20
+    (its request sent the cookie in 18 of 18); for the 58 pages that committed, the client got the
     page's title in the bridge's `tabs.onUpdated` in 58 of 58, and the client's own init script sent
-    the title to the client's site in 58 of 58; 22 to 44 ms from the commit to `about:blank`. After
+    the title to the client's site in 58 of 58; 21 to 43 ms from the commit to `about:blank`. After
     both marked tabs left: 80 of 80 at `about:blank` with one `blocked`, and 0 of 80 commits, 0
     scripts, 0 reads and 0 requests to the hosts. A second marked tab that showed the host in a
-    frame of another host's page kept the worker while the first tab left it (10 of 10 commits); after that
-    page left too, 0 of 10. The marked tab's next navigation to the host was a network request (no
+    frame of another host's page kept the worker while the first tab left it (9 of 10 commits); after
+    that page left too, 0 of 10. After a leave for an error page (a refused connection, review-30
+    B1): 0 of 10. The site rule (review-30's probe 2): one marked tab showed `www.pp.localhost` on a
+    second port, and a second marked tab showed `www.pp.localhost` with a frame of
+    `www.nolist3.localhost` that registered its worker (partitioned under that site); the second
+    tab's new frames of that host got the worker's page in 3 of 3 before and in 3 of 3 after the
+    first tab left (the build before the site rule: 0 of 2 after, review-30); after the second tab
+    left the site too, its next frame of that host went to the network. A session's end: a tab of a
+    scope C registered a worker on C's site (`www.sitec.localhost`); a scope-A tab that followed a
+    link there got the worker's page in 10 of 10; after a `set_scopes` ended C's list (its tab closed
+    by the sweep), in 0 of 10. The marked tab's next navigation to the host was a network request (no
     worker).
 - The closing rule: on each `set_scopes` the receiver closes every tab whose `http:`/`https:` host
   its list does not cover (a `blob:` page counts by its inner origin's host, as for the guard below,
@@ -802,9 +853,12 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
     got the page's title in 116 of 116, in the bridge's `tabs.onUpdated`, which the relay sends as
     `Target.targetInfoChanged`; the client's own init script ran in the page in 58 of 58 and sent
     the title to the client's own site). From receiver 0.3.5 the receiver removes such a site's
-    workers when no marked tab shows it any more (the worker removal at a marked tab's leave, above;
-    the operator's choice on board item ab-214), so this case stays open only while the operator's
-    own tab is on that host: after the leave, 0 of 80 commits (board ab-v16.74).
+    workers when no marked tab shows a frame of that site any more (the worker removal of the
+    recorded origins, above; the operator's choice on board item ab-214), so this case stays open
+    only while the operator's own tab is on that site, and then for the windows of that removal: the
+    end of its check (at most about 4 x `REMOVAL_WAIT_MS` while each call ends in time), until the
+    next check after a frame that a page script removes, and until the next event after a failed read
+    or removal. After the leave: 0 of 80 commits (board ab-v16.74).
     A worker that passes the navigation on: 80 of 80 at `about:blank` with one `blocked`; its page
     ran in 0 of 80, and its request reached the site in 80 of 80 (as above).
     A client's `Page.navigate` of a scope-A tab to a `blob:` URL that a page of scope B's site made: Chrome began
@@ -1688,8 +1742,9 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
     after SIGKILL, 0 of 5 after SIGTERM), so a new tab could get an old tab's scope. A worker stop
     between a change and the end of its write loses at most that one change: such a tab is a tab
     of no scope after the restart. The same area holds the record of origins of C5's worker removal
-    at a marked tab's leave (`worker:<origin>` keys, board ab-v16.74); the restore's one read gives
-    those keys to it (C5), and the restore keeps or removes only `tab:` keys.
+    of the recorded origins (`worker:<origin>` keys, board ab-v16.74); the restore's one read gives
+    those keys to it (C5), and the restore keeps or removes only `tab:` keys. The record is bounded
+    (C5: `RECORD_MAX`).
   - The restore, at the worker's start, in this order: the receiver removes every session rule
     (C5; rule 8 too, the marks go), reads the copy (`chrome.storage.session.get`), keeps the entries
     of the tabs that exist (`chrome.tabs.query`) and removes the keys of the others, and only then

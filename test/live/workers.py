@@ -24,14 +24,25 @@ The cases, in order:
   marked tab shows the origin); after that page leaves too, no commit.
 - race: the marked tab registers the worker, leaves, and a scope tab's Page.navigate starts 0, 100
   or 300 ms after the server saw the leave's request: the gap right after the leave.
+- error: the marked tab registers the worker again and leaves for an error page (a refused
+  connection: webNavigation.onErrorOccurred, no commit; review-30 B1): no commit after it.
+- site: review-30's probe 2. A marked tab shows R (a host on a second port: the same site as P,
+  another origin); a second marked tab shows P with a frame of www.nolist3.localhost that
+  registers its worker (partitioned under P's site). The first tab leaves R: the frame's worker
+  still answers the second tab's new frames (the site rule); after the second tab leaves the site
+  too, they go to the network.
+- session: a tab of scope C registers a worker on C's site; scope A's tab follows a link there and
+  gets the worker's page (the residue of another scope's site); a set_scopes ends C's list; then
+  no commit (the record of every tab's origins).
 - gone: the marked tab's next navigation to the host goes to the network (no worker).
 - restore (RESTORE_TRIALS, default 0): C6's restore tab whose site redirects to the host.
 
 Usage: test/live/workers.py [run folder] [port]
   run folder: default test/live/.run/workers-<stamp> (git-ignored); port: default LIVE_PORT or 8774.
 Env: CHROMIUM (default /usr/bin/chromium), RECEIVER (the agent folder; default this checkout's
-agent/), DISPLAY_N (default 142), TRIALS (20), CACHE_TRIALS (10), CTRL_TRIALS (5), AFTER_TRIALS
-(20), FRAME_TRIALS (5), RACE_REPS (4), RESTORE_TRIALS (0), READERS (1), EAGER (0).
+agent/), DISPLAY_N (default 142), PORT_B (the second port; default port + 1), TRIALS (20),
+CACHE_TRIALS (10), CTRL_TRIALS (5), AFTER_TRIALS (20), FRAME_TRIALS (5), RACE_REPS (4),
+ERROR_TRIALS (5), SITE_REPS (3), SESSION_TRIALS (5), RESTORE_TRIALS (0), READERS (1), EAGER (0).
 """
 
 import base64
@@ -354,9 +365,10 @@ procs = []
 
 def start():
     global DISPLAY, AUTH
-    httpd = ThreadingHTTPServer(("127.0.0.1", PORT), Site)
-    httpd.daemon_threads = True
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    for port in (PORT, PORT_B):
+        httpd = ThreadingHTTPServer(("127.0.0.1", port), Site)
+        httpd.daemon_threads = True
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
     threading.Thread(target=D.serve, daemon=True).start()
     disp = DISPLAY_N
     if os.path.exists(f"/tmp/.X11-unix/X{disp}") or os.path.exists(f"/tmp/.X{disp}-lock"):
@@ -585,6 +597,13 @@ NR = int(os.environ.get("RESTORE_TRIALS", "0"))
 NA = int(os.environ.get("AFTER_TRIALS", "20"))
 NF = int(os.environ.get("FRAME_TRIALS", "5"))
 NRACE = int(os.environ.get("RACE_REPS", "4"))
+NERR = int(os.environ.get("ERROR_TRIALS", "5"))
+NSITE = int(os.environ.get("SITE_REPS", "3"))
+NSESSION = int(os.environ.get("SESSION_TRIALS", "5"))
+PORT_B = int(os.environ.get("PORT_B", str(PORT + 1)))
+PP = "www.pp.localhost"  # on no list; served on PORT and PORT_B: two origins of one site
+W3 = "www.nolist3.localhost"  # on no list; a frame of it registers its worker under PP's site
+SITEC = "www.sitec.localhost"  # on scope C's list in the case session
 READ = "location.href + '\\n' + document.title"
 READERS = os.environ.get("READERS", "1") == "1"  # 0: only Page.enable (the commit's time), no reader
 
@@ -996,8 +1015,79 @@ def race(a, op, reps):
         json.dump(rows, f, indent=1)
     by = {w: [x for x in rows if x.get("wait") == w and "error" not in x] for w in (0, 100, 300)}
     summary = {f"wait_{w}": {"trials": len(xs), "commit": sum(x["commit"] for x in xs), "ran": sum(x["ran"] for x in xs)} for w, xs in by.items()}
-    check(f"race: the worker's page right after the leave (commits of trials): " + ", ".join(f"{w} ms {v['commit']} of {v['trials']}" for w, v in
+    check(f"race: the worker's page right after the leave (commits seen by the client): " + ", ".join(f"{w} ms {v['commit']} of {v['trials']}" for w, v in
           ((w, summary[f"wait_{w}"]) for w in (0, 100, 300))), all("error" not in x for x in rows), **summary)
+
+
+def closed_port():
+    """A loopback port with no listener (bound and closed): a navigation there is refused."""
+    sk = socket.socket()
+    sk.bind(("127.0.0.1", 0))
+    port = sk.getsockname()[1]
+    sk.close()
+    return port
+
+
+def error_case(a, op, out):
+    """review-30 B1: the marked tab leaves the host for an error page (no onCommitted)."""
+    ok = focus(op) and register(FREE, "own")
+    down = f"http://www.down.localhost:{closed_port()}/err"
+    operator_goes(down)
+    shown = bool(wait_for(lambda: (tab_url(op) or "").startswith("http://www.down.localhost:"), 5))
+    check("error: the marked tab registers the worker again, then shows the error page of a refused connection", ok and shown)
+    time.sleep(1.0)
+    phase(a, "error-left", ((FREE, "sw-own", NERR, "own"),), out, after=True)
+
+
+def frame_page(label):
+    """A page of P (on PORT) with a frame of W3 at /sw-own/<label>, and whether the worker answered."""
+    operator_goes(f"http://{PP}:{PORT}/embed?src=" + quote(url(W3, f"/sw-own/{label}"), safe=""))
+    wait_for(lambda: reqs(W3, f"/beacon/swpage/sw-own/{label}") or reqs(W3, f"/beacon/sw-own/{label}"), 5)
+    time.sleep(0.3)
+    return {"worker": bool(reqs(W3, f"/beacon/swpage/sw-own/{label}")), "network": bool(reqs(W3, f"/sw-own/{label}"))}
+
+
+def site_case(op1, op2, out):
+    """review-30's probe 2: the site rule keeps a worker that a marked tab's frame uses."""
+    ok = focus(op1)
+    operator_goes(f"http://{PP}:{PORT_B}/r1")
+    ok = ok and bool(wait_for(lambda: reqs(PP, "/beacon/r1"), 5))
+    ok = ok and focus(op2)
+    operator_goes(f"http://{PP}:{PORT}/embed?src=" + quote(url(W3, "/sw-reg?mode=own"), safe=""))
+    ok = ok and bool(wait_for(lambda: reqs(W3, "/beacon/sw-ready/own"), 10))
+    check(f"site: one marked tab shows R ({PP}:{PORT_B}); the second shows P ({PP}:{PORT}) with a frame of {W3} that registers its worker", ok)
+    before = [frame_page(f"site-before{i}") for i in range(NSITE)]
+    left = leave(op1, "/leave-r") is not None
+    time.sleep(1.0)
+    after = [frame_page(f"site-after{i}") if focus(op2) else {"worker": False, "network": False} for i in range(NSITE)]
+    out["site"] = {"before": before, "after": after}
+    check(f"site: the second tab's new frames of {W3}: the worker answers before the first tab leaves R ({sum(x['worker'] for x in before)} of {NSITE}) "
+          f"and after it ({sum(x['worker'] for x in after)} of {NSITE}; the site rule)",
+          left and all(x["worker"] and not x["network"] for x in before + after), before=before, after=after)
+    gone_ok = leave(op2, "/leave-p") is not None
+    time.sleep(1.0)
+    gone = frame_page("site-gone") if focus(op2) else {"worker": True, "network": False}
+    leave(op2, "/leave-p2")
+    out["site"]["gone"] = gone
+    check("site: after the second tab left the site too, its next frame of the host goes to the network", gone_ok and not gone["worker"] and gone["network"], gone=gone)
+
+
+def session_case(a, out):
+    """ab-lead's scope change: a worker of a scope's site after that scope's list ends."""
+    with_c = {"lists": {**LISTS, "lc": ["sitec.localhost"]}, "scopes": {**SCOPES, "scope-c": "lc"}, "default": None, "operator": "*"}
+    r = D.set_scopes(with_c)
+    c = agent_tab("scope-c", SITEC, "/c1")
+    ok = r.get("ok") and loaded(SITEC, "/c1")
+    before = len(reqs(SITEC, "/beacon/sw-ready/own"))
+    nav_cdp(c, url(SITEC, "/sw-reg?mode=own"))
+    ok = ok and bool(wait_for(lambda: len(reqs(SITEC, "/beacon/sw-ready/own")) > before, 10))
+    check(f"session: a tab of scope C registers a worker on its own site {SITEC}", ok, tab=c)
+    phase(a, "session-open", ((SITEC, "sw-c", NSESSION, "own"),), out)
+    r = D.set_scopes(scopes_obj())
+    closed = bool(wait_for(lambda: c not in tab_ids(), 5))
+    check("session: a set_scopes ends scope C's list (its tab closes: the sweep)", r.get("ok") and closed, data=r.get("data"))
+    time.sleep(1.0)
+    phase(a, "session-ended", ((SITEC, "sw-c", NSESSION, "own"),), out, after=True)
 
 
 def run_trials(a, op1, op2):
@@ -1035,6 +1125,18 @@ def run_trials(a, op1, op2):
     # ---- race: the gap right after the leave ----
     if NRACE > 0:
         race(a, op1, NRACE)
+
+    # ---- error: a leave for an error page (review-30 B1) ----
+    if NERR > 0:
+        error_case(a, op1, out)
+
+    # ---- site: the site rule (review-30's probe 2) ----
+    if NSITE > 0:
+        site_case(op1, op2, out)
+
+    # ---- session: a scope's list ends ----
+    if NSESSION > 0:
+        session_case(a, out)
 
     # ---- gone: the marked tab's next navigation to the host goes to the network ----
     focus(op1)
