@@ -634,16 +634,18 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
     version of a read is taken before the read, so an event of that tab during the read makes the
     read old for the next check (review-30d C3). The shown sites come only from these reads and
     from the sites of the marked tabs' commits during the running check (refused origins too), never
-    from the record (review-30d B3 b). A tab that gets the mark during the reads stops the check,
-    and the next check reads it (review-30d P1). A web origin that the read gives joins the record
-    too (for example a page of a tab that takes a mark at `tabs.onReplaced`); an origin that waits
+    from the record (review-30d B3 b). A tab that gets the mark during the check (at
+    `tabs.onReplaced` it can show an origin that it committed before the mark), or a change of the
+    lists during the check, stops the check before its next removal call: it keeps the due origins,
+    and one more check reads the new tab and decides (review-30d P1, review-30e B1). A web origin
+    that the read gives joins the record too (for example a page of a tab that takes a mark at `tabs.onReplaced`); an origin that waits
     already (the bound, below) is tried again in one step. For each recorded or waiting origin whose
     site no marked tab shows and that no list of the last applied `set_scopes` covers, the receiver
     calls `browsingData.remove({origins: [...]}, {serviceWorkers:
     true})`, in calls of at most 500 origins, each filtered again with the marked tabs' commits of
     the check just before it; on success they leave the record, the copy and the pending set,
-    except an origin that a tab committed again during the call. A `set_scopes` during the check's
-    loops leaves the decision to its own check. A list covers an origin when an entry covers
+    except an origin that a tab committed again during the call. A list covers an origin when an
+    entry covers
     its host (the entry and every subdomain); every list of `lists` counts, also the `operator` list
     and a list that no scope names (the listed sites keep their workers, board item ab-7wg); with no
     applied `set_scopes` since the worker's start no list covers it. A listed origin stays in the
@@ -682,11 +684,14 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
     check of its own commit goes at the follow-up check; one that it registers later than that stays
     until that origin's next commit is checked (review-30b note 2). The work of a check is linear in
     the record, the pending set, the follow-ups and the frames of the tabs that it reads again.
-    Every loop of a check over frames, the record, the pending set or the follow-ups pauses (one
-    task) after each 500 items, and each removal call of at most 500 origins is a pause too, so
-    Chrome's queued events, also the guard's, run between its parts (review-30d's decision 2).
-    Measured in Node (the fake chrome): the check's longest synchronous part was 4.5 ms with
-    12,000 waiting origins and 4000 frames. Measured (review-30c's flood, below): while two marked
+    Every loop of a check pauses (one task) after each 500 items: over frames, the record, the
+    pending set and the follow-ups, and at a list end's removal of every worker over the shown
+    origins before its call and over the parts after it; each removal call of at most 500 origins
+    is a pause too. So Chrome's queued events, also the guard's, run between its parts (review-30d's
+    decision 2, review-30e B2). Measured in Node (the fake chrome, review-30e's cases with 1000
+    recorded and 10,000 waiting origins: a new read of 11,001 frames, a check with no new read, a
+    list end, a leave of 11,000 origins and its follow-up): the check's longest synchronous part was
+    at most 3.1 ms. Measured (review-30c's flood, below): while two marked
     tabs showed 1200 frames, the guard's times stayed near receiver 0.3.4's.
   - The bound (review-30b B1, review-30d and ab-lead's decisions: no page content, any number of
     frames or origins in any tab, can make the receiver remove a worker of a site that a marked tab
@@ -696,9 +701,11 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
     in memory, at most `PENDING_MAX` = 10,000 origins, and each check handles it with the record's
     rules: its workers go when no list covers it and no marked tab shows its site; a shown or
     listed one waits (a listed one goes by an ordinary removal at its list's end). A worker start
-    loses the pending set; the removal of every worker at the first `set_scopes` after the start
-    (above) covers it. Beyond `PENDING_MAX`, a new listed origin keeps the entries of its lists, and
-    only at the end of one of them (a `set_scopes` whose lists no longer hold it: the operator's or
+    loses the pending set, the follow-up sets and the kept list entries; the removal of every worker
+    at the first `set_scopes` after the start (above) covers them. Until that `set_scopes` a worker
+    of a waiting origin stays, and the case of a host on no list stays open for it (the guard
+    then gives no tab a list: C5, above). Beyond `PENDING_MAX`, a new listed origin keeps the
+    entries of its lists, and only at the end of one of them (a `set_scopes` whose lists no longer hold it: the operator's or
     a session's action) the receiver calls `browsingData.remove({excludeOrigins: [...]},
     {serviceWorkers: true})` once: it removes every worker except those of the origins that the
     marked tabs show, of the recorded and waiting origins of their sites and of the recorded and
@@ -715,7 +722,9 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
     or until the next worker start (the removal at its first `set_scopes`). (2) A new listed origin
     then loses its worker at the end of a list entry that covered such an origin (its own entry or
     the entry of another such origin), also when its own list stays in force (that removal does not
-    know it). The end of a list that covered no such origin removes nothing.
+    know it). The end of a list that covered no such origin removes nothing. (3) The follow-up sets
+    hold at most 10,000 origins each: beyond 10,000 removed origins in one period of the follow-up
+    timer, the others get no follow-up check (a page needs more than 10,000 removals in 5 s).
   - The record's cost: one `chrome.storage.session` write for each new origin and one key removal
     for each origin that goes (some tens of bytes per origin, about 50 KB at the bound), one frame
     read of a marked tab after each event of its frames, and one `browsingData.remove` for each check

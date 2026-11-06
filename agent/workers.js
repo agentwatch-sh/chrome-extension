@@ -178,9 +178,13 @@ export class Workers {
     this.#r = receiver;
   }
 
-  // The recorded origins (for tests).
+  // The recorded origins and the waiting ones (for tests).
   origins() {
     return [...this.#record.keys()];
+  }
+
+  pendingOrigins() {
+    return [...this.#pending.keys()];
   }
 
   // webNavigation.onCommitted of any frame of any tab: its web origin joins
@@ -418,6 +422,15 @@ export class Workers {
     }
     const listsVer = (this.#listsNow(), this.#listsVer);
     const now = this.#lists;
+    // Before each removal call: a tab that got the mark since the check's
+    // start (tabs.onReplaced: it can show an origin that it committed before
+    // the mark), or a list change, stops the check; it keeps the due origins,
+    // and one more check (it reads the new tab) decides.
+    const changed = () => r.map.marked().some((id) => !tabs.includes(id)) || this.#listsNow() !== now || this.#listsVer !== listsVer;
+    const stop = () => {
+      keepDue();
+      this.schedule({ learn: true });
+    };
     // A list's end after the pending set dropped a listed origin: one removal
     // of every worker that keeps the shown origins, the origins of the shown
     // sites and the listed origins (of the record and of the pending set).
@@ -426,13 +439,19 @@ export class Workers {
       const keep = new Set();
       for (const id of tabs) {
         const c = this.#frames.get(id);
-        if (c) for (const o of c.origins.keys()) keep.add(o);
+        if (c) {
+          for (const o of c.origins.keys()) {
+            await step();
+            keep.add(o);
+          }
+        }
       }
       for (const [o, e] of [...this.#record, ...this.#pending]) {
         await step();
         if (sites.has(e.site) || recent.has(e.site) || this.#covered(e)) keep.add(o);
       }
-      all = await removeWorkers(r, null, [...keep].sort());
+      if (changed()) return stop();
+      all = await removeWorkers(r, null, [...keep]);
       if (all) this.#listedGone.clear();
     }
     // The origins to remove: of the record, of the pending set and of the
@@ -448,19 +467,20 @@ export class Workers {
       const e = this.#entry(infoOf(o), 0);
       if (!sites.has(e.site) && !this.#covered(e)) gone.set(o, e);
     }
-    // The lists changed during the loops: the set_scopes's own check decides.
-    if (this.#listsNow() !== now || this.#listsVer !== listsVer) {
-      keepDue();
-      return;
-    }
-    // The removals, in parts of at most SLICE origins (each call lets the
-    // queued events run). The last filter of each part, with no pause before
-    // its call: the marked tabs' commits during the check count as shown.
+    // The removals, in parts of at most SLICE origins (each call, or after a
+    // removal of every worker each part, is a pause). The last filter of each
+    // part, with no pause before its call: the marked tabs' commits during
+    // the check count as shown, and a new mark or a list change stops it.
     const list = [...gone.keys()];
     const keys = [];
     for (let i = 0; i < list.length; i += SLICE) {
+      if (all && i > 0) await pause();
       const part = list.slice(i, i + SLICE).filter((o) => !recent.has(gone.get(o).site));
       if (part.length === 0) continue;
+      if (!all && changed()) {
+        stop();
+        break;
+      }
       const seq1 = this.#seq;
       if (!all && !(await removeWorkers(r, part))) {
         keepDue();

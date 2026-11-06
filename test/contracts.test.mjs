@@ -263,7 +263,12 @@ test("C5 states the worker removal of the recorded origins: every tab's origins,
     "A frame that a page script removes after its load sends no event (before the end of its load Chromium sends `onErrorOccurred`, review-30b note 6): that tab's last read still shows it, so its site stays shown until that tab's next frame event (a commit or a navigation error), its close, its replace or its mark loss. This window has no time limit while that tab has none of these",
     // review-30c B1: the reads, the work and the guard.
     "a check reads a marked tab again only after an event of its frames (a commit or a navigation error) or when it has no read yet, and reuses the last read of the other marked tabs",
-    "Every loop of a check over frames, the record, the pending set or the follow-ups pauses (one task) after each 500 items, and each removal call of at most 500 origins is a pause too",
+    "Every loop of a check pauses (one task) after each 500 items: over frames, the record, the pending set and the follow-ups, and at a list end's removal of every worker over the shown origins before its call and over the parts after it; each removal call of at most 500 origins is a pause too.",
+    // review-30e B1: a new mark or a list change stops the check before its next removal call.
+    "A tab that gets the mark during the check (at `tabs.onReplaced` it can show an origin that it committed before the mark), or a change of the lists during the check, stops the check before its next removal call: it keeps the due origins, and one more check reads the new tab and decides",
+    // review-30e notes 1 and 2.
+    "Until that `set_scopes` a worker of a waiting origin stays, and the case of a host on no list stays open for it",
+    "(3) The follow-up sets hold at most 10,000 origins each: beyond 10,000 removed origins in one period of the follow-up timer, the others get no follow-up check",
     // review-30d B3: the shown sites come only from the reads and the marked commits during the check.
     "The version of a read is taken before the read, so an event of that tab during the read makes the read old for the next check",
     "The shown sites come only from these reads and from the sites of the marked tabs' commits during the running check (refused origins too), never from the record",
@@ -297,7 +302,7 @@ test("C5 states the worker removal of the recorded origins: every tab's origins,
   assert.ok(!says(C5, "so no tab of them can reach a worker"), "C5 no longer says that no tab can reach such a worker");
   // review-30 note 3: the windows in the guard's sentence.
   assert.ok(says(C5, "so this case stays open only while the operator's own tab is on that site, and then for the windows of that removal: the end of its check (at most about 4 x `REMOVAL_WAIT_MS` while each call ends in time), until the next frame event, close, replace or mark loss of the tab whose frame a page script removed (no time limit), until the next event after a failed read or removal, and for an origin that the bound did not keep (the residue of the bound, above)."), "C5: the windows of the case of a host on no list");
-  for (const old of ["at a marked tab's leave", "MEASURE_PLACEHOLDER", "at the end of any list", "so the workers of its sites go at the next check", "one frame read of each marked tab for each check", "evicts the oldest", "it pauses (one task) after each 1000 items", "Each removal arms its own follow-up timer", "until the next check after a frame that a page script removes"]) assert.ok(!says(C5, old), `C5 no longer says: ${old}`);
+  for (const old of ["at a marked tab's leave", "MEASURE_PLACEHOLDER", "at the end of any list", "so the workers of its sites go at the next check", "one frame read of each marked tab for each check", "evicts the oldest", "it pauses (one task) after each 1000 items", "Each removal arms its own follow-up timer", "until the next check after a frame that a page script removes", "A tab that gets the mark during the reads stops the check", "leaves the decision to its own check"]) assert.ok(!says(C5, old), `C5 no longer says: ${old}`);
 });
 
 test("C4's blocked holds from (board ab-v16.33), each notice vector has C4's shape, and C5 states from and the once rule", () => {
