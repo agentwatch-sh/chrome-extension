@@ -129,28 +129,32 @@ and a frame's partitioned worker under that site; the site rule), `session` (a t
 registers a worker on C's site; a `set_scopes` ends C's list), `flood` (review-30b B1: two marked
 tabs with 600 frames of distinct hosts each; the open page's worker and two listed workers stay; a
 list's end during the flood keeps the open page's worker; after the flood the gap after a leave is
-still closed), `gone` (the marked tab's next
+still closed; review-30c B1: the guard's times before and during the flood, with limits), `gone`
+(the marked tab's next
 navigation to the host is a network request) and, with `RESTORE_TRIALS`, C6's restore tab. The
 environment: `TRIALS` (20), `CACHE_TRIALS` (10), `CTRL_TRIALS` (5), `AFTER_TRIALS` (20),
 `FRAME_TRIALS` (5), `RACE_REPS` (4), `ERROR_TRIALS` (5), `SITE_REPS` (3), `SESSION_TRIALS` (5),
-`FLOOD_FRAMES` (600 per tab; 0: no flood), `FLOOD_TRIALS` (5),
+`FLOOD_FRAMES` (600 per tab; 0: no flood), `FLOOD_TRIALS` (5), `FLOOD_NOTICE_MS` (250: the limit
+of the blocked notice during the flood), `FLOOD_BLANK_MS` (150: the limit of the worker's page from
+commit to `about:blank` during the flood), `CASES` (`flood`: the setup and the case flood only, for
+example a timing run of another receiver with `RECEIVER`),
 `RESTORE_TRIALS` (0), `READERS` (1: every reader of ab-v16.73; 0: only `Page.enable`), `EAGER`,
 `PORT_B`, `CHROMIUM`, `RECEIVER`. The run folder holds `results.json`, `summary.json`, the rows of
 each case, the logs, the screenshots and the screencast frames. The script deletes nothing.
 
 Result on taylor (2026-11-06, Chromium 156.0.8078.79, receiver 0.3.5 of the branch
-`ab-v16.74-sw-remove` after review-30b, `DISPLAY_N=142`, the defaults): 50 of 50 checks passed.
+`ab-v16.74-sw-remove` after review-30c, `DISPLAY_N=142`, the defaults): 51 of 51 checks passed.
 
 | Case | Trials | Worker's page committed (seen by the client) | Requests to the host |
 | --- | --- | --- | --- |
 | before, own-page worker (link and `Page.navigate`) | 40 | 40 | 0 |
-| before, cached signed-in page | 20 | 18 (cookie sent in 18) | 0 |
+| before, cached signed-in page | 20 | 19 (cookie sent in 19) | 0 |
 | before, control (no worker) | 10 | 0 | 0 |
 | after the leave, own-page worker | 40 | 0 | 0 |
 | after the leave, cached signed-in page | 40 | 0 | 0 |
 | frame: the host in a second marked tab's frame | 10 | 9 | 0 |
 | frame: after that page left | 10 | 0 | 0 |
-| race: `Page.navigate` 15 to 16 ms after the leave's request | 4 | 4 | 0 |
+| race: `Page.navigate` 14 to 15 ms after the leave's request | 4 | 4 | 0 |
 | race: 100 ms or 300 ms after it | 8 | 0 | 0 |
 | error: after a leave for an error page | 10 | 0 | 0 |
 | session: scope C's list in force | 10 | 10 | 0 |
@@ -159,15 +163,19 @@ Result on taylor (2026-11-06, Chromium 156.0.8078.79, receiver 0.3.5 of the bran
 | flood: the open page's host after the flood and the leave | 10 | 0 | 0 |
 
 Every trial ended at `about:blank` with one correct `blocked`. Before the leave, the worker's page
-stayed 22 to 41 ms from its commit to `about:blank`; the client read every page that committed (the
+stayed 22 to 44 ms from its commit to `about:blank`; the client read every page that committed (the
 title event and its init script). The case `site`: the second marked tab's new frames of
 `www.nolist3.localhost` got the frame's worker in 3 of 3 before and 3 of 3 after the first tab left
 the other origin of the site; after the second tab left the site too, the next frame went to the
-network. The case `flood` (1200 frames in 22 s): the open page's worker, D's listed worker and the
+network. The case `flood` (1200 frames in 30 s): the open page's worker, D's listed worker and the
 canary on A's list answered before, during the flood and after one more new origin; at D's list end
 the open page's worker stayed and the canary went to the network (the bound had evicted it: C5's
-residue (3)). After the leave, the marked tab's next navigation to the host was a network request
-(no worker).
+residue (3)). The guard's times (a client's `Page.navigate`, 5 each): before the flood, the blocked
+notice 21 to 27 ms after the command and the worker's page 21 to 33 ms from its commit to
+`about:blank`; during the flood, 26 to 31 ms and 20 to 39 ms (limits 250 ms and 150 ms). With only
+`Page.enable` (`READERS=0 CASES=flood`, review-30c's method), during the flood: this head 25 to 29 ms
+and 25 to 33 ms; receiver 0.3.4 (`RECEIVER` = main 8a3b66f's `agent/`) 26 to 40 ms and 19 to 24 ms.
+After the leave, the marked tab's next navigation to the host was a network request (no worker).
 
 ## What the run sets up
 

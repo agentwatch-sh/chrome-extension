@@ -40,8 +40,12 @@ The cases, in order:
   record reaches its bound. The open page's worker and the listed workers stay. A set_scopes ends
   D's list while the flood is open: the open page's worker stays (the list end's removal excludes
   it); the canary shows whether that removal of every worker ran (a listed origin that the bound
-  evicted loses its worker there: the stated cost). Then the flood pages leave, the first tab
-  leaves its host, and scope A's tab gets no worker's page there.
+  evicted loses its worker there: the stated cost). The guard's times before and during the flood
+  (review-30c B1): a client's Page.navigate of scope A's tab to a host with no worker (the blocked
+  notice) and to the open page's host (its worker's page: commit to about:blank); the check's
+  limits: notice at most FLOOD_NOTICE_MS (250), worker's page at most FLOOD_BLANK_MS (150). Then
+  the flood pages leave, the first tab leaves its host, and scope A's tab gets no worker's page
+  there.
 - gone: the marked tab's next navigation to the host goes to the network (no worker).
 - restore (RESTORE_TRIALS, default 0): C6's restore tab whose site redirects to the host.
 
@@ -51,7 +55,9 @@ Env: CHROMIUM (default /usr/bin/chromium), RECEIVER (the agent folder; default t
 agent/), DISPLAY_N (default 142), PORT_B (the second port; default port + 1), TRIALS (20),
 CACHE_TRIALS (10), CTRL_TRIALS (5), AFTER_TRIALS (20), FRAME_TRIALS (5), RACE_REPS (4),
 ERROR_TRIALS (5), SITE_REPS (3), SESSION_TRIALS (5), FLOOD_FRAMES (600; 0: no flood),
-FLOOD_TRIALS (5), RESTORE_TRIALS (0), READERS (1), EAGER (0).
+FLOOD_TRIALS (5), FLOOD_NOTICE_MS (250), FLOOD_BLANK_MS (150), RESTORE_TRIALS (0), READERS (1),
+EAGER (0), CASES (default all; "flood": the setup and the case flood only, for example the timing
+run of another receiver with RECEIVER).
 """
 
 import base64
@@ -522,11 +528,14 @@ def operator_goes(u):
 
 
 def register(host, mode):
-    """The focused marked tab opens the host's registration page and waits for its worker."""
+    """The focused marked tab opens the host's registration page and waits for its worker; true
+    also when the host's worker is there already (an own-page worker answers the registration page
+    with its own page)."""
     path = f"/beacon/sw-ready/{mode}"
     before = len(reqs(host, path))
+    answered = len(reqs(host, "/beacon/swpage/sw-reg"))
     operator_goes(url(host, f"/sw-reg?mode={mode}"))
-    return bool(wait_for(lambda: len(reqs(host, path)) > before, 10))
+    return bool(wait_for(lambda: len(reqs(host, path)) > before or len(reqs(host, "/beacon/swpage/sw-reg")) > answered, 10))
 
 
 def focus(tab_id):
@@ -625,6 +634,9 @@ SITED = "www.sited.localhost"  # on scope D's list in the case flood
 CANARY = "www.canary.sitea.localhost"  # on scope A's list (sitea.localhost) in the case flood
 NFLOOD = int(os.environ.get("FLOOD_FRAMES", "600"))
 NFLOOD_T = int(os.environ.get("FLOOD_TRIALS", "5"))
+FLOOD_NOTICE_MS = float(os.environ.get("FLOOD_NOTICE_MS", "250"))
+FLOOD_BLANK_MS = float(os.environ.get("FLOOD_BLANK_MS", "150"))
+CASES = set((os.environ.get("CASES") or "before,after,frame,race,error,site,session,flood").split(","))
 READ = "location.href + '\\n' + document.title"
 READERS = os.environ.get("READERS", "1") == "1"  # 0: only Page.enable (the commit's time), no reader
 
@@ -1135,6 +1147,17 @@ def tiny_count(sub):
         return sum(1 for r in requests_seen if r["path"] == "/tiny" and r["host"].endswith("." + sub))
 
 
+def guard_times(a, label):
+    """The guard's times: a client's Page.navigate of tab a to a host with no worker (the blocked
+    notice: DNR's block) and to the open page's host (the worker's page: commit to about:blank)."""
+    m = {}
+    for host, form in ((NOWORKER, "noworker"), (FREE, "worker")):
+        rows = trials(a, host, "cdp", f"{label}-{form}", NFLOOD_T)
+        agg = report(f"{label}-{form}", rows)
+        m[form] = {k: agg[k] for k in ("trials", "blank_with_one_right_notice", "commit_seen_by_client", "notice_ms", "commit_to_blank_ms", "network_request")}
+    return m
+
+
 def flood_case(a, op1, out):
     """review-30b B1: a flood of frame origins in marked tabs never removes a worker of a shown
     site or of a listed origin; a removal of every worker comes only from a list's end."""
@@ -1154,6 +1177,7 @@ def flood_case(a, op1, out):
     before = alive("before")
     check("flood: the first marked tab shows its host; scope D's tab and scope A's canary tab register workers on their listed sites; all three answer",
           ok and set(before.values()) == {"worker"}, **before)
+    times_before = guard_times(a, "flood-t0")
     t0 = now_ms()
     ev = operator_tab("ctrl+t")
     op3 = ((ev or {}).get("tab") or {}).get("id")
@@ -1170,7 +1194,16 @@ def flood_case(a, op1, out):
     wait_for(lambda: reqs("www.newo.localhost", "/tiny"), 6)
     time.sleep(3)
     again = alive("again")
-    out["flood"] = {"frames": frames, "load_ms": load_ms, "before": before, "during": during, "again": again}
+    times_during = guard_times(a, "flood-t1")
+    out["flood"] = {"frames": frames, "load_ms": load_ms, "before": before, "during": during, "again": again,
+                    "times_before": times_before, "times_during": times_during}
+    nt = times_during["noworker"]["notice_ms"] or {}
+    bt = times_during["worker"]["commit_to_blank_ms"] or {}
+    check(f"flood timing (review-30c B1): during the flood the blocked notice {nt.get('min')} to {nt.get('max')} ms (limit {FLOOD_NOTICE_MS:g}), "
+          f"the worker's page commit to about:blank {bt.get('min')} to {bt.get('max')} ms (limit {FLOOD_BLANK_MS:g})",
+          nt.get("max") is not None and nt["max"] <= FLOOD_NOTICE_MS and bt.get("max") is not None and bt["max"] <= FLOOD_BLANK_MS
+          and times_during["noworker"]["blank_with_one_right_notice"] == NFLOOD_T and times_during["worker"]["blank_with_one_right_notice"] == NFLOOD_T,
+          before=times_before, during=times_during)
     check(f"flood: two marked tabs with {frames} frames of distinct hosts; the open page's worker and both listed workers stay, also after one more new origin",
           frames >= 2 * NFLOOD - 20 and set(during.values()) == {"worker"} and set(again.values()) == {"worker"}, frames=frames, load_ms=load_ms, during=during, again=again)
     # D's list ends while the flood is open: its tab closes (the sweep).
@@ -1195,7 +1228,13 @@ def flood_case(a, op1, out):
 def run_trials(a, op1, op2):
     out = {}
     # ---- before: the marked tabs show the hosts (the residue as measured on board ab-v16.73) ----
-    phase(a, "before", ((FREE, "sw-own", N, "own"), (FREE_C, "cache", NC, "cache"), (NOWORKER, "ctrl", NCTRL, "control")), out)
+    if "before" in CASES:
+        phase(a, "before", ((FREE, "sw-own", N, "own"), (FREE_C, "cache", NC, "cache"), (NOWORKER, "ctrl", NCTRL, "control")), out)
+    if CASES == {"flood"}:
+        flood_case(a, op1, out)
+        with open(os.path.join(RUN, "summary.json"), "w") as f:
+            json.dump(out, f, indent=1)
+        return
 
     # ---- the leave: both marked tabs open a page of a host with no worker ----
     t1 = leave(op1, "/leave-own")
