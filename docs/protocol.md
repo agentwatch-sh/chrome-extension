@@ -56,12 +56,12 @@ relay), and the last-window guard and the readiness of C11.
 The agent pointer (board task ab-v16.70; the design: agent-browser
 `docs/superpowers/specs/2026-11-06-agent-pointer-move-design.md`, board ab-v16.37, merged at
 agent-browser `6bb6838`) is in C10 and C11. When a window comes forward, the X server gives its page a
-real pointer event at the X pointer. So the daemon, which owns the agent display, moves the X pointer
-at the relay's request, along a path that the relay computes, before a window comes forward. The
-daemon answers the two ops itself (C10, the daemon's own ops), so the receiver does not change. agentwatch builds the daemon side in its task age-0kh.28 (aw-lead), and the relay its side
-in board ab-v16.71 (C11, the pointer at an activation). Until the daemon side ships, a `daemon.` op
-goes to the receiver as any op, the receiver answers `unknown op`, and the relay turns its paths off:
-it is then exactly as before.
+real pointer event at the X pointer. So the daemon, which owns the agent display, moves the X pointer at
+the relay's request, along a path that the relay computes, before a window comes forward. The daemon
+answers the two ops itself (C10, the daemon's own ops), so the receiver does not change. agentwatch
+builds the daemon side in its task age-0kh.28 (aw-lead), and the relay its side in board ab-v16.71 (C11,
+the pointer at an activation). Until the daemon side ships, a `daemon.` op goes to the receiver as any
+op, the receiver answers `unknown op`, and the relay turns its paths off: it is then exactly as before.
 
 - Sender extension ID: `bpfkgknpndlpkcffmaaelkfcbpackiip`
 - Receiver extension ID: `ifhfjdmdbgbnmllffiadajepajbcdnai`
@@ -1002,9 +1002,9 @@ first document request of a new tab (below).
   `not attached`, `no list for this scope` (`tabs.create`, `windows.create`: each tab's scope,
   below), `timeout`, `too large` (a res above `MAX_RESULT`), and the text of a `chrome.*` error as
   Chrome gives it (for example `No tab with id: 7.`).
-- The relay gets exactly one res for each request: the receiver's, or one from the daemon. A
-  `daemon.` op gets the daemon's own answer (the daemon's own ops, below), or none after the relay
-  ended. The daemon's answers have the same shape,
+- The relay gets exactly one res for each request: the receiver's, or one from the daemon. A `daemon.` op
+  gets the daemon's own answer (the daemon's own ops, below), or none when the relay ends or the daemon
+  stops. The daemon's answers have the same shape,
   `{"t":"res","ch":"bridge","id":"<id>","ok":false,"error":"<text>"}`, with these texts:
   - `not connected`: no receiver with channel `bridge` is connected. The daemon answers at once.
   - `disconnected`: the link dropped while the request waited or ran.
@@ -1129,8 +1129,9 @@ that tab still reach Chrome in the relay's order.
   MCP leaves the dialog open while its model decides. `Runtime.evaluate` and
   `Runtime.callFunctionOn` with `awaitPromise` wait for a promise. So a CDP command fails only after
   10 minutes.
-- The relay sends each op's default wait. The two `daemon.` ops are the exception: their wait is per
-  request, and the daemon does not use it (the daemon's own ops, below).
+- The relay sends each op's default wait. The two `daemon.` ops are the exception: the relay sends
+  `POINTER_READ_WAIT_MS` for `daemon.pointerAt` and a wait per request for `daemon.movePointer`, and the
+  daemon uses neither (the daemon's own ops, below).
 - The receiver answers `timeout` when an op runs `wait` ms.
 - The daemon counts from when it read the request. A request that waited q ms in the daemon's queue
   (`MAX_BYTES_IN_FLIGHT`, below) goes to the receiver with `wait` minus q. When that is 0 or less,
@@ -1422,7 +1423,7 @@ sections 2 and 4).
     (Linux), never with `performance.now()` (whose origin is the process's own start), and sends its
     clock plus `POINTER_START_MS = 300`. The daemon reads its clock as `time.monotonic_ns() // 1000000`
     (injected for its tests). The daemon starts no path after `notAfter`.
-  - `views`: the `views` that the relay last read (`not now`, below).
+  - `views`: the `views` that the relay last read, an integer of 0 or more (`not now`, below).
 
   Each number of `move` is an integer: a JSON number with no fraction part (`true` and `false` are no
   numbers). A distance is Euclidean: two points are at most `d` px apart when
@@ -1457,8 +1458,9 @@ sections 2 and 4).
   The `ok` answer comes after the last point: `{"x":<int>,"y":<int>,"views":<int>}`, the position that
   the script's `getmouselocation` read. Board ab-v16.71's live check measures how well
   `xdotool sleep` keeps `dt`, and its numbers come here.
-- The counts of `too many moves`: a play counts when it starts, and a read of `daemon.pointerAt` when
-  its X call starts. A refusal does not count.
+- The counts of `too many moves`: a play counts when it starts, and a read of `daemon.pointerAt` when its
+  X call starts. The read before a play does not count, and the two counts are apart: a play counts only
+  against the plays, and a read only against the reads. A refusal does not count.
 - The kills. The daemon kills a playing path at a relay end (the relay's epoch changes: no answer),
   at a unit stop (`no display`; the kill comes before the unit's stop steps), at a link change
   (`disconnected`), at its own stop (no answer: the relay's standard input ends), and at the
@@ -2321,11 +2323,13 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
   the window comes forward. It does this for every client. The agent pointer design (agent-browser
   `docs/superpowers/specs/2026-11-06-agent-pointer-move-design.md`, section 3) gives the reasons.
   - The paths are on, off or unknown. They are unknown until the first answer of the probe,
-    `daemon.pointerAt`, which the relay sends at each link up. An answer turns them on, and gives
-    `at`, the display's size and `views`. `unknown op`, `wrong display` and `not connected` (an older
-    daemon) turn them off until the next link up, and `no display` for 60 s. `busy`,
-    `too many moves`, `disconnected` and the relay's own timer leave them unknown, and the next step
-    that needs them probes again. Each time the paths turn on, the front page is unknown. While the paths are off, the relay is exactly as the bullets above say: no geometry read, no wait, no catch-up and no path, and `Page.bringToFront` and `Target.activateTarget` go as above.
+    `daemon.pointerAt`, which the relay sends at each link up. An answer turns them on, and gives `at`,
+    the display's size and `views`. `unknown op`, `wrong display` and `not connected` (an older daemon)
+    turn them off until the next link up, and `no display` for 60 s. `busy`, `too many moves`,
+    `disconnected` and the relay's own timer leave them unknown, and the next step that needs them probes
+    again. Each time the paths turn on, the front page is unknown. While the paths are off, the relay is
+    exactly as the bullets above say: no geometry read, no wait, no catch-up and no path, and
+    `Page.bringToFront` and `Target.activateTarget` go as above.
   - What the relay keeps, in memory. Each page's last point: the point that Chrome last saw in it. A
     client's `Input.dispatchMouseEvent` or `Input.dispatchDragEvent` on the tab's own session sets it
     when it is sent; a wheel event more than 2 px from it, a child session's pointer input and touch
@@ -2379,18 +2383,19 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
     `tabs.update` and no `windows.update`, as above). The worst case is about 11.4 s; the normal case
     is the path's time (0.3 to 1.5 s) plus some 30 to 60 ms.
   - The catch-up keeps each page's pointer events continuous. When a client's next
-    `Input.dispatchMouseEvent` or `Input.dispatchDragEvent` for a page whose point is an X record is
-    a move more than 50 px from it, or a press or a wheel more than 2 px from it, the relay first
-    sends CDP `mouseMoved` events (no button) along a path of the same generator from the recorded
-    point to the event's point, with C10's path limits (else no catch-up). The relay decides it when
-    the event leaves the tab's gate, against the page's point at that time. For a move, the client's
-    move is the path's last step; for another event, the path ends with a move at its point. The
-    catch-up runs once after each X record: never between a client's own events, and never while the
-    page holds a button. It is a step of the tab's gate: the client's event and the tab's later calls
-    wait behind it. A tab has at most `CATCH_UP_MAX_UNANSWERED = 4` catch-up moves without an answer:
-    no catch-up starts while the tab has unanswered catch-up moves, and when a move is due while 4
-    wait (a page with an open dialog answers none), the catch-up stops and the client's event goes as with the paths off. So the tab's 64 requests in flight (C10) never fill in front of the client's
-    `Page.handleJavaScriptDialog`. A step and a catch-up never overlap on one page.
+    `Input.dispatchMouseEvent` or `Input.dispatchDragEvent` for a page whose point is an X record is a
+    move more than 50 px from it, or a press or a wheel more than 2 px from it, the relay first sends CDP
+    `mouseMoved` events (no button) along a path of the same generator from the recorded point to the
+    event's point, with C10's path limits (else no catch-up). The relay decides it when the event leaves
+    the tab's gate, against the page's point at that time. For a move, the client's move is the path's
+    last step; for another event, the path ends with a move at its point. The catch-up runs once after
+    each X record: never between a client's own events, and never while the page holds a button. It is a
+    step of the tab's gate: the client's event and the tab's later calls wait behind it. A tab has at
+    most `CATCH_UP_MAX_UNANSWERED = 4` catch-up moves without an answer: no catch-up starts while the tab
+    has unanswered catch-up moves, and when a move is due while 4 wait (a page with an open dialog
+    answers none), the catch-up stops and the client's event goes as with the paths off. So the tab's 64
+    requests in flight (C10) never fill in front of the client's `Page.handleJavaScriptDialog`. A step
+    and a catch-up never overlap on one page.
   - The geometry read: one `Runtime.evaluate` in the relay's own isolated world
     (`Page.createIsolatedWorld` on the main frame), only for a bridge tab, one in flight per tab, with
     no `Page.enable` or `Runtime.enable` of the relay's own, and with C10's default wait. The relay
@@ -2398,12 +2403,13 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
     events. A geometry is not usable when the ratio or the scale is not 1, the window is minimized,
     the screen size is not the display's, a read is in flight, or a device-metrics override is in
     force on the tab.
-  - When the relay sends no path, that activation is as with the paths off: the paths are off or unknown; the
-    front page, a last point or `at` is unknown (the first activation after the relay's start, after
+  - When the relay sends no path, that activation is as with the paths off: the paths are off or unknown;
+    the front page, a last point or `at` is unknown (the first activation after the relay's start, after
     a link change, and after the paths turn on); a geometry is not usable; S or T is outside the front
-    page's viewport; the path does not fit the limits; step 3 found a gate or reached its limit; or
-    the daemon refused. The page then enters at the X pointer: one unexplained position change at
-    most, never a jump. With an older daemon (`unknown op`, `not connected`) the paths stay off. On the Mac the relay sends no `daemon.` op.
+    page's viewport; the path does not fit the limits; step 3 found a gate or reached its limit; or the
+    daemon refused. The page then enters at the X pointer: one unexplained position change at most, never
+    a jump. With an older daemon (`unknown op`, `not connected`) the paths stay off. On the Mac the relay
+    sends no `daemon.` op.
 
 **Permissions and content settings.**
 
