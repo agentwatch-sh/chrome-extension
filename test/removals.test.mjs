@@ -460,6 +460,43 @@ test("a Target.closeTarget that answers with no error but closes no tab: the fal
   assert.deepEqual(d.f.callsTo("tabs.remove"), [[7]], "one fallback");
 });
 
+// review-26 B1: the fallback of a dropped close is one op of the tab's chain (C10): while a second
+// close's command runs through the first close's own attach, that fallback neither ends the attach
+// (a detach makes the running command fail) nor calls chrome.tabs.remove.
+test("a dropped close's fallback waits in the tab's chain while a second close's command runs", async () => {
+  const s = await startReceiver({ tabs: [blank(7), blank(3)], targets: [target(7)] });
+  let n = 0;
+  let answer2;
+  s.f.impl["debugger.sendCommand"] = (t, m) => {
+    if (m !== "Target.closeTarget") return Promise.resolve({});
+    n += 1;
+    if (n === 1) return Promise.resolve({ success: true }); // the dropped close
+    return new Promise((res) => (answer2 = res));
+  };
+  s.send({ t: "req", id: "r1", op: "tabs.remove", args: [7] });
+  await flush();
+  const [itemWait, watch, ...more] = s.pending(REMOVAL_WAIT_MS);
+  assert.ok(itemWait && watch && more.length === 0, "the item's wait and the close's watch");
+  s.send({ t: "req", id: "r2", op: "tabs.remove", args: [7] });
+  await flush();
+  itemWait.cleared = true;
+  itemWait.fn();
+  await flush();
+  assert.equal(n, 2, "the second close's command runs (through the first close's own attach)");
+  const mark = s.f.calls.length;
+  watch.cleared = true;
+  watch.fn();
+  await flush();
+  const ends = () => callsSince(s.f, mark).map(([p]) => p).filter((p) => p === "debugger.detach" || p === "tabs.remove");
+  assert.deepEqual(ends(), [], "no detach and no tabs.remove while that command runs");
+  answer2({ success: true });
+  await flush();
+  assert.deepEqual(ends(), ["debugger.detach", "tabs.remove"]);
+  assert.deepEqual(s.resOf("r1").map((m) => m.data), [null]);
+  assert.deepEqual(s.resOf("r2").map((m) => m.data), [null]);
+  assert.equal(s.r.removals.isPending(7), false);
+});
+
 // review-20 note 2: the fallback never ends its own attach while Target.closeTarget still runs (a detach
 // before the command's answer makes the command fail, review-17b E4b); it ends it after the answer.
 test("a command with no answer in time: the fallback calls chrome.tabs.remove at once, and ends the close's own attach only after the command answered", async () => {
