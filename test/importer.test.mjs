@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { importState } from "../agent/importer.js";
 import { attachments } from "../agent/attach.js";
 import { importRules } from "../agent/dnr.js";
+import { receiver } from "../agent/receiver.js";
 import { replacePageState } from "../agent/page-state.js";
 import { makeFakeChrome as makeFake } from "./fake-chrome.mjs";
 
@@ -112,8 +113,16 @@ function describeCall([path, args]) {
   return path;
 }
 
+// The listeners that the receiver itself keeps on the webNavigation events (C5's guard, guard.js).
+const ownListeners = (f) => {
+  receiver(f.chrome);
+  const n = f.chrome.webNavigation;
+  return { onCommitted: n.onCommitted.listeners.slice(), onErrorOccurred: n.onErrorOccurred.listeners.slice() };
+};
+
 test("the import follows C6 in order and sums the counts", async () => {
   const f = makeFakeChrome();
+  const own = ownListeners(f);
   f.cookies_ = [
     { name: "old", value: SECRET + "-old", domain: ".app.localhost", hostOnly: false, path: "/", secure: true },
     {
@@ -232,8 +241,9 @@ test("the import follows C6 in order and sums the counts", async () => {
   assert.deepEqual(closesOf(f), []);
   assert.equal(f.chrome.debugger.onEvent.listeners.length, 0);
   assert.equal(f.chrome.webNavigation.onCompleted.listeners.length, 0);
-  assert.equal(f.chrome.webNavigation.onCommitted.listeners.length, 0);
-  assert.equal(f.chrome.webNavigation.onErrorOccurred.listeners.length, 0);
+  // The receiver's own listeners stay (C5's guard and the blocked notice: guard.js).
+  assert.deepEqual(f.chrome.webNavigation.onCommitted.listeners, own.onCommitted);
+  assert.deepEqual(f.chrome.webNavigation.onErrorOccurred.listeners, own.onErrorOccurred);
 });
 
 test("every timer of an import is cleared when it ends", async () => {
@@ -398,10 +408,11 @@ test("a navigation error on the restore page rejects with restore page", async (
     setTimeout(() => f.chrome.webNavigation.onErrorOccurred.fire({ tabId, frameId: 0, url: props.url, error: "net::ERR_BLOCKED_BY_CLIENT" }), 0);
     return { id: tabId };
   };
+  const own = ownListeners(f);
   await rejectsWith(importState(f.chrome, makeState(), opts()), "restore page");
   assert.equal(f.callsTo("debugger.detach").length, 1);
   assert.equal(closesOf(f).length, 1);
-  assert.equal(f.chrome.webNavigation.onErrorOccurred.listeners.length, 0);
+  assert.deepEqual(f.chrome.webNavigation.onErrorOccurred.listeners, own.onErrorOccurred);
 });
 
 test("other tabs, other frames and other URLs do not complete the restore page", async () => {
@@ -588,6 +599,21 @@ test("the origin's tabs close before the cookie swap and before the restore tab 
     ["tabs.create", { url: "about:blank", active: true }],
     ["debugger.attach", { tabId: restoreTab }],
   ]);
+});
+
+// ab-lead's decision on PR #23 question 2 (board ab-v16.33): a blob: page counts by its inner origin.
+test("a blob: page of the origin (its inner origin) closes before the cookie swap; one of another origin and an opaque one stay", async () => {
+  const f = makeFakeChrome();
+  f.setTabs([
+    { id: 1, windowId: 1, url: "blob:" + ORIGIN + "/0d2b8c6e" },
+    { id: 2, windowId: 1, url: "about:blank", pendingUrl: "blob:" + ORIGIN + "/1e3c9d7f" },
+    { id: 3, windowId: 1, url: "blob:https://app.localhost/0d2b8c6e" }, // another origin
+    { id: 4, windowId: 1, url: "blob:null/0d2b8c6e" },
+  ]);
+  f.targets_ = [1, 2].map((id) => ({ id: "T" + id, tabId: id, type: "page", attached: false }));
+  const result = await importState(f.chrome, makeState(), opts());
+  assert.equal(result.tabs_closed, 2);
+  assert.deepEqual(f.tabs_.map((t) => t.id), [3, 4]);
 });
 
 test("the browser's last window gets an about:blank first", async () => {

@@ -180,7 +180,8 @@ export function makeFakeChrome() {
         return tab;
       }),
       update: rec("tabs.update", async (tabId, props) => {
-        if (fake.autoNavigate) fake.pauseRequest(tabId, props.url);
+        // about:blank makes no request (C5's guard sends a tab there).
+        if (fake.autoNavigate && !/^about:blank([?#]|$)/.test(props.url ?? "")) fake.pauseRequest(tabId, props.url);
         return { id: tabId, ...props };
       }),
       reload: rec("tabs.reload", async () => {}),

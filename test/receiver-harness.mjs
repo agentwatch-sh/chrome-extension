@@ -4,7 +4,7 @@
 // hand (fire(ms)). This file holds no test.
 import assert from "node:assert/strict";
 import { Bridge } from "../agent/bridge.js";
-import { ReceiverLink, watchBlocked } from "../agent/link.js";
+import { ReceiverLink } from "../agent/link.js";
 import { mainOps, setScopes } from "../agent/allowlist.js";
 import { receiver } from "../agent/receiver.js";
 import { PART_BYTES, splitParts } from "../agent/wire.js";
@@ -35,8 +35,8 @@ export async function startReceiver({ tabs = [], copy = null, targets = [], scop
   };
   const link = new ReceiverLink(f.chrome, { main: mainOps(f.chrome), bridge: (req) => bridge.handle(req) }, { onLinkChange: () => bridge.reset(), setTimer, clearTimer });
   const bridge = new Bridge(f.chrome, link, { setTimer, clearTimer, navigator: { userAgent: "UA" } });
-  // The blocked notices, as agent/sw.js wires them: a popup's retry decides the notice of its first request.
-  watchBlocked(f.chrome, (msg) => link.send(msg), (details, msg, send) => receiver(f.chrome).popups.screen(details, msg, send));
+  // The blocked notices, as agent/sw.js wires them (the guard, DNR's blocks, a popup's retry).
+  receiver(f.chrome).notify = (msg) => link.send(msg);
   await beforeStart(f);
   void bridge.reset();
   const r = receiver(f.chrome);

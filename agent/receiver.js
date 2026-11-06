@@ -16,6 +16,7 @@
 // connection sees it.
 import { attachments } from "./attach.js";
 import { SessionRules } from "./dnr.js";
+import { Guard } from "./guard.js";
 import { Popups } from "./popups.js";
 import { Removals } from "./removals.js";
 import { ANY } from "./scopes.js";
@@ -40,6 +41,8 @@ export class Receiver {
   };
   // The bridge sends an event of C10 through this (bridge.js sets it).
   emit = () => {};
+  // The blocked notices of C4 go through this (sw.js sets it: the link).
+  notify = () => {};
   // Copy keys whose removal failed or came late: the next set_scopes removes them again.
   staleKeys = new Set();
 
@@ -55,6 +58,7 @@ export class Receiver {
     this.rules = new SessionRules(chrome, () => this.#model(), clock, () => (this.map.current.operator === ANY ? this.map.marked() : []));
     this.removals = new Removals(chrome, { att: this.att, map: this.map, clock });
     this.popups = new Popups(this);
+    this.guard = new Guard(this);
     this.att.holds.onKept = (tabId) => this.popups.paused(tabId);
     this.#listen();
   }
@@ -103,8 +107,9 @@ export class Receiver {
   // with the operator value "*"), its entries, or null (no list). A tab of the
   // orphan set has none; a tab of a scope has its scope's list; a marked tab
   // its operator value; any other tab of no scope the union of the lists. The
-  // closing rule reads it (by the last applied set_scopes), and so can C5's
-  // guard (part 1c); the restore tab of a running import is the caller's case.
+  // closing rule reads it (by the last applied set_scopes), and so does C5's
+  // guard (guard.js, by the last set_scopes); the restore tab of a running
+  // import is the caller's case.
   tabList(tabId, set) {
     if (this.map.isOrphan(tabId)) return null;
     const scope = this.map.scopeOf(tabId);
@@ -225,6 +230,7 @@ export class Receiver {
       const marked = this.map.isMarked(tabId);
       const scope = this.map.removed(tabId);
       this.popups.removed(tabId);
+      this.guard.removed(tabId);
       this.emit("tabs.onRemoved", { tabId, removeInfo });
       this.removals.tabRemoved(tabId);
       if (scope !== undefined) {
@@ -245,6 +251,7 @@ export class Receiver {
       const from = this.map.opener(removedTabId);
       this.map.release(removedTabId);
       this.popups.removed(removedTabId);
+      this.guard.replaced(addedTabId, removedTabId);
       const got = this.adoptTab(addedTabId, from);
       this.emit("tabs.onReplaced", { addedTabId, removedTabId });
       this.removals.tabRemoved(removedTabId);
@@ -270,11 +277,18 @@ export class Receiver {
         const unmarked = Number.isInteger(tabId) && this.map.unmark(tabId);
         const got = ids ? this.adoptTab(tabId, this.map.opener(details.sourceTabId)) : null;
         if (unmarked && !(got && got.mark)) this.#markRules();
+        if (ids) this.guard.opened(tabId, details.sourceTabId);
         this.popups.adopted(tabId, got);
         this.emit("webNavigation.onCreatedNavigationTarget", { details });
         this.popups.announced(tabId);
       });
     });
+    // C5's guard (layers 2 and 3) and the blocked notice of a navigation that
+    // DNR blocked (C4): guard.js. They come before the bridge's listeners of
+    // these events (popups.js, the relay's events).
+    c.webNavigation.onBeforeNavigate.addListener((d) => this.guard.beforeNavigate(d));
+    c.webNavigation.onCommitted.addListener((d) => this.guard.committed(d));
+    c.webNavigation.onErrorOccurred.addListener((d) => this.guard.errorOccurred(d));
   }
 }
 
