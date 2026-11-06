@@ -156,6 +156,23 @@ test("the closing rule per list: a tab's http(s) page off its scope's list close
   assert.deepEqual(s.f.callsTo("debugger.sendCommand").filter((a) => a[1] === "Target.closeTarget").map((a) => a[2].targetId), ["T2", "T4", "T8"]);
 });
 
+// ab-lead's decision on PR #23 question 2 (board ab-v16.33): the closing rule judges a blob: page by
+// its inner origin's host, as C5's guard does; an opaque blob: page has no host and stays.
+test("the closing rule judges a blob: page by its inner host: one whose inner host leaves the tab's list closes; one on it, and an opaque one, stay", async () => {
+  const tabs = [
+    { id: 1, windowId: 1, url: "blob:https://a.example/0d2b8c6e" }, // md-lead, inner host on md: stays
+    { id: 2, windowId: 1, url: "blob:https://v.example/0d2b8c6e" }, // md-lead, inner host on vedlo's list only: closes
+    { id: 3, windowId: 1, url: "blob:https://z.example/0d2b8c6e" }, // no scope, inner host on no list: closes
+    { id: 4, windowId: 1, url: "blob:https://v.example/0d2b8c6e" }, // no scope: the union covers it
+    { id: 6, windowId: 1, url: "blob:null/0d2b8c6e" }, // md-lead, an opaque origin: no host, stays
+    { id: 8, windowId: 1, url: "about:blank", pendingUrl: "blob:http://z.example:8080/0d2b8c6e" }, // vedlo-cron: its pending URL counts
+  ];
+  const s = await startReceiver({ tabs, copy: { "tab:1": "md-lead", "tab:2": "md-lead", "tab:6": "md-lead", "tab:8": "vedlo-cron" }, targets: tabs.map((t) => ({ id: "T" + t.id, tabId: t.id, type: "page" })) });
+  const res = await s.set({ lists: { md: ["a.example"], vedlo: ["v.example"] }, scopes: { "md-lead": "md", "vedlo-cron": "vedlo" }, default: null });
+  assert.equal(res.closed, 3);
+  assert.deepEqual(s.f.tabs_.map((t) => t.id), [1, 4, 6]);
+});
+
 test("the sweep: each vector of scopes.json closes the tabs whose scope has no list and the tabs of the orphan set, and none at a set_scopes that is not applied", async () => {
   for (const v of S.sweep) {
     const ids = [...Object.keys(v.map), ...Object.keys(v.orphans ?? {}), ...(v.noScope ?? [])].map(Number);

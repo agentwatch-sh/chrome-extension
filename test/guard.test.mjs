@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { guardHost } from "../agent/guard.js";
 import { importState } from "../agent/importer.js";
+import { tabUrl } from "../agent/tabs.js";
 import { Bridge } from "../agent/bridge.js";
 import { receiver } from "../agent/receiver.js";
 import { parseScopes } from "../agent/scopes.js";
@@ -49,6 +50,17 @@ test("guardHost: an http:/https: URL's host, a blob: URL's inner origin's host; 
   for (const u of ["blob:null/0d2b8c6e", "about:blank", "about:srcdoc", "data:text/html,hi", "chrome://newtab/", "file:///etc/hosts", "javascript:void 0", "not a url", "", undefined]) {
     assert.equal(guardHost(u), null, String(u));
   }
+});
+
+test("tabUrl (the closing rule and the import's close): the same hosts as the guard; a blob: page by its inner origin; the pending URL first", () => {
+  for (const v of V.guard) {
+    const u = tabUrl({ url: v.url });
+    assert.equal(u === null ? null : u.hostname, v.host, `${v.note}: tabUrl`);
+  }
+  assert.equal(tabUrl({ url: "blob:https://www.app.localhost/0d2b8c6e" }).origin, "https://www.app.localhost", "a blob: page's origin is its inner origin");
+  assert.equal(tabUrl({ url: "about:blank", pendingUrl: "blob:http://b.example:8080/x" }).hostname, "b.example");
+  assert.equal(tabUrl({ url: "https://a.example/", pendingUrl: "" }).hostname, "a.example");
+  assert.equal(tabUrl({}), null);
 });
 
 // ---- the vector: the covered set per tab ----

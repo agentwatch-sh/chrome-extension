@@ -163,7 +163,9 @@ One JSON object per native message. On the daemon's socket each message is one N
   `{"t":"blocked","tab":<tab id>,"host":"<host>","scope":"<scope>","from":"<host>"}`, with
   `"scope":null` for a tab of no scope and `"from":null` for a tab with no listed host (C5, `blocked`;
   `from` since board ab-v16.33: the receiver from version 0.3.3 sends it, and a daemon that reads only
-  `tab`, `host` and `scope` ignores it);
+  `tab`, `host` and `scope` ignores it). `from` is the host of the tab's last main-frame commit that
+  C5's guard let stay, so a host that the guard sent away never becomes `from` (ab-lead, PR #23
+  question 1);
   on the bridge channel, the events of C10: `{"t":"ev","ch":"bridge","ev":"<event>",...}`, and a
   large res in parts (C10):
   `{"t":"part","ch":"bridge","id":"<id>","seq":<i>,"n":<count>,"b64":"<base64>"}`.
@@ -571,7 +573,10 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
   (no worker's page, no request) with `blocked` naming scope B; with the host back on the list its
   page came from the network: the worker was gone.
 - The closing rule: on each `set_scopes` the receiver closes every tab whose `http:`/`https:` host
-  its list does not cover; for a marked tab, its `operator` value counts (with `"*"` it never
+  its list does not cover (a `blob:` page counts by its inner origin's host, as for the guard below,
+  and a `blob:` page of an opaque origin has no host and stays; ab-lead, PR #23 question 2, board
+  ab-v16.33: before it, a `blob:` page whose inner host left the list stayed open, measured in part
+  1c's live test); for a marked tab, its `operator` value counts (with `"*"` it never
   closes; with a list name, that list; with `null` no list, so its `http:`/`https:` page closes);
   for a tab of no scope, the union of the lists counts (so an unmarked operator's tab and the page
   of a finished import stay while a list covers them); a tab of the orphan set (the sweep, below)
@@ -583,7 +588,9 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
   PR #44, an `about:blank` in place of each closed page would leave an empty window for each.) In
   the per-scope build its closes run in the receiver's one removal queue, by the receiver's close
   (`Target.closeTarget`, no `beforeunload`), with the window rule and the pending closes of C10
-  (removals and the last window; board ab-v16.41).
+  (removals and the last window; board ab-v16.41). Measured (part 1c's live test, after the change):
+  a `blob:` page of a scope's tab whose inner host left the scope's list closed at that
+  `set_scopes` (2 of 2 runs).
 - The sweep (board ab-v16.41; the orphan-tabs design, section 4): on each applied `set_scopes` the
   receiver also closes every tab whose scope the new object gives no list (its `scopes` entry is
   `null` or names a list that is not in `lists`, or it has no entry and `default` gives no list),
@@ -683,14 +690,18 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
     ended at `about:blank` with one `blocked` (scope A, `from` A's site), 40 of 40 for a client's
     `Page.navigate` and 40 of 40 for a page script's link click; but the worker's page committed and
     ran its script in all 80 (its beacon reached the site 68 to 325 ms after the command, and the
-    notice reached the daemon 17 to 62 ms after it): against a warm worker layer 2 did not win, also not for a
-    page's own navigation (the probe's 10 of 10 above had layer 2 alone), and layer 3 sent each page
-    away. A worker that passes the navigation on: 80 of 80 at `about:blank` with one `blocked`; its
-    page ran in 0 of 80, and its request reached the site in 80 of 80 (as above). A client's
-    `Page.navigate` of a scope-A tab to a `blob:` URL that a page of scope B's site made: Chrome began
-    the navigation, the tab ended at `about:blank` with one `blocked` naming the inner host, and the
-    `blob:` page's script did not run (3 of 3 runs); a `blob:` page of a tab's own site stayed, with
-    no notice. Popups of a scope-A page to its own site (a `target=_blank` link, `window.open`, a
+    notice reached the daemon 17 to 62 ms after it): against a warm worker layer 2 did not win,
+    also not for a page's own navigation (the probe's 10 of 10 above had layer 2 alone), and layer 3
+    sent each page away. So in the own-page form the worker's page commits and runs its scripts
+    before layer 3 sends it away (80 of 80), and a client attached to the tab can read it meanwhile.
+    ab-lead asked the operator again what to do about it (board item ab-7wg); this text changes when
+    the answer changes the build. A worker that passes the navigation on: 80 of 80 at `about:blank`
+    with one `blocked`; its page ran in 0 of 80, and its request reached the site in 80 of 80 (as
+    above). A client's `Page.navigate` of a scope-A tab to a `blob:` URL that a page of scope B's site made: Chrome began
+    the navigation, and in 6 of 6 runs the tab ended at `about:blank` with one `blocked` naming the
+    inner host; the `blob:` page's script ran first in 1 of 6 (a `blob:` page needs no request, so
+    the guard can lose the race, as against a worker's page). A `blob:` page of a tab's own site
+    stayed, with no notice. Popups of a scope-A page to its own site (a `target=_blank` link, `window.open`, a
     `noopener` popup and the sign-in pattern): 160 of 160 loaded, the guard blocked none (the popup's
     scope is in the map before its first `onBeforeNavigate`). The operator's marked tab with `"*"`:
     40 of 40 popups by the operator's click (a link and `window.open`) loaded hosts of no list. A
@@ -734,8 +745,9 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
 
 ### C6. The restore page (the receiver's import)
 
-1. Close every tab whose origin equals `origin` (they hold the state being replaced, and a page of
-   the origin could write a cookie during the swap; C5's rule for the browser's last window applies;
+1. Close every tab whose origin equals `origin` (a `blob:` page by its inner origin, as in C5's
+   closing rule; they hold the state being replaced, and a page of the origin could write a cookie
+   during the swap; C5's rule for the browser's last window applies;
    in the per-scope build these closes, and the closes of the restore tab in step 5, run in the
    removal queue of C10, by the receiver's close and with its window rule). A close that has not
    ended within its item's wait (a page that a dialog holds), or a window rule that fails, fails the

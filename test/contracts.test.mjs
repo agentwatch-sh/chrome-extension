@@ -217,6 +217,11 @@ test("each guard vector follows C5's guard: the host that it judges and the cove
     "Back restored that page from the cache (no request) in 3 of 3 runs, and the guard sent the tab to `about:blank`",
   ]) assert.ok(says(C5, s), `C5 says: ${s}`);
   assert.ok(!says(C5, "reports there (not measured)"), "the back/forward cache is measured now");
+  // ab-lead's decisions on PR #23: Q1 from in C4, Q2 the closing rule and the import judge a blob: page by its inner origin, Q3 the fact.
+  assert.ok(says(C4, "`from` is the host of the tab's last main-frame commit that C5's guard let stay, so a host that the guard sent away never becomes `from`"), "C4: from");
+  assert.ok(says(C5, "closes every tab whose `http:`/`https:` host its list does not cover (a `blob:` page counts by its inner origin's host, as for the guard below"), "C5: the closing rule and blob:");
+  assert.ok(says(section("C6"), "Close every tab whose origin equals `origin` (a `blob:` page by its inner origin"), "C6: the import's close and blob:");
+  assert.ok(says(C5, "So in the own-page form the worker's page commits and runs its scripts before layer 3 sends it away (80 of 80)"), "C5: the fact of Q3");
 });
 
 test("C4's blocked holds from (board ab-v16.33), each notice vector has C4's shape, and C5 states from and the once rule", () => {

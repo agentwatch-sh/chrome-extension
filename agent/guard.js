@@ -29,31 +29,19 @@ import { call } from "./attach.js";
 import { covers } from "./lib/domains.js";
 import { BLOCKED } from "./popups.js";
 import { ANY } from "./scopes.js";
+import { webUrl } from "./tabs.js";
 
 const isBlank = (url) => typeof url === "string" && /^about:blank([?#]|$)/.test(url);
-const isWeb = (u) => u.protocol === "http:" || u.protocol === "https:";
 // The notices of how many navigations back a tab keeps (for the once rule).
 const SENT_KEPT = 8;
 
 // The host that the guard judges: an http:/https: URL's, or a blob: URL's
 // inner origin's when that is http:/https:; else null (about:, data:,
-// chrome:, a blob: of an opaque origin).
+// chrome:, a blob: of an opaque origin). The closing rule judges the same
+// host (tabs.js).
 export function guardHost(url) {
-  let u;
-  try {
-    u = new URL(url);
-  } catch {
-    return null;
-  }
-  if (u.protocol === "blob:") {
-    // An opaque inner origin serializes as "null", which is no URL.
-    try {
-      u = new URL(u.origin);
-    } catch {
-      return null;
-    }
-  }
-  return isWeb(u) && u.hostname !== "" ? u.hostname : null;
+  const u = webUrl(url);
+  return u === null || u.hostname === "" ? null : u.hostname;
 }
 
 export class Guard {
