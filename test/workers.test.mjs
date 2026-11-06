@@ -149,7 +149,7 @@ test("the top frame leaves: the old page's origins (its sub-frames too) go in on
   assert.deepEqual(copyKeys(s), []);
 });
 
-test("a frame that goes: a sub-frame's own navigation at its commit; a frame that a page script removes (no event) at the next event's check", async () => {
+test("a frame that goes: a sub-frame's own navigation at its commit; a frame that a page script removes after its load (no event) at that tab's next event, not at another tab's", async () => {
   const s = await setup();
   operatorTab(s, 20);
   operatorTab(s, 21);
@@ -164,7 +164,10 @@ test("a frame that goes: a sub-frame's own navigation at its commit; a frame tha
   s.f.frames_.set(20, s.f.frames_.get(20).filter((x) => x.frameId !== 5));
   await flush();
   assert.deepEqual(leaves(s), [[X]], "no event, no check");
-  commit(s, 21, "https://q.example/"); // any later event of a marked tab
+  commit(s, 21, "https://q.example/"); // an event of another marked tab: tab 20's last read stays
+  await flush();
+  assert.deepEqual(leaves(s), [[X]], "tab 20's frames are read again only after an event of its own");
+  commit(s, 20, "https://p.example/f2", { frameId: 6, parentFrameId: 0 }); // tab 20's next event
   await flush();
   assert.deepEqual(leaves(s), [[X], [Y]]);
 });
@@ -297,7 +300,7 @@ test("an origin that a marked tab commits while a check reads the frames is show
   s.f.impl["webNavigation.getAllFrames"] = (q) => new Promise((resolve) => held.push({ q, resolve }));
   commit(s, 20, Y + "/"); // tab 20 leaves X
   await flush();
-  assert.deepEqual(held.map((h) => h.q.tabId).sort(), [20, 21], "the check reads the frames");
+  assert.deepEqual(held.map((h) => h.q.tabId), [20], "the check reads the frames of the tab with an event (tab 21's last read stays)");
   commit(s, 21, X + "/again"); // tab 21 commits X during the read
   delete s.f.impl["webNavigation.getAllFrames"];
   // The reads answer with the state before that commit.
@@ -343,7 +346,7 @@ test("a tab that gets the mark while a check reads the frames (tabs.onReplaced):
   s.f.impl["webNavigation.getAllFrames"] = (q) => new Promise((resolve) => held.push({ q, resolve }));
   commit(s, 21, "about:blank");
   await flush();
-  assert.deepEqual(held.map((h) => h.q.tabId).sort(), [20, 21]);
+  assert.deepEqual(held.map((h) => h.q.tabId), [21], "only the tab with an event (tab 20's last read stays)");
   // Tab 20 is replaced by tab 30, which shows X; the reads answer with the old state.
   s.f.tabs_ = s.f.tabs_.filter((t) => t.id !== 20);
   s.f.frames_.delete(20);
@@ -721,7 +724,7 @@ test("each removal arms its own follow-up timer of RECHECK_MS, also while an ear
 });
 
 // review-30c B1: the CPU work of a check grows linearly with the shown origins; the bound refuses an origin in O(1).
-test("a check with 3000 shown origins and a full record does work linear in the origins, and the bound refuses each origin with one step", async () => {
+test("a check with 3000 shown origins and a full record does work linear in the origins, reads no frames of a marked tab with no event, and the bound refuses each origin with one step", async () => {
   const s = await setup();
   operatorTab(s, 20);
   operatorTab(s, 21);
@@ -732,8 +735,10 @@ test("a check with 3000 shown origins and a full record does work linear in the 
   assert.equal(recorded(s).length, 1000, "the bound");
   const w0 = s.r.workers.stats.work;
   const m0 = s.r.workers.stats.room;
-  commit(s, 7, "https://a.example/next"); // one more check
+  const r0 = s.f.callsTo("webNavigation.getAllFrames").length;
+  commit(s, 7, "https://a.example/next"); // one more check, after an event of a tab that is not marked
   await flush(20);
+  assert.equal(s.f.callsTo("webNavigation.getAllFrames").length - r0, 0, "no marked tab had an event: its last frame read stays (no new read)");
   const work = s.r.workers.stats.work - w0;
   assert.ok(work > 0 && work <= 4 * (3003 + 1000), `one check's work: ${work}`);
   // Each origin that the full record refuses costs one step of the bound.

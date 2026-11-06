@@ -162,6 +162,13 @@ export class Workers {
   #listedGone = new Set();
   // The origins whose follow-up check is due (each removal's timer adds its own).
   #due = new Set();
+  // The last frame read of each marked tab: tabId -> {ver, origins (origin ->
+  // info), sites}. A check reads a marked tab's frames again only after an
+  // event of its frames (a commit or a navigation error: #ver) or for a tab
+  // with no read; the other events of a check reuse the read. A frame that
+  // goes with no event keeps its site shown until the tab's next event.
+  #frames = new Map();
+  #ver = new Map(); // tabId -> the count of the events of its frames
   // The most origins in the record (tests set a lower one).
   max = RECORD_MAX;
   // The work counts (for tests): work, the items that the checks and the
@@ -182,6 +189,7 @@ export class Workers {
   // marked tab's commit makes its site shown at once.
   committed(d) {
     if (!d || !Number.isInteger(d.tabId)) return;
+    this.#touch(d.tabId);
     const o = originOf(d.url);
     if (o !== null) {
       const info = this.#record.get(o) ?? infoOf(o);
@@ -195,7 +203,13 @@ export class Workers {
   // ends on an error page sends no onCommitted, but its tab left the old page.
   errorOccurred(d) {
     if (!d || !Number.isInteger(d.tabId)) return;
+    this.#touch(d.tabId);
     this.schedule();
+  }
+
+  // An event of a marked tab's frames: the next check reads them again.
+  #touch(tabId) {
+    if (this.#r.map.isMarked(tabId)) this.#ver.set(tabId, (this.#ver.get(tabId) ?? 0) + 1);
   }
 
   // The copy at the worker's start (tabmap.js, its one read): the recorded
@@ -364,7 +378,21 @@ export class Workers {
     this.#learn = false;
     const seq0 = this.#seq;
     const tabs = r.map.marked();
-    const reads = await Promise.all(tabs.map((tabId) => limit(r, () => r.chrome.webNavigation.getAllFrames({ tabId }))));
+    // The reads of the marked tabs: only of a tab with an event of its frames
+    // since its last read, or with no read; a tab that is not marked any more
+    // leaves the cache.
+    for (const id of [...this.#frames.keys()]) {
+      if (tabs.includes(id)) continue;
+      this.#frames.delete(id);
+      this.#ver.delete(id);
+    }
+    for (const id of [...this.#ver.keys()]) if (!tabs.includes(id)) this.#ver.delete(id);
+    const stale = tabs.filter((id) => {
+      const c = this.#frames.get(id);
+      return !c || c.ver !== (this.#ver.get(id) ?? 0);
+    });
+    const vers = stale.map((id) => this.#ver.get(id) ?? 0);
+    const reads = await Promise.all(stale.map((tabId) => limit(r, () => r.chrome.webNavigation.getAllFrames({ tabId }))));
     if (reads.some((x) => !x.ok)) {
       keepDue();
       console.warn("agentwatch receiver: the frames of a marked tab could not be read: no service worker removal until the next event");
@@ -376,25 +404,34 @@ export class Workers {
       this.schedule({ learn: true });
       return;
     }
-    // The site rule: the sites of the frames that the marked tabs show (one
-    // parse per frame), with a pause after each SLICE frames.
-    const sites = new Set();
-    const seen = new Map(); // origin -> info
+    // Each new read: the origins and the sites of the frames that the tab
+    // shows (one parse per frame), with a pause after each SLICE frames.
+    const fresh = new Map(); // origin -> info: the origins of the new reads
     let n = 0;
-    for (const x of reads) {
-      for (const frame of Array.isArray(x.value) ? x.value : []) {
+    for (let i = 0; i < stale.length; i++) {
+      const origins = new Map();
+      const tabSites = new Set();
+      for (const frame of Array.isArray(reads[i].value) ? reads[i].value : []) {
         this.stats.work += 1;
         if (++n % SLICE === 0) await pause();
         if (!shows(frame)) continue;
         const o = originOf(frame.url);
         if (o === null) continue;
-        let info = seen.get(o);
+        let info = origins.get(o);
         if (!info) {
           info = this.#record.get(o) ?? infoOf(o);
-          seen.set(o, info);
+          origins.set(o, { host: info.host, site: info.site });
+          fresh.set(o, info);
         }
-        sites.add(info.site);
+        tabSites.add(info.site);
       }
+      this.#frames.set(stale[i], { ver: vers[i], origins, sites: tabSites });
+    }
+    // The site rule: the sites that the marked tabs show (their last reads).
+    const sites = new Set();
+    for (const id of tabs) {
+      const c = this.#frames.get(id);
+      if (c) for (const x of c.sites) sites.add(x);
     }
     // An origin that a tab committed during the reads counts as shown.
     for (const [, e] of this.#record) {
@@ -412,7 +449,7 @@ export class Workers {
     // A page of a marked tab that no commit named joins the record (the bound
     // refuses an origin in one step).
     n = 0;
-    for (const [o, info] of seen) {
+    for (const [o, info] of fresh) {
       this.stats.work += 1;
       if (++n % SLICE === 0) await pause();
       if (!this.#record.has(o)) this.#add(o, info);
@@ -424,7 +461,11 @@ export class Workers {
     // of the shown sites and the listed origins of the record.
     let all = false;
     if ([...this.#listedGone].some((e) => !now.includes(e))) {
-      const keep = new Set(seen.keys());
+      const keep = new Set();
+      for (const id of tabs) {
+        const c = this.#frames.get(id);
+        if (c) for (const o of c.origins.keys()) keep.add(o);
+      }
       for (const [o, e] of this.#record) {
         this.stats.work += 1;
         if (sites.has(e.site) || this.#covered(e)) keep.add(o);
