@@ -161,10 +161,11 @@ export class Workers {
   // The sites of the marked tabs' commits since the start of the running
   // check (null between checks): they count as shown in that check.
   #recent = null;
-  // The origins that any tab commits since the start of the running check
-  // (null between checks): a list end's removal of every worker keeps them
-  // (no read of the check shows them, and its loops go over copies of the
-  // record and the pending set; the bound can drop them).
+  // The origins that any tab commits since the start of the running check,
+  // until its list end's removal of every worker is decided (null otherwise):
+  // that removal keeps them (no read of the check shows them, and its loops
+  // go over copies of the record and the pending set; the bound can drop
+  // them).
   #during = null;
   // The follow-up checks: one timer at a time. An origin that a removal
   // removed waits one whole period of the timer (RECHECK_MS), then it is due.
@@ -317,6 +318,11 @@ export class Workers {
     if (this.#covered(ne)) for (const d of this.#listsNow()) if (covers(d, ne.host)) this.#listedGone.add(d);
   }
 
+  // The count of the running check's notes of commits (null when it takes none); for the tests.
+  duringSize() {
+    return this.#during === null ? null : this.#during.size;
+  }
+
   // ---- the follow-up checks ----
 
   // The origins of one removal: due after one whole period of the timer.
@@ -458,16 +464,23 @@ export class Workers {
           }
         }
       }
+      const notKept = new Map(); // site -> the origins of that site that the loop did not keep
       for (const [o, e] of [...this.#record, ...this.#pending]) {
         await step();
         if (sites.has(e.site) || recent.has(e.site) || this.#covered(e)) keep.add(o);
+        else if (notKept.has(e.site)) notKept.get(e.site).push(o);
+        else notKept.set(e.site, [o]);
       }
       if (changed()) return stop();
+      // With no pause before the call: the sites that marked tabs came to
+      // during the loop's pauses (review-30g B2), and the commits of the check.
+      for (const site of recent) for (const o of notKept.get(site) ?? []) keep.add(o);
       for (const o of this.#during) keep.add(o);
       seqAll = this.#seq;
       all = await removeWorkers(r, null, [...keep]);
       if (all) this.#listedGone.clear();
     }
+    this.#during = null;
     // The origins to remove: of the record, of the pending set and of the
     // follow-ups (each with its entry).
     const gone = new Map();
@@ -498,7 +511,14 @@ export class Workers {
     const keys = [];
     for (let i = 0; i < list.length; i += SLICE) {
       if (all && i > 0) await pause();
-      const part = list.slice(i, i + SLICE).filter((o) => !recent.has(gone.get(o).site));
+      const part = [];
+      for (const o of list.slice(i, i + SLICE)) {
+        const e = gone.get(o);
+        if (!recent.has(e.site)) part.push(o);
+        // A due origin of a site that a marked tab came to during the check
+        // joins the record again, as in the loop above (review-30g B1).
+        else if (second.has(o) && !this.#record.has(o) && !this.#pending.has(o)) this.#add(o, e);
+      }
       if (part.length === 0) continue;
       if (changed()) {
         stop();

@@ -1179,6 +1179,7 @@ test("a list that begins during a pause of the decision loop after a list end's 
   await flush(60);
   delete s.f.impl["browsingData.remove"];
   assert.equal(excluding(s).length, 1);
+  assert.ok(recorded(s).includes("https://www.a.example"), "the stop keeps www.a.example recorded at once (no wait for its follow-up)");
   await s.fire(RECHECK_MS);
   await s.fire(RECHECK_MS);
   await flush(20);
@@ -1413,6 +1414,92 @@ test("a marked tab that comes to the site during a part's own removal call: the 
   await flush(40);
   assert.equal(leaves(s).filter((l) => l.includes(Q)).length, 2, "its workers go after the leave: " + JSON.stringify(leaves(s)));
   assert.ok(!recorded(s).includes(Q));
+});
+
+// ---- round 8 (review-30g) ----
+
+test("review-30g B1: a due origin that the commit filter drops from its part (a marked tab comes to its site during an earlier part's call) joins the record again, and its workers go when the tab leaves the site", async () => {
+  const s = await setup();
+  operatorTab(s, 20);
+  await flush();
+  commit(s, 20, X + "/home");
+  await flush(10);
+  const Q = "https://www.q.example";
+  commit(s, 3, Q + "/"); // on no list, of no shown site: removed; its follow-up waits
+  await flush(20);
+  assert.equal(leaves(s).filter((l) => l.includes(Q)).length, 1);
+  // Tab 20 shows 601 origins of b1.example (kept), then leaves them in the check of Q's follow-up.
+  commit(s, 20, "https://www.b1.example/");
+  for (let i = 0; i < 600; i++) commit(s, 20, `https://f${i}.b1.example/f`, { frameId: 100 + i, parentFrameId: 0 });
+  await flush(20);
+  const held = [];
+  s.f.impl["browsingData.remove"] = (d) => (d && d.origins && d.origins.includes("https://www.b1.example") && held.length === 0 ? new Promise((resolve) => held.push(resolve)) : Promise.resolve());
+  commit(s, 20, X + "/back"); // tab 20 leaves b1.example ...
+  await s.fire(RECHECK_MS); // ... and Q is due in the same check: Q is in part 2 (after 500 b1 origins)
+  await flush(4);
+  assert.equal(held.length, 1, "part 1's call waits");
+  commit(s, 20, "https://api.q.example/f", { frameId: 5, parentFrameId: 0 }); // during part 1's call: the marked tab comes to Q's site
+  held[0]();
+  delete s.f.impl["browsingData.remove"];
+  await flush(40);
+  assert.equal(leaves(s).filter((l) => l.includes(Q)).length, 1, "the shown site keeps Q's workers");
+  assert.ok(recorded(s).includes(Q), "Q joins the record again");
+  commit(s, 20, X + "/again"); // tab 20 leaves q.example
+  await flush(40);
+  assert.equal(leaves(s).filter((l) => l.includes(Q)).length, 2, "Q's workers go after the leave: " + JSON.stringify(leaves(s).slice(-3)));
+});
+
+test("review-30g B2: a marked tab that comes to a site during a pause of a list end's loop: the removal of every worker keeps the recorded and waiting origins of that site that the loop saw before the pause", async () => {
+  const s = await setup();
+  s.r.workers.max = 3;
+  s.r.workers.pendingMax = 600;
+  operatorTab(s, 20);
+  await flush();
+  commit(s, 20, X + "/home");
+  commit(s, 7, "https://www.a.example/"); // recorded (md): the loop sees it early
+  commit(s, 7, "https://cdn0.a.example/f", { frameId: 100, parentFrameId: 0 }); // the record is full
+  for (let i = 1; i < 600; i++) commit(s, 7, `https://cdn${i}.a.example/f`, { frameId: 100 + i, parentFrameId: 0 }); // 599 wait
+  commit(s, 3, "https://www.s.example/"); // waits last (on list spare)
+  commit(s, 7, "https://cdn600.a.example/f", { frameId: 700, parentFrameId: 0 }); // dropped: md's entry kept
+  await flush(20);
+  let injected = 0;
+  const real = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, ms, ...a) => {
+    if (!ms && injected === 0 && /\bpause\b/.test(new Error().stack ?? "")) {
+      injected = 1;
+      assert.equal(excluding(s).length, 0, "before the call");
+      commit(s, 20, "https://app.a.example/f", { frameId: 5, parentFrameId: 0 }); // the marked tab comes to a.example
+    }
+    return real(fn, ms, ...a);
+  };
+  try {
+    await s.set(SESSION_END); // md ends: the list end's removal of every worker
+    await flush(60);
+  } finally {
+    globalThis.setTimeout = real;
+  }
+  assert.equal(injected, 1);
+  const ex = excluding(s);
+  assert.equal(ex.length, 1);
+  for (const o of ["https://www.a.example", "https://cdn0.a.example", "https://cdn1.a.example", "https://cdn599.a.example", "https://app.a.example"]) {
+    assert.ok(ex[0].includes(o), "the call keeps " + o + " (a marked tab shows its site)");
+  }
+});
+
+test("review-30g note 3: the check notes the commits only until its list end's removal of every worker is decided (no unused entries)", async () => {
+  const s = await setup();
+  const Q = "https://www.q.example";
+  const held = [];
+  s.f.impl["browsingData.remove"] = (d) => (d && d.origins && d.origins.includes(Q) && held.length === 0 ? new Promise((resolve) => held.push(resolve)) : Promise.resolve());
+  commit(s, 3, Q + "/");
+  await flush(4);
+  assert.equal(held.length, 1, "the part's call waits");
+  commit(s, 3, "https://www.r.example/"); // a commit during the part's call
+  assert.equal(s.r.workers.duringSize(), null, "no notes after the decision");
+  held[0]();
+  delete s.f.impl["browsingData.remove"];
+  await flush(20);
+  assert.equal(s.r.workers.duringSize(), null, "no notes between checks");
 });
 
 // ---- review-30e B3: the rules of round 4 with no test (G1 to G6) ----
