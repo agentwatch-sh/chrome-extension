@@ -8,7 +8,9 @@ One private Xvfb, one Chromium with a copy of the unpacked agent/ of this checko
 test/live/host.py as the native host, and this script as the stub daemon (C4 parts on the channels
 main and bridge) and as the test sites' HTTP server on 127.0.0.1. No relay: the bridge's
 Page.navigate reaches Chrome. It starts only its own Xvfb and Chromium and stops only those, by the
-pids that it recorded. xdotool sends keys only to its own display. Every test site is a
+pids that it recorded. Before its Xvfb it takes the harness lock and starts the harness guard
+(harness_guard.py; README.md, "Two rules"): one live harness at a time, and no Xvfb or Chromium of
+this check after its end, also after a kill -9 of this script. xdotool sends keys only to its own display. Every test site is a
 *.localhost host of this server. It logs names, paths, ids, times and counts only; the made-up
 sign-in cookie of the test site never enters a log (only whether a request carried it).
 
@@ -74,6 +76,10 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import quote, unquote
 
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from harness_guard import start_guard  # noqa: E402
+
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 RUN = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(REPO, "test", "live", ".run", "workers-" + time.strftime("%Y%m%d-%H%M%S"))
 PORT = int(sys.argv[2]) if len(sys.argv) > 2 else int(os.environ.get("LIVE_PORT", "8774"))
@@ -92,6 +98,7 @@ results = []
 pids = {}
 DISPLAY = None
 AUTH = None
+GUARD = None
 
 
 def now_ms():
@@ -387,7 +394,9 @@ procs = []
 
 
 def start():
-    global DISPLAY, AUTH
+    global DISPLAY, AUTH, GUARD
+    # One live harness at a time, and nothing of this check after its end (README.md, "Two rules").
+    GUARD = start_guard("chrome-extension workers")
     for port in (PORT, PORT_B):
         httpd = ThreadingHTTPServer(("127.0.0.1", port), Site)
         httpd.daemon_threads = True
@@ -402,6 +411,7 @@ def start():
     xvfb = subprocess.Popen(["Xvfb", f":{disp}", "-nolisten", "tcp", "-auth", auth, "-screen", "0", "1280x900x24"],
                             stdout=open(os.path.join(RUN, "logs", "xvfb.log"), "w"), stderr=subprocess.STDOUT)
     procs.append(("xvfb", xvfb))
+    GUARD.track(xvfb.pid, "Xvfb")
     pids["xvfb"] = xvfb.pid
     pids["display"] = disp
     for _ in range(50):
@@ -423,6 +433,7 @@ def start():
                                "--window-position=0,0", "--window-size=1280,900", "about:blank"],
                               env=env, stdout=open(os.path.join(RUN, "logs", "chromium.log"), "w"), stderr=subprocess.STDOUT)
     procs.append(("chromium", chrome))
+    GUARD.track(chrome.pid, "Chromium")
     pids["chromium"] = chrome.pid
     with open(os.path.join(RUN, "pids.json"), "w") as f:
         json.dump(pids, f)

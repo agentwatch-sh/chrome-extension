@@ -18,3 +18,6 @@ dist/
 test/live/.run/
 # Chromium writes indexed rulesets into an unpacked extension it loads.
 _metadata/
+
+# Python byte code (test/live/harness_guard.py when a driver imports it).
+__pycache__/

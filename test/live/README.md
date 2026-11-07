@@ -28,9 +28,37 @@ names and counts, and the server compares the two sides in memory.
   with the folder's path on the pipe. This harness does not do that; see
   "Run it with Google Chrome 157" below.
 - A free loopback port (default 8771; set `LIVE_PORT`) and two free X
-  displays in 90 to 189.
+  displays from `LIVE_DISPLAY` (default 90) to 189.
 - `HOLD_TRIALS` (default 10): the trials of each kind of new tab in the case
   `hold`.
+
+## Two rules: no orphans, one harness at a time
+
+Both live harnesses here (`run.sh` and `workers.py`) follow the two rules of agent-browser's
+`test/live/README.md` (board ab-v16.78), with the same guard, `harness_guard.py` (the same file in
+both repositories), and the same lock file:
+
+1. **No orphans.** Before its first Xvfb or Chromium, a harness starts the guard, a process of its
+   own outside the driver's process tree and session. While the driver runs, the guard records each
+   process of the driver's tree every 0.5 s (pid and start time) and each process that the driver
+   names (`run.sh`: each pid file of `<run>/pids/`; `workers.py`: `track()`). When the driver ends,
+   also by a `kill -9`, the guard sends SIGTERM to each recorded process that still runs with its
+   recorded start time, and to their children (Chromium's helpers, `host.py`), SIGKILL after 5 s, and
+   waits until all are gone (at most 20 s). So ps shows no Xvfb, Chromium, `server.py` or `host.py` of
+   the run within about 5 s of the driver's end.
+2. **One at a time.** The guard takes `flock` on `~/.cache/agent-harness/harness.lock` (one file for
+   each user, the same file as agent-browser's harnesses) before the harness starts Xvfb or Chromium.
+   It waits at most `HARNESS_LOCK_WAIT` seconds (default 1200) and writes one line on stderr while it
+   waits, with the holder's line. When the time runs out, the harness starts nothing (`run.sh`:
+   exit 2; `workers.py`: exit 2). The guard holds the lock until the run's processes are gone. The
+   agents' outer lock, `flock /home/selden/.cache/ab-lead/heavy.lock timeout 1200 <command>`, is
+   always the outer one: no harness takes it, so the two locks cannot deadlock. This repository has
+   no fuzz or mutation runner; the agents' runners outside it keep the manager's cap (at most 2 fuzz
+   runs at once, each under heavy.lock).
+
+The driver of `run.sh` (`all` mode) is the script itself. After `run.sh up` alone, the run lives
+until `run.sh down` (which also ends its guard) or until `LIVE_UP_LIMIT` seconds (default 3600):
+then the guard stops it. `test/harness-guard.test.mjs` checks both forms with stand-in processes.
 
 ## Run it
 
@@ -113,7 +141,8 @@ tab with `"*"`, answers a navigation of a client-attached tab of scope A with it
 a cached signed-in page (a made-up cookie). It is one Python file (standard library only) with its
 own Xvfb, its own Chromium, a copy of the unpacked agent, `host.py` as the native host, a stub
 daemon and the test sites (all `*.localhost`, on two loopback ports), and no relay. It starts only
-its own processes and stops only those, by the pids that it recorded.
+its own processes and stops only those, by the pids that it recorded. Before its Xvfb it takes the
+harness lock and starts the guard (see "Two rules").
 
 ```sh
 DISPLAY_N=142 test/live/workers.py            # run folder test/live/.run/workers-<stamp>, ports 8774 and 8775

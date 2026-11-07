@@ -9,7 +9,16 @@
 #   test/live/run.sh down DIR    stop every process of that run
 #
 # Environment: CHROMIUM (default /usr/bin/chromium), LIVE_PORT (default 8771),
-# RECEIVER (the agent package folder to load; default the repository's agent/).
+# RECEIVER (the agent package folder to load; default the repository's agent/),
+# LIVE_DISPLAY (the first X display to try; default 90), LIVE_UP_LIMIT (the
+# seconds that a run of `up` alone may live without `down`; default 3600),
+# HARNESS_LOCK_WAIT (the seconds to wait for the harness lock; default 1200).
+#
+# The two rules of every live harness (README.md, "Two rules"; board ab-v16.78):
+# `up` takes the harness lock before it starts Xvfb or Chromium, through the
+# guard harness_guard.py, and the guard stops every process of the run when
+# its driver ends, also after a kill -9: in `all` mode the driver is this
+# script; after `up` alone, `down` or LIVE_UP_LIMIT ends the run.
 #
 # The two Unix sockets of a run live in a short private folder
 # /tmp/aw-live.XXXXXX (0700; env.json names it), because a socket path holds at
@@ -24,6 +33,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
 CHROMIUM=${CHROMIUM:-/usr/bin/chromium}
 PORT=${LIVE_PORT:-8771}
+FIRST_DISPLAY=${LIVE_DISPLAY:-90}
 RECEIVER=${RECEIVER:-$REPO/agent}  # another agent package folder, for example agentwatch's pinned copy
 
 say() { echo "run.sh: $*" >&2; }
@@ -85,7 +95,7 @@ start_chromium() {  # RUN NAME DISPLAY PROFILE EXTENSION [FLAG...]
   echo $! >"$run/pids/chromium-$name"
 }
 
-up() {
+up() {  # [all]
   if ss -ltn | grep -q "127.0.0.1:$PORT "; then
     say "port $PORT is in use; set LIVE_PORT"
     return 1
@@ -103,9 +113,26 @@ up() {
   trap 'down "$run"' EXIT
   trap 'exit 130' INT TERM
   mkdir "$run/home" "$run/logs" "$run/shots" "$run/x" "$run/pids"
+  # The harness lock and the guard, before the displays are chosen. The guard
+  # reads each pid file of $run/pids and stops those processes (and their
+  # children) at the driver's end: this script's end in `all` mode, else `down`
+  # or LIVE_UP_LIMIT. It leaves this script's process tree at once.
+  if [ "${1:-}" = all ]; then
+    set -- --driver "$$"
+  else
+    set -- --driver 0 --limit "${LIVE_UP_LIMIT:-3600}"
+  fi
+  answer=$(python3 -I -B "$HERE/harness_guard.py" --name chrome-extension-live "$@" --pid-dir "$run/pids") || true
+  case "$answer" in
+    locked\ * | nested\ *) echo "$answer" | cut -d' ' -f2 >"$run/guard.pid" ;;
+    *)
+      say "${answer#refused }"
+      return 2
+      ;;
+  esac
   sock=$(mktemp -d /tmp/aw-live.XXXXXX)
 
-  a=$(free_display 90)
+  a=$(free_display "$FIRST_DISPLAY")
   o=$(free_display $((a + 1)))
   write_xauth "$a" "$run/x/auth.$a"
   write_xauth "$o" "$run/x/auth.$o"
@@ -191,6 +218,14 @@ down() {  # RUN
       kill -KILL "$pid" 2>/dev/null || true
     fi
   done
+  # The guard ends too (it stops what is left, then frees the harness lock);
+  # only the run's own guard, while it still runs.
+  if [ -f "$run/guard.pid" ]; then
+    g=$(cat "$run/guard.pid")
+    if grep -q harness_guard.py "/proc/$g/cmdline" 2>/dev/null; then
+      kill "$g" 2>/dev/null || true
+    fi
+  fi
   say "stopped the processes of $run"
 }
 
@@ -199,7 +234,7 @@ case "${1:-all}" in
   test) shift; run=$1; shift; python3 "$HERE/live.py" "$run" "$@" ;;
   down) down "$2" ;;
   all)
-    run=$(up)
+    run=$(up all)
     trap 'down "$run"' EXIT INT TERM
     python3 "$HERE/live.py" "$run"
     ;;
