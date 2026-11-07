@@ -2326,7 +2326,9 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
   has the daemon move the X pointer (C10, the daemon's own ops) along a person-shaped path, from the
   last point of the page under the pointer to the last point of the page that comes forward, before
   the window comes forward. It does this for every client. The agent pointer design (agent-browser
-  `docs/superpowers/specs/2026-11-06-agent-pointer-move-design.md`, section 3) gives the reasons.
+  `docs/superpowers/specs/2026-11-06-agent-pointer-move-design.md`, section 3) gives the reasons. An
+  unexplained change is a pointer event whose position change from the page's last pointer event does
+  not agree with its movement (`movementX`, `movementY`).
   - The paths are on, off or unknown. They are unknown until the first answer of the probe,
     `daemon.pointerAt`, which the relay sends at each link up. An answer turns them on, and gives `at`,
     the display's size and `views`. `unknown op`, `wrong display` and `not connected` (an older daemon)
@@ -2340,16 +2342,17 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
     when it is sent; a wheel event more than 2 px from it, a child session's pointer input and touch
     input make it unknown. The pointer's place `at`, from the daemon's answers: unknown at the
     relay's start, at a link change, and after a failed or killed path or the relay's timer. The front
-    page, the page under the pointer: the page of the last activation step whose raise the relay sent
-    (step 2), or a new tab that comes on top, with no raise (a new active tab that opens a window, or
-    that becomes the active tab of the front page's window); unknown at the relay's start, at a link
-    change, at its `tabs.onRemoved` or `tabs.onReplaced`, after failed reads of step 1, after a raise
-    that reached its limit or that failed for an input or a `Page.bringToFront`, and after any client's
-    `Browser.setWindowBounds` (below). The held buttons: a tab holds a CDP button from a
-    `mousePressed` on any of its sessions, its own or a frame's (review-68 B2), until Chrome answered a
-    `mouseReleased` on any of them, or until the tab closes, the link changes, the client's connection
-    closes, or the tab is detached; a frame's pointer input still makes the page's point unknown. Each
-    page's kept geometry: its last usable geometry from the relay's own reads (below).
+    page, the page under the pointer: the page of the last activation step that made it the front page
+    (step 6, after the raise of step 7), or a new tab that comes on top, with no raise (a new active tab
+    that opens a window, or that becomes the active tab of the front page's window); unknown at the
+    relay's start, at a link change, at its `tabs.onRemoved` or `tabs.onReplaced`, after failed reads
+    of step 1, after a raise that reached its limit or that failed for an input or a
+    `Page.bringToFront`, and after any client's `Browser.setWindowBounds` (below). The held buttons: a
+    tab holds a CDP button from a `mousePressed` on any of its sessions, its own or a frame's (review-68
+    B2), until Chrome answered a `mouseReleased` on any of them, or until the tab closes, the link
+    changes, the client's connection closes, or the tab is detached; a frame's pointer input still
+    makes the page's point unknown. Each page's kept geometry: its last usable geometry from the
+    relay's own reads (below).
   - The activation step, with the paths on, one step at a time for all connections.
     `Page.bringToFront` and `Target.activateTarget` go through it too: they wait for the chain and for
     their tab's gate, as an input does, and answer after the step.
@@ -2359,13 +2362,14 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
        one `ACTIVATE_MAX_MS` (review-68 N3).
     2. Decide. With the front page known, a page comes under the pointer when it is not the front
        page, or, for `Target.activateTarget`, when its tab is not active and its window is the front
-       page's window. The front page decides, not the focus, and the raise sends `windows.update`
-       with `{"focused":true}` also to a focused window. With the front page unknown, the focus
-       decides as above, and no path plays. Then a page becomes the front page (and step 6 records
-       it) only by a raise that the relay sends: `windows.update` for an input whose window does not
-       have the focus, or the client's `Page.bringToFront` (review-68 N1). A tab switch alone
-       (`tabs.update`, also that of `Target.activateTarget`) or a focused window with no raise leaves
-       the front page unknown, with no record: a focused window can lie under a newer window. A path
+       page's window. The front page decides, not the focus, and the raise (step 7) sends
+       `windows.update` with `{"focused":true}` also to a focused window. With the front page unknown,
+       the focus decides as above, and no path plays. Then a page becomes the front page (and step 6
+       records it) only when the raise brings a window forward: the `windows.update` of an input whose
+       window does not have the focus, or the client's `Page.bringToFront` (review-68 N1). A raise that
+       only switches the tab (`tabs.update`, also that of `Target.activateTarget`), or an input whose
+       window has the focus, leaves the front page unknown, with no record: a focused window can lie
+       under a newer window. A path
        can play when a page comes under the pointer and the relay knows both last points: S of the
        front page and T of the page that comes forward.
     3. Wait and hold, only when a path can play, all within one `ACTIVATE_MAX_MS = 2000`; at the
@@ -2386,19 +2390,25 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
        S is T and `at` is not, a short out-and-back of 2 to 4 px. No path when it does not fit C10's
        limits.
     5. Play: send `daemon.movePointer`, and wait for its answer, at most its wait.
-    6. Record (the X records). On `ok` the answered position is the last point of both pages
-       (unknown for the front page when it is outside its viewport). With no path because `at` is T:
+    6. Record (the X records). On `ok` the answered position is the last point of both pages. With
+       no path because `at` is T:
        T. On `pointer moved` the answered position is `at` and the entering page's last point, and
        the front page's point is unknown. After a failed path (`no display`, `not now` after a kill,
        the relay's timer), and in each other step that brings a page under the pointer with no path,
        the relay reads the pointer (`daemon.pointerAt`) and records it as `at` and as the entering
        page's point, and after a failed path also as the front page's point; a failed read leaves
-       them unknown. The entering page is the front page when step 7's raise succeeds and either a
-       page came under the pointer (the front page was known) or the relay sent the raise (step 2); a
-       failed `tabs.update` of `Target.activateTarget` gives the client the error and keeps the front
-       page as it was.
-    7. Bring the page forward: `tabs.update` and `windows.update`, the client's `Page.bringToFront`,
-       or the `tabs.update` of `Target.activateTarget`. Then open the front page's gate.
+       them unknown. Each record that maps a display position into a page gives that page an unknown
+       point when the position is outside the page's viewport, or when the page's geometry is missing
+       or not usable (the read's own rules, and no device-metrics override). The entering page is the
+       front page when the raise (step 7) succeeds and either a page came under the pointer (the front
+       page was known) or, with the front page unknown, the raise brought a window forward (step 7; the
+       rule of step 2); a failed `tabs.update` of `Target.activateTarget` gives the client the error
+       and keeps the front page as it was.
+    7. The raise: bring the page forward, within one `ACTIVATE_MAX_MS`. For an input, `tabs.update`
+       with `{"active":true}` when its tab is not active, and `windows.update` with `{"focused":true}`
+       when a page comes under the pointer or its window does not have the focus; the client's
+       `Page.bringToFront`; or the `tabs.update` of `Target.activateTarget`. The raise succeeds when
+       its calls answer with no error within the limit. Then open the front page's gate.
     8. The input goes. A press's catch-up, if any, runs inside its chain step, from step 6's record.
 
     The limits: one `ACTIVATE_MAX_MS` for steps 1 and 2, one for step 3, 1.2 s for the reads of
@@ -2410,9 +2420,10 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
     A client's `Browser.setWindowBounds`, with the paths on, waits in the activation chain (review-68
     B3): behind every step already in the chain (the path of the step that runs plays at the window's
     old place), and behind the catch-ups that run in its window's pages; then the front page is
-    unknown, the kept geometries go, and the window changes. Later steps wait behind it. The window's
-    scope check runs first: a call whose window holds no tab of the client's scope gets `Browser window
-    not found` and changes nothing. With the paths off or unknown it goes at once.
+    unknown, the kept geometry of every page in the relay's model goes (of every window and every
+    scope), and the window changes. Later steps wait behind it. The window's scope check runs first: a
+    call whose window holds no tab of the client's scope gets `Browser window not found` and changes
+    nothing. With the paths off or unknown it goes at once.
   - The catch-up keeps each page's pointer events continuous. When a client's next
     `Input.dispatchMouseEvent` or `Input.dispatchDragEvent` for a page whose point is an X record is a
     move more than 50 px from it, or a press or a wheel more than 2 px from it, the relay first sends CDP
@@ -2439,18 +2450,25 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
     replaces the set of the world's ids with its new id. On the tab's own session only, the relay drops
     the world's `Runtime.executionContextCreated` (by the world's name, for any id; the id joins the
     set), and `Runtime.executionContextDestroyed`, `Debugger.scriptParsed` and
-    `Debugger.scriptFailedToParse` of the ids in the set, so no client sees the world.
-    `Runtime.executionContextsCleared` empties the set and still goes to the client. An id that stays
-    in the set until the next read can name a page's context after a navigation, and the relay then
-    drops that page's own events of that id. The relay stops waiting after `GEOMETRY_WAIT_MS` and
+    `Debugger.scriptFailedToParse` of the ids in the set, so no client sees the world. An id that left
+    the set is no longer the relay's: its events go to the client as any page's events (also a
+    `Runtime.executionContextDestroyed` of the relay's old world, of a context that the client never
+    saw created; a client ignores an id that it does not know). `Runtime.executionContextsCleared`
+    empties the set and still goes to the client. An id that stays in the set until the next read can
+    name a page's context after a navigation, and the relay then drops that page's own events of that
+    id (`Runtime.executionContextDestroyed`, `Debugger.scriptParsed` and
+    `Debugger.scriptFailedToParse`). The relay stops waiting after `GEOMETRY_WAIT_MS` and
     drops the late answer. The read also gives the content box: `visualViewport.width` and `height`
     (the viewport less its scrollbars, at a scale of 1; else `documentElement.clientWidth` and
     `clientHeight`). It also gives `document.visibilityState`. The read's own rules: a geometry is not
     usable when the ratio or the scale is not 1, the screen size is not the display's, a width or a
     height of the viewport or of the content box is 4 px or less, or the content box is wider or taller
     than the viewport. The relay's rules: a geometry is also not usable when a device-metrics override
-    is in force on the tab, when the window is minimized (the entering page's, by step 1's
-    `windows.get`), or when it is a hidden front page. A read in flight gives no geometry.
+    is in force on the tab (from a client's `Emulation.setDeviceMetricsOverride` or
+    `Page.setDeviceMetricsOverride` on the page's own session until its
+    `Emulation.clearDeviceMetricsOverride` or `Page.clearDeviceMetricsOverride`, or until the tab is
+    detached), when the window is minimized (the entering page's, by step 1's `windows.get`), or when
+    it is a hidden front page. A read in flight gives no geometry.
   - The kept geometry (ab-lead's decision in board ab-v16.71; review-68 N2). The relay keeps each
     page's last usable geometry from its own reads. It keeps a read only when the read is usable as a
     front page's geometry: the rules above, not hidden, and not minimized when step 1 read the window.
