@@ -82,7 +82,7 @@ test("the operator package has no control permission, no debugger and no inbound
 
 test("agent manifest", () => {
   assert.equal(receiver.manifest_version, 3);
-  assert.equal(receiver.version, "0.3.4");
+  assert.equal(receiver.version, "0.3.5");
   assert.equal(receiver.name, "agentwatch \u2014 agent mode (agent browser only)");
   // The frame rule's topDomains (C5 rule 4) needs Chrome 141; 145 is the safe minimum.
   assert.equal(receiver.minimum_chrome_version, "145");

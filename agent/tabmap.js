@@ -37,6 +37,9 @@ export class TabMap {
   // The object of the last set_scopes (it applies now), and the last applied one.
   current = NO_SCOPES;
   reference = null;
+  // The copy as the start's read gave it (in time or late): the receiver keeps
+  // other keys in chrome.storage.session too (workers.js).
+  onCopy = () => {};
 
   constructor(chrome, clock) {
     this.#chrome = chrome;
@@ -81,7 +84,7 @@ export class TabMap {
     if (!area) return;
     const reading = new Promise((resolve) => resolve(area.get(null)));
     const querying = new Promise((resolve) => resolve(this.#chrome.tabs.query({})));
-    reading.catch(() => {});
+    reading.then((data) => this.onCopy(data ?? {}), () => {}).catch(() => {});
     querying.catch(() => {});
     const got = await this.#within(Promise.all([reading, querying]), RESTORE_MAX_MS);
     if (!got.ok) {

@@ -104,6 +104,79 @@ do this):
 Start the stub server, the native host and the driver as `run.sh up` does, and replace only the
 Chromium start of the agent. The sender (operator) side stays on Chromium.
 
+## The worker removal of the recorded origins: `workers.py`
+
+`workers.py` is the live check of board task ab-v16.74 (C5, the worker removal of the recorded
+origins; the operator's answer ab-214, review-30 and ab-lead's decisions). It repeats the measure of
+board task ab-v16.73: a service worker of a host on no list, registered from the operator's marked
+tab with `"*"`, answers a navigation of a client-attached tab of scope A with its own page, or with
+a cached signed-in page (a made-up cookie). It is one Python file (standard library only) with its
+own Xvfb, its own Chromium, a copy of the unpacked agent, `host.py` as the native host, a stub
+daemon and the test sites (all `*.localhost`, on two loopback ports), and no relay. It starts only
+its own processes and stops only those, by the pids that it recorded.
+
+```sh
+DISPLAY_N=142 test/live/workers.py            # run folder test/live/.run/workers-<stamp>, ports 8774 and 8775
+test/live/workers.py <run folder> <port>      # or name them (PORT_B: the second port, default port + 1)
+```
+
+The cases: `before` (two marked tabs stay on the two hosts: the worker's page commits, the residue),
+`after` (both marked tabs leave: no commit, no script, no read, no request), `frame` (a second marked
+tab shows the host in a sub-frame: the worker stays; after that page leaves: no commit), `race` (a
+client's `Page.navigate` 0, 100 or 300 ms after the leave's request), `error` (a leave for the error
+page of a refused connection: review-30 B1), `site` (review-30's probe 2: two origins of one site,
+and a frame's partitioned worker under that site; the site rule), `session` (a tab of scope C
+registers a worker on C's site; a `set_scopes` ends C's list), `flood` (review-30b B1: two marked
+tabs with 600 frames of distinct hosts each; the open page's worker and two listed workers stay; a
+list's end during the flood keeps the open page's worker; after the flood the gap after a leave is
+still closed; review-30c B1: the guard's times before and during the flood, with limits), `gone`
+(the marked tab's next
+navigation to the host is a network request) and, with `RESTORE_TRIALS`, C6's restore tab. The
+environment: `TRIALS` (20), `CACHE_TRIALS` (10), `CTRL_TRIALS` (5), `AFTER_TRIALS` (20),
+`FRAME_TRIALS` (5), `RACE_REPS` (4), `ERROR_TRIALS` (5), `SITE_REPS` (3), `SESSION_TRIALS` (5),
+`FLOOD_FRAMES` (600 per tab; 0: no flood), `FLOOD_TRIALS` (5), `FLOOD_NOTICE_MS` (250: the limit
+of the blocked notice during the flood), `FLOOD_BLANK_MS` (150: the limit of the worker's page from
+commit to `about:blank` during the flood), `CASES` (`flood`: the setup and the case flood only, for
+example a timing run of another receiver with `RECEIVER`),
+`RESTORE_TRIALS` (0), `READERS` (1: every reader of ab-v16.73; 0: only `Page.enable`), `EAGER`,
+`PORT_B`, `CHROMIUM`, `RECEIVER`. The run folder holds `results.json`, `summary.json`, the rows of
+each case, the logs, the screenshots and the screencast frames. The script deletes nothing.
+
+Result on taylor (2026-11-06, Chromium 156.0.8078.79, receiver 0.3.5 of the branch
+`ab-v16.74-sw-remove` after review-30e, `DISPLAY_N=142`, the defaults): 51 of 51 checks passed.
+
+| Case | Trials | Worker's page committed (seen by the client) | Requests to the host |
+| --- | --- | --- | --- |
+| before, own-page worker (link and `Page.navigate`) | 40 | 40 | 0 |
+| before, cached signed-in page | 20 | 19 (cookie sent in 19) | 0 |
+| before, control (no worker) | 10 | 0 | 0 |
+| after the leave, own-page worker | 40 | 0 | 0 |
+| after the leave, cached signed-in page | 40 | 0 | 0 |
+| frame: the host in a second marked tab's frame | 10 | 10 | 0 |
+| frame: after that page left | 10 | 0 | 0 |
+| race: `Page.navigate` 4 to 17 ms after the leave's request | 4 | 4 | 0 |
+| race: 100 ms or 300 ms after it | 8 | 0 | 0 |
+| error: after a leave for an error page | 10 | 0 | 0 |
+| session: scope C's list in force | 10 | 9 | 0 |
+| session: after the `set_scopes` that ended it | 10 | 0 | 0 |
+| flood: D's site after the `set_scopes` that ended D's list | 10 | 0 | 0 |
+| flood: the open page's host after the flood and the leave | 10 | 0 | 0 |
+
+Every trial ended at `about:blank` with one correct `blocked`. Before the leave, the worker's page
+stayed 21 to 52 ms from its commit to `about:blank`; the client read every page that committed (the
+title event and its init script). The case `site`: the second marked tab's new frames of
+`www.nolist3.localhost` got the frame's worker in 3 of 3 before and 3 of 3 after the first tab left
+the other origin of the site; after the second tab left the site too, the next frame went to the
+network. The case `flood` (1200 frames in 20 s): the open page's worker, D's listed worker and the
+canary on A's list answered before, during the flood and after one more new origin; at D's list end
+the open page's worker and the canary stayed (the bound refuses and evicts no recorded origin). The
+guard's times (a client's `Page.navigate`, 5 each): before the flood, the blocked notice 22 to 24 ms
+after the command and the worker's page 21 to 36 ms from its commit to `about:blank`; during the
+flood, 29 to 38 ms and 20 to 30 ms (limits 250 ms and 150 ms). With only `Page.enable`
+(`READERS=0 CASES=flood`, review-30c's method), one run after the other, during the flood: this
+head 26 to 41 ms and 25 to 59 ms; receiver 0.3.4 (`RECEIVER` = main 8a3b66f's `agent/`) 25 to 34 ms
+and 27 to 60 ms. After the leave, the marked tab's next navigation to the host was a network request (no worker).
+
 ## What the run sets up
 
 | Piece | What it is |

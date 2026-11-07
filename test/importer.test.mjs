@@ -163,8 +163,14 @@ test("the import follows C6 in order and sums the counts", async () => {
     "debugger.sendCommand Fetch.disable",
     "debugger.detach",
     "scripting.executeScript func",
+    // The restore tab's last commit joins the record of C5's worker removal (board ab-v16.74). No
+    // set_scopes applied in this test, so no list covers the site, and the check removes its workers.
+    "storage.session.set",
+    "browsingData.remove",
     "declarativeNetRequest.updateSessionRules",
+    "storage.session.remove",
   ]);
+  assert.deepEqual(f.callsTo("browsingData.remove"), [[{ origins: ["https://www.app.localhost"] }, { serviceWorkers: true }]]);
 
   // Cookie reads: the domain, then every partition.
   assert.deepEqual(f.callsTo("cookies.getAll"), [[{ domain: "app.localhost" }], [{ domain: "app.localhost", partitionKey: {} }]]);
