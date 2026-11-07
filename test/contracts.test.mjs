@@ -1249,7 +1249,7 @@ test("C10 states the daemon's own ops (board ab-v16.70): the prefix, its place, 
   assert.deepEqual(JSON.parse(example[1]), sample.req.args[0], "the example is the first move vector's arg");
   assert.equal(sample.req.wait, 1565, "the example's wait");
   // The intro names the build, the design and who builds each side.
-  assert.ok(says(protocol, "The agent pointer (board task ab-v16.70; the design: agent-browser `docs/superpowers/specs/2026-11-06-agent-pointer-move-design.md`, board ab-v16.37, merged at agent-browser `6bb6838`) is in C10 and C11."), "the intro");
+  assert.ok(says(protocol, "The agent pointer (board task ab-v16.70; the design: agent-browser `docs/superpowers/specs/2026-11-06-agent-pointer-move-design.md`, board ab-v16.37, first merged at agent-browser `6bb6838`; its build decisions are in agent-browser PR #68, board ab-v16.71) is in C10 and C11."), "the intro");
   assert.ok(says(protocol, "agentwatch builds the daemon side in its task age-0kh.28 (aw-lead), and the relay its side in board ab-v16.71"), "the intro: the sides");
   assert.ok(says(protocol, "Until the daemon side ships, a `daemon.` op goes to the receiver as any op, the receiver answers `unknown op`, and the relay turns its paths off"), "the intro: an older daemon");
 });
@@ -1467,25 +1467,25 @@ test("C11 states the pointer at an activation (board ab-v16.70): the paths' stat
     "While the paths are off, the relay is exactly as the bullets above say: no geometry read, no wait, no catch-up and no path, and `Page.bringToFront` and `Target.activateTarget` go as above.",
     // What it keeps.
     "a wheel event more than 2 px from it, a child session's pointer input and touch input make it unknown",
-    "after a raise that reached its limit, and after any client's `Browser.setWindowBounds`",
-    "a tab holds a CDP button from a `mousePressed` until Chrome answered its `mouseReleased`",
+    "after failed reads of step 1, after a raise that reached its limit or that failed for an input or a `Page.bringToFront`, and after any client's `Browser.setWindowBounds` (below)",
+    "a tab holds a CDP button from a `mousePressed` on any of its sessions, its own or a frame's (review-68 B2), until Chrome answered a `mouseReleased` on any of them",
     // The step, its order and its waits.
     "`Page.bringToFront` and `Target.activateTarget` go through it too: they wait for the chain and for their tab's gate, as an input does, and answer after the step.",
     "1. Read the tab and its window (`tabs.get`, `windows.get`).",
     "2. Decide. With the front page known, a page comes under the pointer when it is not the front page, or, for `Target.activateTarget`, when its tab is not active and its window is the front page's window.",
     "With the front page unknown, the focus decides as above, and no path plays.",
     "3. Wait and hold, only when a path can play, all within one `ACTIVATE_MAX_MS = 2000`; at the limit, no path.",
-    "no path when its tab's next call waits in the activation chain (its gate is set, or becomes set during the wait). No other page's button counts.",
+    "No other page's button counts.",
     "Wait for the end of a catch-up that runs in the front page. Then chain the front page's gate on its old gate",
     "Last, wait for the answers of both pages' pointer input that already went to Chrome.",
     "4. Plan.",
-    "No path when S or T is outside the front page's viewport (2 px inside its edges); none is needed when `at` is T.",
-    "sampled every 16 ms, each point clamped 2 px inside the front page's viewport, each `dt` at most 250 ms, stretched in time until no step is over 50 px, with a first step of 2 px or more",
+    "none is needed when `at` is T. The path follows agent-browser's `src/input.ts` generator from S to T, sampled every 16 ms,",
+    "each `dt` at most 250 ms, stretched in time until no step is over 50 px, with a first step of 2 px or more",
     "5. Play: send `daemon.movePointer`, and wait for its answer, at most its wait.",
     "6. Record (the X records). On `ok` the answered position is the last point of both pages",
     "On `pointer moved` the answered position is `at` and the entering page's last point, and the front page's point is unknown.",
     "the relay reads the pointer (`daemon.pointerAt`) and records it as `at` and as the entering page's point, and after a failed path also as the front page's point",
-    "7. Bring the page forward: `tabs.update` and `windows.update`, the client's `Page.bringToFront`, or the `tabs.update` of `Target.activateTarget`. Then open the front page's gate.",
+    "7. The raise: bring the page forward, within one `ACTIVATE_MAX_MS`. For an input, `tabs.update` with `{\"active\":true}` when its tab is not active, and `windows.update` with `{\"focused\":true}` when a page comes under the pointer or its window does not have the focus; the client's `Page.bringToFront`; or the `tabs.update` of `Target.activateTarget`. The raise succeeds when its calls answer with no error within the limit. Then open the front page's gate.",
     "8. The input goes. A press's catch-up, if any, runs inside its chain step, from step 6's record.",
     "The limits: one `ACTIVATE_MAX_MS` for steps 1 and 2, one for step 3, 1.2 s for the reads of step 4 (the geometry's `GEOMETRY_WAIT_MS = 200`, and `daemon.pointerAt`), the path's wait (at most 3 s), 1.2 s for the read after a failed path, and one `ACTIVATE_MAX_MS` for step 7",
     "The worst case is about 11.4 s",
@@ -1496,8 +1496,8 @@ test("C11 states the pointer at an activation (board ab-v16.70): the paths' stat
     "A tab has at most `CATCH_UP_MAX_UNANSWERED = 4` catch-up moves without an answer: no catch-up starts while the tab has unanswered catch-up moves, and when a move is due while 4 wait (a page with an open dialog answers none), the catch-up stops and the client's event goes as with the paths off.",
     "A step and a catch-up never overlap on one page.",
     // The geometry read.
-    "one `Runtime.evaluate` in the relay's own isolated world (`Page.createIsolatedWorld` on the main frame), only for a bridge tab, one in flight per tab, with no `Page.enable` or `Runtime.enable` of the relay's own, and with C10's default wait",
-    "or a device-metrics override is in force on the tab",
+    "one `Runtime.evaluate` in the relay's own isolated world, only for a bridge tab, one in flight per tab, with no `Page.enable` or `Runtime.enable` of the relay's own, and with C10's default wait",
+    "a geometry is also not usable when a device-metrics override is in force on the tab",
     // No path, the fallback and an older daemon (review-63e note C).
     "When the relay sends no path, that activation is as with the paths off",
     "(the first activation after the relay's start, after a link change, and after the paths turn on)",
@@ -1514,6 +1514,80 @@ test("C11 states the pointer at an activation (board ab-v16.70): the paths' stat
   const longest = PK.POINTER_START_MS + PK.POINTER_PATH_MAX_MS + PK.POINTER_KILL_MS + PK.POINTER_SLACK_MS;
   assert.ok(longest <= 3000, "the path's wait is at most 3 s");
   assert.equal(Math.round((3 * endpoint.constants.ACTIVATE_MAX_MS + 2 * PK.POINTER_READ_WAIT_MS + 3000) / 100) / 10, 11.4, "the worst case");
+});
+
+// ab-lead's decisions on agent-browser PR #68 (board ab-v16.71), in C11 by board ab-v16.77.
+test("C11 states ab-lead's decisions of board ab-v16.71 (board ab-v16.77): the content box, the kept geometry, a jump with no path and the gate rule", () => {
+  const has = (list) => { for (const s of list) assert.ok(says(C11, s), `C11 says: ${s}`); };
+  // The content box: the tests and the clamp of the path, the clamp of the catch-up, and where it comes from.
+  has([
+    "No path when S or T is outside the front page's content box (its viewport less its scrollbars, 2 px inside its edges; ab-lead's decision in board ab-v16.71); none is needed when `at` is T.",
+    "each point clamped 2 px inside the front page's content box, in whole pixels (a page gets no mouse event over its scrollbars, so a path over one gave an unexplained change live)",
+    "each point clamped 2 px inside the page's content box as in step 4 (from the page's kept geometry, else a read, which keeps no geometry; with neither, or with one that fails the read's own rules (below), no clamp), except the event's own point, which stays where the client sent it.",
+    "The read also gives the content box: `visualViewport.width` and `height` (the viewport less its scrollbars, at a scale of 1; else `documentElement.clientWidth` and `clientHeight`).",
+    "S or T is outside the front page's content box; the path does not fit the limits",
+  ]);
+  for (const s of ["2 px inside the front page's viewport", "S or T is outside the front page's viewport"]) assert.ok(!says(C11, s), `C11: no ${s}`);
+  // The kept geometry: what the relay keeps, who uses it, where it goes, no path without it, and its limit.
+  has([
+    "Each page's kept geometry: its last usable geometry from the relay's own reads (below).",
+    "The kept geometry (ab-lead's decision in board ab-v16.71; review-68 N2). The relay keeps each page's last usable geometry from its own reads.",
+    "Step 4 uses it for a page that is no bridge tab (agent-browser's CLI ends its connection after each command, and the relay then detaches its page), and the catch-up uses it before a read.",
+    "The relay drops it at every window event that it sees: any client's `Browser.setWindowBounds`; on the page's own session, a client's `Emulation.setDeviceMetricsOverride`, `Emulation.clearDeviceMetricsOverride`, `Emulation.setVisibleSize`, `Emulation.setPageScaleFactor`, `Emulation.setScrollbarsHidden`, `Page.setDeviceMetricsOverride` or `Page.clearDeviceMetricsOverride`; the page's `Page.frameResized`; its `tabs.onReplaced` (the new tab has none) and its `tabs.onRemoved`; and a link change.",
+    "When a page that is no bridge tab has no kept geometry, the step sends no path.",
+    "A front page whose `document.visibilityState` is `\"hidden\"` has no usable geometry (a page under the pointer is visible), so the step sends no path.",
+    "The limit (review-68 N9): a kept geometry can be out of date when its window moves or changes its size, or its content box changes, with no event that the relay sees: a site popup's `window.moveTo` or `window.resizeTo`, the page's own fullscreen change, or a scrollbar that the page got or lost after the read (with no client attached, no `Page.frameResized` reaches the relay).",
+    "The path then follows the old rectangle: real moves and hovers only, at points from the pages' input, at most 5 paths a second, over what lies there now.",
+    "a geometry is missing or not usable (a hidden front page has no usable geometry);",
+  ]);
+  // A step with no path can show one jump or one unexplained change.
+  has([
+    "A page that never had a pointer event then enters with its first pointer event, which is no position change. A page whose point was known or became unknown enters at the X pointer: at most one unexplained change or one jump.",
+    "The entry carries the movement from the page's last point when Chrome still has that point as the base of the movement (the page got pointer input since its window last lost the pointer), so it is a jump when the X pointer is more than 100 px from that point",
+  ]);
+  assert.ok(!says(protocol, "never a jump"), "docs/protocol.md: no 'never a jump'");
+  assert.ok(!says(C11, "one unexplained position change at most, or one jump"), "C11: the words of review-68");
+  // The gate rule applies only while the front page holds a button.
+  has(["When the front page holds a button, wait for its release. The rule \"no path when its tab's next call waits in the activation chain (its gate is set, or becomes set during the wait)\" applies only while the front page holds a button, because only then does the release wait behind this step"]);
+  assert.ok(!says(C11, "wait for its release; no path when"), "C11: the gate rule is no rule of every step");
+});
+
+// Review-68's rules of agent-browser PR #68 (board ab-v16.71, head b186c06), in C11 by board ab-v16.77.
+test("C11 states review-68's rules of agent-browser PR #68 (board ab-v16.77): the world, the kept read, the held button, the front page by a raise, Browser.setWindowBounds in the chain, the limits", () => {
+  const has = (list) => { for (const s of list) assert.ok(says(C11, s), `C11 says: ${s}`); };
+  has([
+    // B1: a world before each read, and its ids.
+    "Each read first sends `Page.createIsolatedWorld` on the main frame and evaluates in the context id that it returns; when the evaluate names an unknown context (a navigation between the two calls), the relay sends both once more",
+    "Each read replaces the set of the world's ids with its new id.",
+    "On the tab's own session only, the relay drops the world's `Runtime.executionContextCreated` (by the world's name, for any id; the id joins the set), and `Runtime.executionContextDestroyed`, `Debugger.scriptParsed` and `Debugger.scriptFailedToParse` of the ids in the set, so no client sees the world. An id that left the set is no longer the relay's: its events go to the client as any page's events (also a `Runtime.executionContextDestroyed` of the relay's old world, of a context that the client never saw created; a client ignores an id that it does not know). `Runtime.executionContextsCleared` empties the set and still goes to the client. An id that stays in the set until the next read can name a page's context after a navigation, and the relay then drops that page's own events of that id (`Runtime.executionContextDestroyed`, `Debugger.scriptParsed` and `Debugger.scriptFailedToParse`).",
+    // N2: the rules of a usable geometry, and the kept read.
+    "It also gives `document.visibilityState`.",
+    "The read's own rules: a geometry is not usable when the ratio or the scale is not 1, the screen size is not the display's, a width or a height of the viewport or of the content box is 4 px or less, or the content box is wider or taller than the viewport.",
+    "The relay's rules: a geometry is also not usable when a device-metrics override is in force on the tab (from a client's `Emulation.setDeviceMetricsOverride` or `Page.setDeviceMetricsOverride` on the page's own session until its `Emulation.clearDeviceMetricsOverride` or `Page.clearDeviceMetricsOverride`, or until the tab is detached), when the window is minimized (the entering page's, by step 1's `windows.get`), or when it is a hidden front page. A read in flight gives no geometry.",
+    "It keeps a read only when the read is usable as a front page's geometry: the rules above, not hidden, and not minimized when step 1 read the window.",
+    "A read keeps or drops the kept geometry only when it answers within `GEOMETRY_WAIT_MS` and no drop event of the page (below) came after the read started (the relay counts each page's drop events): then a read that is not usable, or that fails, drops the kept one. A late answer is dropped and changes nothing. A catch-up's own read changes no kept geometry.",
+    // N1: the front page only by a raise that the relay sends.
+    "the page of the last activation step that made it the front page (step 6, after the raise of step 7), or a new tab that comes on top, with no raise (a new active tab that opens a window, or that becomes the active tab of the front page's window)",
+    "The front page decides, not the focus, and the raise (step 7) sends `windows.update` with `{\"focused\":true}` also to a focused window. With the front page unknown, the focus decides as above, and no path plays. Then a page becomes the front page (and step 6 records it) only when the raise brings a window forward: the `windows.update` of an input whose window does not have the focus, or the client's `Page.bringToFront` (review-68 N1). A raise that only switches the tab (`tabs.update`, also that of `Target.activateTarget`), or an input whose window has the focus, leaves the front page unknown, with no record: a focused window can lie under a newer window.",
+    "Each record that maps a display position into a page gives that page an unknown point when the position is outside the page's viewport, or when the page's geometry is missing or not usable (the read's own rules, and no device-metrics override). The entering page is the front page when the raise (step 7) succeeds and either a page came under the pointer (the front page was known) or, with the front page unknown, the raise brought a window forward (step 7; the rule of step 2); a failed `tabs.update` of `Target.activateTarget` gives the client the error and keeps the front page as it was.",
+    // N3: activateTarget's tabs.update after failed reads.
+    "When the reads fail or reach their limit, the front page is unknown and no path plays: the input goes with no raise, the client's `Page.bringToFront` goes, and `Target.activateTarget` sends its `tabs.update` within one `ACTIVATE_MAX_MS` (review-68 N3).",
+    // B2: a held button on any session.
+    "a frame's pointer input still makes the page's point unknown",
+    // B3: Browser.setWindowBounds in the activation chain.
+    "A client's `Browser.setWindowBounds`, with the paths on, waits in the activation chain (review-68 B3): behind every step already in the chain (the path of the step that runs plays at the window's old place), and behind the catch-ups that run in its window's pages; then the front page is unknown, the kept geometry of every page in the relay's model goes (of every window and every scope), and the window changes. Later steps wait behind it. The window's scope check runs first: a call whose window holds no tab of the client's scope gets `Browser window not found` and changes nothing. With the paths off or unknown it goes at once.",
+    // The limit of movement 0 (board ab-v16.76).
+    "Movement 0 after a page loses the pointer (measured in board ab-v16.71; its follow-up is board ab-v16.76): when another window comes over a page under the pointer, the page gets `mouseout`, and Chrome then gives its next pointer event a movement of 0.",
+    "is then an unexplained change when the page's point is no X record; the catch-up covers it only after an X record.",
+    "An unexplained change is a pointer event whose position change from the page's last pointer event does not agree with its movement (`movementX`, `movementY`).",
+  ]);
+  for (const s of ["The entering page is the front page now.", "(in the read, or in the read that gave its kept geometry)", "the world again", "still sets or drops it", "so no client sees the world, and the page's own events reach the client", "(unknown for the front page when it is outside its viewport)", "whose raise the relay sent (step 2)", "or the relay sent the raise (step 2)", "7. Bring the page forward:", "the kept geometries go"]) assert.ok(!says(C11, s), `C11: no ${s}`);
+});
+
+// Board ab-v16.71's measure of `xdotool sleep` (the design's section 7.1 at agent-browser 4400370) in C10, by board ab-v16.77.
+test("C10 states board ab-v16.71's measure of xdotool sleep (board ab-v16.77)", () => {
+  assert.ok(says(C10, "Board ab-v16.71's live check measured how well `xdotool sleep` keeps `dt` (taylor, Chromium 156 in the live test's own Xvfb, six runs; the agent pointer design, section 7.1): the times of the moves that the leaving page saw kept the planned `dt` to within 1 ms (median 0 ms, p90 1 ms over 5132 pairs of moves; at most 5 ms, except once 116 ms under the load of the whole live suite), and one script's start on `xdotool -` costs 20 to 26 ms (median). Standard input works: no argv is needed."), "C10: the measure");
+  assert.ok(!says(protocol, "its numbers come here"), "docs/protocol.md: the numbers are in");
 });
 
 // ---- C11: the endpoint ----
