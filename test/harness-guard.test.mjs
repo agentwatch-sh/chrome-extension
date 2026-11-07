@@ -7,8 +7,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,7 +25,7 @@ const SHELL_DRIVER = `#!/bin/sh
 set -eu
 # GUARD_ARGS: run.sh's up alone (--driver 0 --limit N); else the script is the driver, as in run.sh's all mode.
 if [ -n "\${GUARD_ARGS:-}" ]; then set -- $GUARD_ARGS; else set -- --driver $$; fi
-answer=$(python3 -I -B "${GUARD}" --name "$NAME" "$@" --pid-dir "$RUN/pids") || true
+answer=$(python3 -I -B "${GUARD}" --name "$NAME" "$@" --pid-dir "$RUN/pids" --log "$RUN/guard.log") || true
 case "$answer" in locked\\ * | nested\\ *) ;; *) echo "$answer" >&2; exit 2 ;; esac
 echo "$answer" | cut -d' ' -f2 > "$RUN/guard.pid"
 sleep 600 & echo $! > "$RUN/pids/xvfb"
@@ -72,7 +72,9 @@ function start(kind, dir, name, env = {}) {
     if (line) resolve(line === "ready" ? { pids: ["xvfb", "chromium", "server"].map((n) => Number(readFileSync(join(run, "pids", n), "utf8"))), guard: Number(readFileSync(join(run, "guard.pid"), "utf8")) } : JSON.parse(line));
   }));
   const exited = new Promise((r) => child.once("exit", (c) => r(c)));
-  return { child, run, ready, exited, stderr: () => err };
+  // The pid-file form's guard writes its lines after the lock into the run's log (run.sh: <run>/logs/guard.log).
+  const log = () => { try { return readFileSync(join(run, "guard.log"), "utf8"); } catch { return ""; } };
+  return { child, run, ready, exited, stderr: () => err + log() };
 }
 
 /** The pids of `pids` that ps still shows, with their children (a zombie has ended). */
@@ -189,4 +191,96 @@ test("run.sh and workers.py take the harness guard before their Xvfb, and give i
   assert.ok(st.indexOf("start_guard(") > 0 && st.indexOf("start_guard(") < st.indexOf('subprocess.Popen(["Xvfb"'), "workers.py: the guard before its Xvfb");
   assert.match(st, /GUARD\.track\(xvfb\.pid, "Xvfb"\)/);
   assert.match(st, /GUARD\.track\(chrome\.pid, "Chromium"\)/);
+});
+
+const RUN_SH = join(LIVE, "run.sh");
+
+test("run.sh never takes a reserved display (0, 90, 147, 190-192), whatever LIVE_DISPLAY is: run.sh displays", { skip }, () => {
+  const sh = readFileSync(RUN_SH, "utf8");
+  const py = readFileSync(GUARD, "utf8");
+  const list = (src, re) => (re.exec(src)?.[1] ?? "").split(/[\s,]+/).filter(Boolean).map(Number);
+  assert.deepEqual(list(sh, /^RESERVED_DISPLAYS="([^"]*)"/m), list(py, /^RESERVED_DISPLAYS = \(([^)]*)\)/m), "run.sh keeps harness_guard.py's list");
+  const reserved = list(py, /^RESERVED_DISPLAYS = \(([^)]*)\)/m);
+  assert.deepEqual(reserved, [0, 90, 147, 190, 191, 192]);
+  const taken = (env) => spawnSync("/bin/sh", [RUN_SH, "displays"], { env: { ...process.env, ...env }, encoding: "utf8" });
+  for (const from of ["0", "89", "90", "146", "147", "", "abc", "089"]) {
+    const r = taken(from === "" ? {} : { LIVE_DISPLAY: from });
+    assert.equal(r.status, 0, r.stderr);
+    const [a, o] = r.stdout.trim().split(" ").map(Number);
+    for (const d of [a, o]) assert.ok(d >= 1 && d <= 189 && !reserved.includes(d), `LIVE_DISPLAY=${from}: :${d}`);
+    assert.ok(o > a);
+    if (/^\d+$/.test(from) && Number(from) >= 1) assert.ok(a >= Number(from), `LIVE_DISPLAY=${from}: from it on (:${a})`);
+  }
+  // Past 189 there is no display: 190-192 are reserved too.
+  assert.notEqual(taken({ LIVE_DISPLAY: "189" }).status, 0);
+});
+
+/** A run folder of run.sh up alone: its live guard (the pid-file form, no driver) and one stand-in process. */
+async function upRun(dir, name) {
+  const run = join(dir, name);
+  mkdirSync(join(run, "pids"), { recursive: true });
+  mkdirSync(join(run, "logs"));
+  const answer = execFileSync("python3", ["-I", "-B", GUARD, "--name", name, "--driver", "0", "--limit", "60", "--pid-dir", join(run, "pids"), "--log", join(run, "logs/guard.log")],
+    { env: { ...process.env, HARNESS_LOCK: join(dir, "harness.lock") }, encoding: "utf8" }).trim();
+  const guard = Number(answer.split(" ")[1]);
+  writeFileSync(join(run, "guard.pid"), `${guard}\n`);
+  const x = spawn("sleep", ["604"], { stdio: "ignore", detached: true });
+  x.unref();
+  writeFileSync(join(run, "pids/xvfb.160"), `${x.pid}\n`);
+  await sleep(1200); // the guard reads the pid folder every 0.5 s
+  return { run, guard, pid: x.pid };
+}
+
+test("run.sh down stops the run only through its live guard, and signals nothing when the guard is gone (a pid file can name a reused pid)", { skip }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ce-guard-"));
+  const pids = [];
+  try {
+    // A live guard: down sends it SIGTERM and waits; the guard stops the run's process.
+    const u = await upRun(dir, "live");
+    pids.push(u.guard, u.pid);
+    // The up-alone guard keeps no pipe of its caller (its stderr is the run's log) and no inherited fd.
+    assert.equal(readlinkSync(`/proc/${u.guard}/fd/2`), join(u.run, "logs/guard.log"));
+    const r = spawnSync("/bin/sh", [RUN_SH, "down", u.run], { encoding: "utf8", timeout: 40_000 });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stderr, new RegExp(`run\\.sh: stopped the processes of ${u.run} \\(through its guard ${u.guard}\\)`));
+    assert.deepEqual(running([u.pid, u.guard]), [], "down returned after the guard and the run's process were gone");
+    assert.match(readFileSync(join(u.run, "logs/guard.log"), "utf8"), /the guard got SIGTERM; it stops 1 processes of the harness: xvfb\.160 \d+/);
+    // The guard is gone (it stopped the run at its limit, say), and a pid file now names another process: down
+    // must signal nothing.
+    const stale = join(dir, "stale");
+    mkdirSync(join(stale, "pids"), { recursive: true });
+    const other = spawn("sleep", ["605"], { stdio: "ignore", detached: true });
+    other.unref();
+    pids.push(other.pid);
+    writeFileSync(join(stale, "pids/chromium-agent"), `${other.pid}\n`);
+    writeFileSync(join(stale, "guard.pid"), `${u.guard}\n`);
+    const s2 = spawnSync("/bin/sh", [RUN_SH, "down", stale], { encoding: "utf8", timeout: 40_000 });
+    assert.equal(s2.status, 0, s2.stderr);
+    assert.match(s2.stderr, new RegExp(`run\\.sh: the guard already stopped the run ${stale}: down signals nothing`));
+    await sleep(500);
+    assert.deepEqual(running([other.pid]), [other.pid], "the process that a stale pid file names still runs");
+    // No guard.pid at all: nothing started, nothing to signal.
+    const none = join(dir, "none");
+    mkdirSync(join(none, "pids"), { recursive: true });
+    writeFileSync(join(none, "pids/server"), `${other.pid}\n`);
+    assert.match(spawnSync("/bin/sh", [RUN_SH, "down", none], { encoding: "utf8" }).stderr, /has no guard\.pid .*: down signals nothing/);
+    assert.deepEqual(running([other.pid]), [other.pid]);
+  } finally { stopOwn(pids); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a record whose pid another process took since (another start time) gets no signal; a record with its own start time does", { skip }, () => {
+  const r = spawnSync("python3", ["-I", "-B", "-c", `import sys; sys.path.insert(0, ${JSON.stringify(LIVE)})
+import argparse, subprocess, harness_guard as h
+a = argparse.Namespace(name="stale", driver=0, pid_dir=None, channel_fd=0, limit=0, wait=1)
+for start_delta in (1, 0):
+    p = subprocess.Popen(["sleep", "30"])
+    g = h.Guard(a)
+    g.rec[p.pid] = [h.stat_of(p.pid)[1] + start_delta, "x", None]  # no pidfd: the start-time check alone
+    g.reason = "the test"
+    g.stop()
+    print("alive" if p.poll() is None else "stopped")
+    p.kill(); p.wait()
+`], { encoding: "utf8", timeout: 60_000 });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(r.stdout.trim().split("\n"), ["alive", "stopped"], r.stderr);
 });

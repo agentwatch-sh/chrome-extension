@@ -6,12 +6,15 @@
 #   test/live/run.sh             start everything, run every case, stop everything
 #   test/live/run.sh up          start everything; print the run folder
 #   test/live/run.sh test DIR    run the cases (or: test DIR case ...) against a started run
-#   test/live/run.sh down DIR    stop every process of that run
+#   test/live/run.sh down DIR    stop every process of that run (through the run's guard)
+#   test/live/run.sh displays    print the two displays that up would take now
 #
 # Environment: CHROMIUM (default /usr/bin/chromium), LIVE_PORT (default 8771),
 # RECEIVER (the agent package folder to load; default the repository's agent/),
-# LIVE_DISPLAY (the first X display to try; default 90), LIVE_UP_LIMIT (the
-# seconds that a run of `up` alone may live without `down`; default 3600),
+# LIVE_DISPLAY (the first X display to try; default 90; the displays of
+# RESERVED_DISPLAYS are never taken), LIVE_UP_LIMIT (the seconds that a run of
+# `up` alone may live without `down`; default 3600; it also ends a
+# `test DIR` that is still running),
 # HARNESS_LOCK_WAIT (the seconds to wait for the harness lock; default 1200).
 #
 # The two rules of every live harness (README.md, "Two rules"; board ab-v16.78):
@@ -40,10 +43,27 @@ say() { echo "run.sh: $*" >&2; }
 
 ext_id() { sed -n "s/^- $1 extension ID: \`\([a-p]\{32\}\)\`$/\1/p" "$REPO/docs/protocol.md"; }
 
-# A display number in 90-189 with no X socket and no lock file.
+# The displays that run.sh never takes, whatever LIVE_DISPLAY is: 0 (a
+# desktop), 90 (agentwatch's agent browser on taylor, the operator's), 147, 190,
+# 191, 192 (other programs' displays on taylor). When such a display stops, its
+# socket and lock file go, so the free test alone would take it. The same list
+# as RESERVED_DISPLAYS in harness_guard.py (a test compares them).
+RESERVED_DISPLAYS="0 90 147 190 191 192"
+
+# A display number from $1 (at least 1) to 189 that is not reserved and has no
+# X socket and no lock file.
 free_display() {
   n=$1
+  case "$n" in '' | *[!0-9]*) n=1 ;; esac
+  n=${n#"${n%%[!0]*}"} # no leading zero (sh reads 089 as octal)
+  [ -n "$n" ] || n=1
   while [ "$n" -le 189 ]; do
+    case " $RESERVED_DISPLAYS " in
+      *" $n "*)
+        n=$((n + 1))
+        continue
+        ;;
+    esac
     if [ ! -e "/tmp/.X11-unix/X$n" ] && [ ! -e "/tmp/.X$n-lock" ]; then
       echo "$n"
       return 0
@@ -122,7 +142,7 @@ up() {  # [all]
   else
     set -- --driver 0 --limit "${LIVE_UP_LIMIT:-3600}"
   fi
-  answer=$(python3 -I -B "$HERE/harness_guard.py" --name chrome-extension-live "$@" --pid-dir "$run/pids") || true
+  answer=$(python3 -I -B "$HERE/harness_guard.py" --name chrome-extension-live "$@" --pid-dir "$run/pids" --log "$run/logs/guard.log") || true
   case "$answer" in
     locked\ * | nested\ *) echo "$answer" | cut -d' ' -f2 >"$run/guard.pid" ;;
     *)
@@ -190,53 +210,47 @@ EOF
 }
 
 down() {  # RUN
+  # Only through the run's own guard (its pid in guard.pid, its command line
+  # names this run's pid folder): the guard stops the run's processes by their
+  # recorded start times, and down waits until the guard has ended. A guard
+  # that is gone already stopped the run (at the driver's end or at
+  # LIVE_UP_LIMIT): then down signals nothing, because a pid file of the run
+  # can name a process that took that pid later.
   run=$1
-  for name in chromium-operator chromium-agent; do
-    [ -f "$run/pids/$name" ] && kill "$(cat "$run/pids/$name")" 2>/dev/null || true
-  done
-  i=0
-  while [ "$i" -lt 50 ]; do
-    alive=0
-    for name in chromium-operator chromium-agent; do
-      [ -f "$run/pids/$name" ] && kill -0 "$(cat "$run/pids/$name")" 2>/dev/null && alive=1
-    done
-    [ "$alive" -eq 0 ] && break
-    i=$((i + 1))
-    sleep 0.2
-  done
-  for f in "$run"/pids/*; do
-    [ -f "$f" ] || continue
-    pid=$(cat "$f")
-    kill "$pid" 2>/dev/null || true
-  done
-  sleep 1
-  for f in "$run"/pids/*; do
-    [ -f "$f" ] || continue
-    pid=$(cat "$f")
-    if kill -0 "$pid" 2>/dev/null; then
-      say "$(basename "$f") ($pid) still runs; sending KILL"
-      kill -KILL "$pid" 2>/dev/null || true
-    fi
-  done
-  # The guard ends too (it stops what is left, then frees the harness lock);
-  # only the run's own guard, while it still runs.
-  if [ -f "$run/guard.pid" ]; then
-    g=$(cat "$run/guard.pid")
-    if grep -q harness_guard.py "/proc/$g/cmdline" 2>/dev/null; then
-      kill "$g" 2>/dev/null || true
-    fi
+  if [ ! -f "$run/guard.pid" ]; then
+    say "the run $run has no guard.pid (its guard did not start, so it started nothing): down signals nothing"
+    return 0
   fi
-  say "stopped the processes of $run"
+  g=$(cat "$run/guard.pid")
+  case "$g" in '' | *[!0-9]*) g=0 ;; esac
+  if [ "$g" -gt 0 ] && grep -q -F "$run/pids" "/proc/$g/cmdline" 2>/dev/null; then
+    kill "$g" 2>/dev/null || true
+    i=0
+    while grep -q -F "$run/pids" "/proc/$g/cmdline" 2>/dev/null; do
+      i=$((i + 1))
+      if [ "$i" -gt 300 ]; then
+        say "the guard $g of $run still runs after 30 s; see $run/logs/guard.log"
+        return 1
+      fi
+      sleep 0.1
+    done
+    say "stopped the processes of $run (through its guard $g)"
+  else
+    say "the guard already stopped the run $run: down signals nothing"
+  fi
 }
 
 case "${1:-all}" in
   up) up ;;
   test) shift; run=$1; shift; python3 "$HERE/live.py" "$run" "$@" ;;
   down) down "$2" ;;
+  displays)
+    a=$(free_display "$FIRST_DISPLAY") && o=$(free_display $((a + 1))) && echo "$a $o"
+    ;;
   all)
     run=$(up all)
     trap 'down "$run"' EXIT INT TERM
     python3 "$HERE/live.py" "$run"
     ;;
-  *) say "usage: run.sh [up | test DIR [case...] | down DIR]"; exit 2 ;;
+  *) say "usage: run.sh [up | test DIR [case...] | down DIR | displays]"; exit 2 ;;
 esac
