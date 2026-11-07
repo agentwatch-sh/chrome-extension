@@ -654,16 +654,19 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
   - When: at each commit and at each navigation error (`webNavigation.onErrorOccurred`: a navigation
     that ends on an error page sends no `onCommitted`; review-30 B1) of a frame of any tab, at a
     marked tab's `tabs.onRemoved` and `tabs.onReplaced`, when a tab loses the mark or gets it at its
-    `tabs.onCreated` or `tabs.onReplaced` (a popup that gets the mark at its navigation target starts
-    no check: its own commits do), after each `set_scopes` (after its answer: a `set_scopes` never
-    waits for it), and at the worker's start. No tab is marked at a start (the marks have no copy),
-    so each recorded origin goes then, except one whose site a tab marked since the start shows. A
-    follow-up check removes each origin of a removal again (unless it is listed or its site shown
-    then), once, `RECHECK_MS` = 5000 ms to 2 x `RECHECK_MS` after that removal: one timer runs at a
-    time, and an origin is due after one whole period of it (review-30d's decision 3). A page can
+    `tabs.onCreated` or `tabs.onReplaced` (a popup that gets the mark at its navigation target
+    starts no check: its own commits do), after each `set_scopes` (after its answer: a `set_scopes`
+    never waits for it), and at the worker's start. No tab is marked at a start (the marks have no
+    copy), so each recorded origin goes then, except one whose site a tab marked since the start
+    shows. A follow-up check removes each origin of a removal again (unless it is listed or its site
+    shown then), once, `RECHECK_MS` = 5000 ms to 2 x `RECHECK_MS` after that removal: one timer runs
+    at a time, and an origin is due after one whole period of it (review-30d's decision 3). A due
+    origin that a list covers or whose site a marked tab shows then joins the record again (or the
+    pending set, with the same bounds), so that a worker that its open page registers after the
+    removal goes when that list ends or the tab leaves (round 7, ab-lead's decision). A page can
     register its worker after the check of its own commit (review-30b note 2: a frame on no list in
-    a scope's listed page). One check runs at a time; the events during a check start one more
-    after it.
+    a scope's listed page). One check runs at a time; the events during a check start one more after
+    it.
   - The windows. The check after an event ends after its frame read and its removal, each within
     `REMOVAL_WAIT_MS` (C10). When it waits for a check that runs, the removal ends at most about 4 x
     `REMOVAL_WAIT_MS` (8 s) after the event while each call ends in time (one more call for each 500

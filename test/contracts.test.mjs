@@ -271,6 +271,7 @@ test("C5 states the worker removal of the recorded origins: every tab's origins,
     // review-30f B1, notes 1 and 3.
     "Each stop (a new mark or a list change during the check, above) adds one more check, so while new marks or list changes keep coming during the checks (for example popups of a marked tab), the removal waits; each stop needs a new marked tab id or an applied `set_scopes` during that check",
     "After that call the record and the pending set lose only the origins that it did not keep (their workers are gone), except one that a tab committed again during the call",
+    "A due origin that a list covers or whose site a marked tab shows then joins the record again (or the pending set, with the same bounds), so that a worker that its open page registers after the removal goes when that list ends or the tab leaves",
     "and of the origins that tabs commit during that check before the call (no read of the check shows them, its loops go over copies of the record and the pending set, and the bound can drop them;",
     "(3) The follow-up sets hold at most 10,000 origins each: beyond 10,000 removed origins in one period of the follow-up timer, the others get no follow-up check",
     // review-30d B3: the shown sites come only from the reads and the marked commits during the check.

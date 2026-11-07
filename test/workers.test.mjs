@@ -1357,6 +1357,64 @@ test("after a list end's removal of every worker, the parts of more than SLICE o
   assert.ok(sizes.includes(102), "a task ran between part 1 and part 2: " + JSON.stringify([...new Set(sizes)]));
 });
 
+// ---- round 7 (ab-lead's decision on round 6's open point): the follow-up check records again a due
+// origin that a list covers or whose site a marked tab shows, so that a worker that its open page
+// registers after the part's call goes when that list ends or the tab leaves ----
+
+test("a list that begins during a part's own removal call: the follow-up check records the origin again, and its workers go when that list ends", async () => {
+  const s = await setup();
+  const Q = "https://www.q.example";
+  const held = [];
+  s.f.impl["browsingData.remove"] = (d) => (d && d.origins && d.origins.includes(Q) && held.length === 0 ? new Promise((resolve) => held.push(resolve)) : Promise.resolve());
+  commit(s, 3, Q + "/"); // on no list, of no shown site: the check removes it (held)
+  await flush(4);
+  assert.equal(held.length, 1, "the part's call waits");
+  await s.set(scopesWith("*", { lists: { ...LISTS, q: ["q.example"] } })); // list q begins during the call
+  held[0]();
+  delete s.f.impl["browsingData.remove"];
+  await flush(20);
+  assert.ok(!recorded(s).includes(Q), "the part's bookkeeping dropped it (its workers were gone at the call)");
+  await s.fire(RECHECK_MS);
+  await flush(20);
+  await s.fire(RECHECK_MS); // the follow-up check: list q covers it
+  await flush(20);
+  assert.equal(leaves(s).filter((l) => l.includes(Q)).length, 1, "list q keeps its workers");
+  assert.ok(recorded(s).includes(Q), "the follow-up check records it again (its page can register a worker after the call)");
+  await s.set(scopesWith()); // list q ends
+  await flush(40);
+  assert.equal(leaves(s).filter((l) => l.includes(Q)).length, 2, "its workers go at the end of list q: " + JSON.stringify(leaves(s)));
+  assert.ok(!recorded(s).includes(Q));
+});
+
+test("a marked tab that comes to the site during a part's own removal call: the follow-up check records the origin again, and its workers go when the tab leaves the site", async () => {
+  const s = await setup();
+  operatorTab(s, 20);
+  await flush();
+  commit(s, 20, X + "/home");
+  await flush(10);
+  const Q = "https://www.q.example";
+  const held = [];
+  s.f.impl["browsingData.remove"] = (d) => (d && d.origins && d.origins.includes(Q) && held.length === 0 ? new Promise((resolve) => held.push(resolve)) : Promise.resolve());
+  commit(s, 3, Q + "/"); // on no list, of no shown site: the check removes it (held)
+  await flush(4);
+  assert.equal(held.length, 1, "the part's call waits");
+  commit(s, 20, "https://api.q.example/"); // the marked tab comes to Q's site during the call
+  held[0]();
+  delete s.f.impl["browsingData.remove"];
+  await flush(20);
+  assert.ok(!recorded(s).includes(Q));
+  await s.fire(RECHECK_MS);
+  await flush(20);
+  await s.fire(RECHECK_MS); // the follow-up check: a marked tab shows Q's site
+  await flush(20);
+  assert.equal(leaves(s).filter((l) => l.includes(Q)).length, 1, "the shown site keeps its workers");
+  assert.ok(recorded(s).includes(Q), "the follow-up check records it again");
+  commit(s, 20, X + "/back"); // the marked tab leaves Q's site
+  await flush(40);
+  assert.equal(leaves(s).filter((l) => l.includes(Q)).length, 2, "its workers go after the leave: " + JSON.stringify(leaves(s)));
+  assert.ok(!recorded(s).includes(Q));
+});
+
 // ---- review-30e B3: the rules of round 4 with no test (G1 to G6) ----
 
 test("1200 origins to remove go in calls of at most 500 origins", async () => {

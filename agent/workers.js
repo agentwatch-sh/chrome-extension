@@ -475,11 +475,17 @@ export class Workers {
       await step();
       if (!sites.has(e.site) && !this.#covered(e)) gone.set(o, e);
     }
+    // A due origin that a list covers or whose site a marked tab shows joins
+    // the record again (or the pending set, with the same bounds), so that a
+    // worker that its open page registered after its removal goes when that
+    // list ends or the tab leaves (round 7, the operator's rule ab-214).
     for (const o of second) {
       await step();
       if (gone.has(o) || this.#record.has(o) || this.#pending.has(o)) continue;
-      const e = this.#entry(infoOf(o), 0);
+      const info = infoOf(o);
+      const e = this.#entry(info, 0);
       if (!sites.has(e.site) && !this.#covered(e)) gone.set(o, e);
+      else this.#add(o, info);
     }
     // The removals, in parts of at most SLICE origins (each call, or after a
     // removal of every worker each part, is a pause). The last filter of each
