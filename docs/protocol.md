@@ -2341,9 +2341,10 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
     input make it unknown. The pointer's place `at`, from the daemon's answers: unknown at the
     relay's start, at a link change, and after a failed or killed path or the relay's timer. The front
     page, the page under the pointer: the page of the last activation step whose raise the relay sent
-    (step 2), or a new tab that comes on top; unknown at the relay's start, at a link change, at its
-    `tabs.onRemoved` or `tabs.onReplaced`, after failed reads of step 1, after a raise that reached
-    its limit or that failed for an input or a `Page.bringToFront`, and after any client's
+    (step 2), or a new tab that comes on top, with no raise (a new active tab that opens a window, or
+    that becomes the active tab of the front page's window); unknown at the relay's start, at a link
+    change, at its `tabs.onRemoved` or `tabs.onReplaced`, after failed reads of step 1, after a raise
+    that reached its limit or that failed for an input or a `Page.bringToFront`, and after any client's
     `Browser.setWindowBounds` (below). The held buttons: a tab holds a CDP button from a
     `mousePressed` on any of its sessions, its own or a frame's (review-68 B2), until Chrome answered a
     `mouseReleased` on any of them, or until the tab closes, the link changes, the client's connection
@@ -2392,7 +2393,10 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
        the relay's timer), and in each other step that brings a page under the pointer with no path,
        the relay reads the pointer (`daemon.pointerAt`) and records it as `at` and as the entering
        page's point, and after a failed path also as the front page's point; a failed read leaves
-       them unknown. The entering page is the front page when step 7's raise succeeds.
+       them unknown. The entering page is the front page when step 7's raise succeeds and either a
+       page came under the pointer (the front page was known) or the relay sent the raise (step 2); a
+       failed `tabs.update` of `Target.activateTarget` gives the client the error and keeps the front
+       page as it was.
     7. Bring the page forward: `tabs.update` and `windows.update`, the client's `Page.bringToFront`,
        or the `tabs.update` of `Target.activateTarget`. Then open the front page's gate.
     8. The input goes. A press's catch-up, if any, runs inside its chain step, from step 6's record.
@@ -2404,11 +2408,11 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
     is the path's time (0.3 to 1.5 s) plus some 30 to 60 ms.
 
     A client's `Browser.setWindowBounds`, with the paths on, waits in the activation chain (review-68
-    B3): behind the steps before it, whose path plays at the window's old place, and behind the
-    catch-ups that run in its window's pages; then the front page is unknown, the kept geometries go,
-    and the window changes. Later steps wait behind it. With the paths off or unknown it goes at once.
-    One whose window holds no tab of the client's scope gets `Browser window not found` and changes
-    nothing.
+    B3): behind every step already in the chain (the path of the step that runs plays at the window's
+    old place), and behind the catch-ups that run in its window's pages; then the front page is
+    unknown, the kept geometries go, and the window changes. Later steps wait behind it. The window's
+    scope check runs first: a call whose window holds no tab of the client's scope gets `Browser window
+    not found` and changes nothing. With the paths off or unknown it goes at once.
   - The catch-up keeps each page's pointer events continuous. When a client's next
     `Input.dispatchMouseEvent` or `Input.dispatchDragEvent` for a page whose point is an X record is a
     move more than 50 px from it, or a press or a wheel more than 2 px from it, the relay first sends CDP
@@ -2431,26 +2435,29 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
     default wait. Each read first sends `Page.createIsolatedWorld` on the main frame and evaluates in
     the context id that it returns; when the evaluate names an unknown context (a navigation between
     the two calls), the relay sends both once more (review-68 B1: after a cross-site navigation
-    Chromium reuses context ids, so an id of an earlier read can name a page's own context). The
-    relay's world has only that newest id and the ids of `Runtime.executionContextCreated` with the
-    world's name, and `Runtime.executionContextsCleared` empties the set. On the tab's own session the
-    relay drops the world's `Runtime.executionContextCreated` (by its name), and
-    `Runtime.executionContextDestroyed`, `Debugger.scriptParsed` and `Debugger.scriptFailedToParse` of
-    those ids only, so no client sees the world, and the page's own events reach the client. The relay
-    stops waiting after `GEOMETRY_WAIT_MS` and drops the late answer. The read also gives the content
-    box: `visualViewport.width` and `height` (the viewport less its scrollbars, at a scale of 1; else
-    `documentElement.clientWidth` and `clientHeight`). It also gives `document.visibilityState`. The
-    read's own rules: a geometry is not usable when the ratio or the scale is not 1, the screen size
-    is not the display's, a width or a height of the viewport or of the content box is 4 px or less,
-    or the content box is wider or taller than the viewport. The relay's rules: a geometry is also not
-    usable when a device-metrics override is in force on the tab, when the window is minimized (the
-    entering page's, by step 1's `windows.get`), or when it is a hidden front page. A read in flight
-    gives no geometry.
+    Chromium reuses context ids, so an id of an earlier read can name a page's own context). Each read
+    replaces the set of the world's ids with its new id. On the tab's own session only, the relay drops
+    the world's `Runtime.executionContextCreated` (by the world's name, for any id; the id joins the
+    set), and `Runtime.executionContextDestroyed`, `Debugger.scriptParsed` and
+    `Debugger.scriptFailedToParse` of the ids in the set, so no client sees the world.
+    `Runtime.executionContextsCleared` empties the set and still goes to the client. An id that stays
+    in the set until the next read can name a page's context after a navigation, and the relay then
+    drops that page's own events of that id. The relay stops waiting after `GEOMETRY_WAIT_MS` and
+    drops the late answer. The read also gives the content box: `visualViewport.width` and `height`
+    (the viewport less its scrollbars, at a scale of 1; else `documentElement.clientWidth` and
+    `clientHeight`). It also gives `document.visibilityState`. The read's own rules: a geometry is not
+    usable when the ratio or the scale is not 1, the screen size is not the display's, a width or a
+    height of the viewport or of the content box is 4 px or less, or the content box is wider or taller
+    than the viewport. The relay's rules: a geometry is also not usable when a device-metrics override
+    is in force on the tab, when the window is minimized (the entering page's, by step 1's
+    `windows.get`), or when it is a hidden front page. A read in flight gives no geometry.
   - The kept geometry (ab-lead's decision in board ab-v16.71; review-68 N2). The relay keeps each
     page's last usable geometry from its own reads. It keeps a read only when the read is usable as a
     front page's geometry: the rules above, not hidden, and not minimized when step 1 read the window.
-    A read that is not usable, or that fails, drops the kept one, and a read that comes after
-    `GEOMETRY_WAIT_MS` still sets or drops it. A catch-up's own read changes no kept geometry. Step 4
+    A read keeps or drops the kept geometry only when it answers within `GEOMETRY_WAIT_MS` and no drop
+    event of the page (below) came after the read started (the relay counts each page's drop events):
+    then a read that is not usable, or that fails, drops the kept one. A late answer is dropped and
+    changes nothing. A catch-up's own read changes no kept geometry. Step 4
     uses it for a page that is no bridge tab (agent-browser's CLI ends its connection after each
     command, and the relay then detaches its page), and the catch-up uses it before a read. The relay
     drops it at every window event that it sees: any client's `Browser.setWindowBounds`; on the
