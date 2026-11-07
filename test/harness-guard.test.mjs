@@ -298,13 +298,58 @@ for start_delta in (1, 0):
 test("workers.py refuses a reserved DISPLAY_N before it makes its run folder", { skip }, () => {
   const dir = mkdtempSync(join(tmpdir(), "ce-guard-"));
   try {
+    // Stand-ins first on PATH and CHROMIUM=/bin/false: if the refusal let the display through, the run would start
+    // only this fake Xvfb (it notes its call) and no Chromium, never a real Xvfb on the reserved display.
+    mkdirSync(join(dir, "bin"));
+    writeFileSync(join(dir, "bin/Xvfb"), `#!/bin/sh\necho "$*" >> "${join(dir, "xvfb.calls")}"\nexit 1\n`, { mode: 0o755 });
+    writeFileSync(join(dir, "bin/npm"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    const port = String(20000 + (process.pid % 20000));
     for (const n of ["90", "147", "0"]) {
       const run = join(dir, `run-${n}`);
-      const r = spawnSync("python3", [join(LIVE, "workers.py"), run], { env: { ...process.env, DISPLAY_N: n, HARNESS_LOCK: join(dir, "harness.lock") }, encoding: "utf8", timeout: 30_000 });
+      const r = spawnSync("python3", [join(LIVE, "workers.py"), run, port], {
+        env: { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}`, CHROMIUM: "/bin/false", DISPLAY_N: n, HARNESS_LOCK: join(dir, "harness.lock") },
+        encoding: "utf8", timeout: 30_000,
+      });
       assert.equal(r.status, 2, r.stderr);
       assert.match(r.stderr, new RegExp(`^DISPLAY_N names :${n}, a reserved display \\(0, 90, 147, 190, 191, 192`));
       assert.equal(existsSync(run), false);
     }
     assert.equal(existsSync(join(dir, "harness.lock")), false, "no lock taken");
+    assert.equal(existsSync(join(dir, "xvfb.calls")), false, "no Xvfb started");
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("run.sh down signals no process whose argv has --pid-dir <run>/pids but no harness_guard.py field", { skip }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ce-guard-"));
+  const run = join(dir, "run");
+  mkdirSync(join(run, "pids"), { recursive: true });
+  const other = spawn("python3", ["-c", "import time; time.sleep(60)", "--pid-dir", join(run, "pids")], { stdio: "ignore", detached: true });
+  other.unref();
+  try {
+    await sleep(300);
+    writeFileSync(join(run, "guard.pid"), `${other.pid}\n`);
+    const r = spawnSync("/bin/sh", [RUN_SH, "down", run], { encoding: "utf8", timeout: 40_000 });
+    assert.match(r.stderr, /the guard already stopped the run .*: down signals nothing/);
+    await sleep(300);
+    assert.deepEqual(running([other.pid]), [other.pid], "the process with the look-alike argv still runs");
+  } finally { stopOwn([other.pid]); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a pid-file guard started with stdin, stdout and stderr closed still holds the lock", { skip }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ce-guard-"));
+  const pids = [];
+  try {
+    mkdirSync(join(dir, "pids"));
+    const env = { ...process.env, HARNESS_LOCK: join(dir, "harness.lock") };
+    // As `run.sh up <&-`: the caller's fd 0 is closed (and 1 and 2 too here); the guard's pid goes to a file.
+    spawnSync("/bin/sh", ["-c", `python3 -I -B "${GUARD}" --name closed --driver 0 --limit 60 --pid-dir "${join(dir, "pids")}" --log "${join(dir, "guard.log")}" <&- 1>&- 2>&- &
+      sleep 1.5; ps -o pid=,args= -u "$(id -u)" | grep -F -- "--name closed --driver 0" | grep -v grep | awk '{print $1}' > "${join(dir, "guard.pid")}"`], { env, encoding: "utf8", timeout: 20_000 });
+    const guard = Number(readFileSync(join(dir, "guard.pid"), "utf8").trim().split("\n")[0]);
+    assert.ok(guard > 0, "the guard runs");
+    pids.push(guard);
+    const second = spawnSync("python3", ["-I", "-B", GUARD, "--name", "second", "--driver", String(process.pid), "--wait", "1"], { env, encoding: "utf8", timeout: 20_000 });
+    assert.match(second.stdout, /^refused the harness lock .* is still held after 1 s/, `the first guard still holds the lock: ${second.stdout}`);
+    process.kill(guard, "SIGTERM");
+    assert.deepEqual(await goneWithin([guard], GONE_MS), []);
+  } finally { stopOwn(pids); rmSync(dir, { recursive: true, force: true }); }
 });

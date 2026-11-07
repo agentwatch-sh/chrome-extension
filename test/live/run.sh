@@ -226,7 +226,7 @@ down() {  # RUN
   # LIVE_UP_LIMIT): then down signals nothing, because a pid file of the run
   # can name a process that took that pid later.
   # The run's real path (a relative path, a trailing / or a link name the same run), as up wrote it.
-  if ! run=$(cd "$1" 2>/dev/null && pwd -P); then
+  if ! run=$(CDPATH='' cd -P -- "$1" 2>/dev/null && pwd -P); then
     say "no run folder $1: down signals nothing"
     return 1
   fi

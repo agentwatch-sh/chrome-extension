@@ -70,7 +70,8 @@ The driver of `run.sh` (`all` mode) is the script itself. After `run.sh up` alon
 until `run.sh down` or until `LIVE_UP_LIMIT` seconds (default 3600): then the guard stops it. The
 limit also ends a `run.sh test DIR` that still runs: give `LIVE_UP_LIMIT` more than the cases need.
 The guard of a run writes its lines after the lock into `<run>/logs/guard.log` (so `run.sh up` keeps
-no pipe of its caller open). `run.sh down DIR` (a relative path or a trailing `/` names the same run) stops a run only through its
+no pipe of its caller open). A caller that closed stdin, stdout or stderr (`run.sh up <&-`) gets
+`/dev/null` there in the guard first, so the guard's lock fd is 3 or higher and stays open. `run.sh down DIR` (a relative path or a trailing `/` names the same run) stops a run only through its
 live guard, the process whose argv has `harness_guard.py` and `--pid-dir <run>/pids` as whole fields: it sends the
 guard SIGTERM and waits until the guard has stopped the run and ended. When the guard is gone (it
 already stopped the run, at the driver's end or at the limit), `down` signals nothing, because a pid
