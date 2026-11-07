@@ -628,30 +628,29 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
   - The check. The receiver reads the frames of each marked tab (`webNavigation.getAllFrames`) and
     keeps the last read of each one: a check reads a marked tab again only after an event of its
     frames (a commit or a navigation error) or when it has no read yet, and reuses the last read of
-    the other marked tabs (review-30c B1: each read of a tab with many frames costs work in
-    Chrome). A frame of a page in the back/forward cache (`documentLifecycle` `cached`; Chromium's
-    `getAllFrames` gives none) or of a document that is going (`pending_deletion`) shows nothing. The
-    version of a read is taken before the read, so an event of that tab during the read makes the
-    read old for the next check (review-30d C3). The shown sites come only from these reads and
+    the other marked tabs (review-30c B1: each read of a tab with many frames costs work in Chrome).
+    A frame of a page in the back/forward cache (`documentLifecycle` `cached`; Chromium's
+    `getAllFrames` gives none) or of a document that is going (`pending_deletion`) shows nothing.
+    The version of a read is taken before the read, so an event of that tab during the read makes
+    the read old for the next check (review-30d C3). The shown sites come only from these reads and
     from the sites of the marked tabs' commits during the running check (refused origins too), never
     from the record (review-30d B3 b). A tab that gets the mark during the check (at
     `tabs.onReplaced` it can show an origin that it committed before the mark), or a change of the
     lists during the check, stops the check before its next removal call: it keeps the due origins,
     and one more check reads the new tab and decides (review-30d P1, review-30e B1). A web origin
-    that the read gives joins the record too (for example a page of a tab that takes a mark at `tabs.onReplaced`); an origin that waits
-    already (the bound, below) is tried again in one step. For each recorded or waiting origin whose
-    site no marked tab shows and that no list of the last applied `set_scopes` covers, the receiver
-    calls `browsingData.remove({origins: [...]}, {serviceWorkers:
-    true})`, in calls of at most 500 origins, each filtered again with the marked tabs' commits of
-    the check just before it; on success they leave the record, the copy and the pending set,
-    except an origin that a tab committed again during the call. A list covers an origin when an
-    entry covers
-    its host (the entry and every subdomain); every list of `lists` counts, also the `operator` list
-    and a list that no scope names (the listed sites keep their workers, board item ab-7wg); with no
-    applied `set_scopes` since the worker's start no list covers it. A listed origin stays in the
-    record, so the `set_scopes` that takes its host off every list removes its workers: for example
-    at the end of a session, when its scope's list becomes `null` (the removal of every worker, above,
-    does not run then).
+    that the read gives joins the record too (for example a page of a tab that takes a mark at
+    `tabs.onReplaced`); an origin that waits already (the bound, below) is tried again in one step.
+    For each recorded or waiting origin whose site no marked tab shows and that no list of the last
+    applied `set_scopes` covers, the receiver calls `browsingData.remove({origins: [...]},
+    {serviceWorkers: true})`, in calls of at most 500 origins, each filtered again with the marked
+    tabs' commits of the check just before it; on success they leave the record, the copy and the
+    pending set, except an origin that a tab committed again during the call. A list covers an
+    origin when an entry covers its host (the entry and every subdomain); every list of `lists`
+    counts, also the `operator` list and a list that no scope names (the listed sites keep their
+    workers, board item ab-7wg); with no applied `set_scopes` since the worker's start no list
+    covers it. A listed origin stays in the record, so the `set_scopes` that takes its host off
+    every list removes its workers: for example at the end of a session, when its scope's list
+    becomes `null` (the removal of every worker, above, does not run then).
   - When: at each commit and at each navigation error (`webNavigation.onErrorOccurred`: a navigation
     that ends on an error page sends no `onCommitted`; review-30 B1) of a frame of any tab, at a
     marked tab's `tabs.onRemoved` and `tabs.onReplaced`, when a tab loses the mark or gets it at its
@@ -668,8 +667,11 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
   - The windows. The check after an event ends after its frame read and its removal, each within
     `REMOVAL_WAIT_MS` (C10). When it waits for a check that runs, the removal ends at most about 4 x
     `REMOVAL_WAIT_MS` (8 s) after the event while each call ends in time (one more call for each 500
-    origins, and for a list's end that needs the removal of every worker of the bound, below)
-    (measured: a client's
+    origins, and for a list's end that needs the removal of every worker of the bound, below), and
+    while no stop comes. Each stop (a new mark or a list change during the check, above) adds one
+    more check, so while new marks or list changes keep coming during the checks (for example
+    popups of a marked tab), the removal waits; each stop needs a new marked tab id or an applied
+    `set_scopes` during that check (review-30f note 1). (Measured: a client's
     `Page.navigate` that started 4 to 17 ms after the leave's request reached the site got the
     worker's page in 4 of 4; one that started 100 ms or 300 ms after it, in 0 of 8). A frame that a
     page script removes after its load sends no event (before the end of its load Chromium sends
@@ -695,44 +697,52 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
     tabs showed 1200 frames, the guard's times stayed near receiver 0.3.4's.
   - The bound (review-30b B1, review-30d and ab-lead's decisions: no page content, any number of
     frames or origins in any tab, can make the receiver remove a worker of a site that a marked tab
-    shows, or of an origin that a list covers while that list is in force). The record holds at
-    most `RECORD_MAX` = 1000 origins. At the bound it refuses a new origin; it never evicts one
+    shows, or of an origin that a list covers while that list is in force). The record holds at most
+    `RECORD_MAX` = 1000 origins. At the bound it refuses a new origin; it never evicts one
     (review-30d: the eviction lost origins of shown sites). A refused origin waits in a pending set
     in memory, at most `PENDING_MAX` = 10,000 origins, and each check handles it with the record's
-    rules: its workers go when no list covers it and no marked tab shows its site; a shown or
-    listed one waits (a listed one goes by an ordinary removal at its list's end). A worker start
-    loses the pending set, the follow-up sets and the kept list entries; the removal of every worker
-    at the first `set_scopes` after the start (above) covers them. Until that `set_scopes` a worker
-    of a waiting origin stays, and the case of a host on no list stays open for it (the guard
-    then gives no tab a list: C5, above). Beyond `PENDING_MAX`, a new listed origin keeps the
-    entries of its lists, and only at the end of one of them (a `set_scopes` whose lists no longer hold it: the operator's or
-    a session's action) the receiver calls `browsingData.remove({excludeOrigins: [...]},
-    {serviceWorkers: true})` once: it removes every worker except those of the origins that the
-    marked tabs show, of the recorded and waiting origins of their sites and of the recorded and
-    waiting origins that the remaining lists cover (Chromium's `excludeOrigins` keeps each such
+    rules: its workers go when no list covers it and no marked tab shows its site; a shown or listed
+    one waits (a listed one goes by an ordinary removal at its list's end). A worker start loses the
+    pending set, the follow-up sets and the kept list entries; the removal of every worker at the
+    first `set_scopes` after the start (above) covers them. Until that `set_scopes` a worker of a
+    waiting origin stays, and the case of a host on no list stays open for it (the guard then gives
+    no tab a list: C5, above). Beyond `PENDING_MAX`, a new listed origin keeps the entries of its
+    lists, and only at the end of one of them (a `set_scopes` whose lists no longer hold it: the
+    operator's or a session's action) the receiver calls `browsingData.remove({excludeOrigins:
+    [...]}, {serviceWorkers: true})` once: it removes every worker except those of the origins that
+    the marked tabs show, of the recorded and waiting origins of their sites and of the recorded and
+    waiting origins that the remaining lists cover, and of the origins that tabs commit during that
+    check before the call (no read of the check shows them, its loops go over copies of the record
+    and the pending set, and the bound can drop them; Chromium's `excludeOrigins` keeps each such
     origin's own worker and the partitioned workers under its site). A failed one is retried at the
-    next check. A removal of every worker comes only from a list's end (and from C5's removal of
-    every worker, above), never from page content.
+    next check. After that call the record and the pending set lose only the origins that it did not
+    keep (their workers are gone), except one that a tab committed again during the call; a kept
+    origin that the check finds to remove after the call (the lists changed) stays for the next
+    check, and a new mark or a list change stops the check before each part, also on this path
+    (review-30f B1 and note 3). A removal of every worker comes only from a list's end (and from
+    C5's removal of every worker, above), never from page content.
   - The residue of the bound, exactly: only beyond 1000 recorded and 10,000 waiting origins at once
     (for example a page with more than 11,000 frames of distinct origins). (1) A new origin on no
     list is then not kept: its worker stays after the marked tabs leave its site, until that origin
     commits again while there is room (then its next leave removes it), until a `set_scopes` shrinks
     a scope's list (C5's removal of every worker, above), until a list end's removal of every worker
-    (2, below: it keeps such an origin only when a marked tab's last read shows that origin itself),
-    or until the next worker start (the removal at its first `set_scopes`). (2) A new listed origin
-    then loses its worker at the end of a list entry that covered such an origin (its own entry or
-    the entry of another such origin), also when its own list stays in force (that removal does not
-    know it). The end of a list that covered no such origin removes nothing. (3) The follow-up sets
-    hold at most 10,000 origins each: beyond 10,000 removed origins in one period of the follow-up
-    timer, the others get no follow-up check (a page needs more than 10,000 removals in 5 s).
+    (2, below: it keeps such an origin only when a marked tab's last read shows that origin itself,
+    or when a tab commits it during that check before the call), or until the next worker start (the
+    removal at its first `set_scopes`). (2) A new listed origin then loses its worker at the end of
+    a list entry that covered such an origin (its own entry or the entry of another such origin),
+    also when its own list stays in force (that removal does not know it). The end of a list that
+    covered no such origin removes nothing. (3) The follow-up sets hold at most 10,000 origins each:
+    beyond 10,000 removed origins in one period of the follow-up timer, the others get no follow-up
+    check (a page needs more than 10,000 removals in 5 s).
   - The record's cost: one `chrome.storage.session` write for each new origin and one key removal
     for each origin that goes (some tens of bytes per origin, about 50 KB at the bound), one frame
-    read of a marked tab after each event of its frames, and one `browsingData.remove` for each check
-    that finds origins to remove. The pending set costs memory only (some hundreds of bytes per
-    origin, a few MB at its bound). The origins on no list that the frames of a scope's pages commit
-    (for example a third-party frame, or a worker's page before layer 3) go at the next check.
-    Measured (review-30b): 1200 frames gave about 1200 writes in 30 s, and the receiver stayed
-    responsive.
+    read of a marked tab after each event of its frames, and one `browsingData.remove` for each
+    check that finds origins to remove. The pending set costs memory only (some hundreds of bytes
+    per origin, a few MB at its bound). A running check also holds the origins that tabs commit
+    during it, in memory, for a list end's removal of every worker; it drops them at its end. The
+    origins on no list that the frames of a scope's pages commit (for example a third-party frame,
+    or a worker's page before layer 3) go at the next check. Measured (review-30b): 1200 frames gave
+    about 1200 writes in 30 s, and the receiver stayed responsive.
   - The removals share one bounded call (`removeWorkers`): the removal of every worker at a
     `set_scopes` (above), the list end's removal of the bound, and the removal of the recorded and
     waiting origins. Neither waits for
@@ -944,9 +954,9 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
     workers when no marked tab shows a frame of that site any more (the worker removal of the
     recorded origins, above; the operator's choice on board item ab-214), so this case stays open
     only while the operator's own tab is on that site, and then for the windows of that removal: the
-    end of its check (at most about 4 x `REMOVAL_WAIT_MS` while each call ends in time), until the
-    next frame event, close, replace or mark loss of the tab whose frame a page script removed (no
-    time limit), until the next event after a failed read or removal, and for an origin that the
+    end of its check (at most about 4 x `REMOVAL_WAIT_MS` while each call ends in time and no stop
+    comes; while new marks or list changes stop its checks, longer), until the next frame event,
+    close, replace or mark loss of the tab whose frame a page script removed (no time limit), until the next event after a failed read or removal, and for an origin that the
     bound did not keep (the residue of the bound, above).
     After the leave: 0 of 80 commits (board ab-v16.74).
     A worker that passes the navigation on: 80 of 80 at `about:blank` with one `blocked`; its page

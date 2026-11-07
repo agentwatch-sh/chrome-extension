@@ -1060,6 +1060,303 @@ test("a follow-up check that a new mark stops keeps the due origins that it did 
   assert.equal(count("https://u0.example"), 2, "u0's follow-up (part 1) is not repeated");
 });
 
+// ---- review-30f B1: after a list end's removal of every worker, the record keeps what that call kept, and a list change stops the check ----
+
+test("a second list end during a list end's removal of every worker: the origin that the call kept stays recorded, and the next check removes it", async () => {
+  const s = await setup();
+  s.r.workers.max = 2;
+  s.r.workers.pendingMax = 1;
+  operatorTab(s, 20);
+  await flush();
+  commit(s, 20, X + "/home"); // recorded, shown
+  commit(s, 3, "https://www.s.example/"); // recorded, on list spare (session B's list here)
+  commit(s, 3, "https://api.o.example/"); // refused: waits (on list ops)
+  commit(s, 7, "https://a.example/"); // refused, the pending set is full: dropped, md's entry kept
+  await flush(20);
+  assert.ok(recorded(s).includes("https://www.s.example"));
+  const held = [];
+  s.f.impl["browsingData.remove"] = (d) => (d && d.excludeOrigins ? new Promise((resolve) => held.push({ d, resolve })) : Promise.resolve());
+  await s.set(SESSION_END); // md ends: the list end's removal of every worker (held)
+  await flush(4);
+  assert.equal(held.length, 1, "the call waits");
+  assert.ok(held[0].d.excludeOrigins.includes("https://www.s.example"), "the call keeps www.s.example (listed)");
+  await s.set({ lists: { ops: ["o.example"] }, scopes: { "md-lead": null }, default: null, operator: "*" }); // spare ends too (no shrink: nothing removed)
+  delete s.f.impl["browsingData.remove"];
+  held[0].resolve();
+  await flush(40);
+  assert.ok(removedAny(s).has("https://www.s.example"), "www.s.example went by its own removal: " + JSON.stringify(leaves(s)));
+  assert.ok(!recorded(s).includes("https://www.s.example"));
+});
+
+test("a list change during a pause of the decision loop after a list end's removal of every worker: the check stops, and the origin that the call kept goes by its own removal", async () => {
+  const s = await setup();
+  s.r.workers.max = 3;
+  s.r.workers.pendingMax = 600;
+  operatorTab(s, 20);
+  await flush();
+  commit(s, 20, X + "/home");
+  commit(s, 7, "https://www.a.example/");
+  commit(s, 7, "https://cdn0.a.example/f", { frameId: 100, parentFrameId: 0 }); // the record is full
+  for (let i = 1; i < 600; i++) commit(s, 7, `https://cdn${i}.a.example/f`, { frameId: 100 + i, parentFrameId: 0 }); // 599 wait
+  commit(s, 3, "https://www.s.example/"); // waits last (on list spare)
+  commit(s, 7, "https://cdn600.a.example/f", { frameId: 700, parentFrameId: 0 }); // dropped: md's entry kept
+  await flush(20);
+  // At the excludeOrigins call: a timer that ends spare at the next pause (the decision loop's).
+  s.f.impl["browsingData.remove"] = async (d) => {
+    if (d && d.excludeOrigins) {
+      setTimeout(() => {
+        void s.set({ lists: { ops: ["o.example"] }, scopes: { "md-lead": null }, default: null, operator: "*" });
+      }, 0);
+    }
+  };
+  await s.set(SESSION_END); // md ends
+  await flush(60);
+  assert.equal(excluding(s).length, 1);
+  assert.ok(excluding(s)[0].includes("https://www.s.example"), "the call kept www.s.example");
+  assert.ok(removedAny(s).has("https://www.s.example"), "www.s.example went by its own removal: " + JSON.stringify(leaves(s).map((x) => x.length)));
+});
+
+test("a tab that gets the mark during a list end's removal of every worker and shows Z, which that call did not keep: Z stays recorded, and goes after that tab leaves it", async () => {
+  const s = await setup();
+  s.r.workers.max = 3;
+  s.r.workers.pendingMax = 1;
+  operatorTab(s, 20);
+  await flush();
+  commit(s, 20, X + "/home");
+  s.f.tabs_.push({ id: 30, windowId: 1, url: "https://z.a.example/" });
+  commit(s, 30, "https://z.a.example/"); // a tab with no mark yet shows Z (listed by md now)
+  s.f.tabs_.find((t) => t.id === 30).url = "about:blank"; // (the closing rule judges the tab's URL: it keeps tab 30 open)
+  commit(s, 3, "https://www.s.example/"); // recorded (spare): the record is full
+  commit(s, 3, "https://api.o.example/"); // waits (ops)
+  commit(s, 7, "https://a.example/"); // dropped: md's entry kept
+  await flush(20);
+  assert.ok(recorded(s).includes("https://z.a.example"));
+  const held = [];
+  s.f.impl["browsingData.remove"] = (d) => (d && d.excludeOrigins ? new Promise((resolve) => held.push({ d, resolve })) : Promise.resolve());
+  await s.set(SESSION_END); // md ends: Z is on no list, and the call does not keep it
+  await flush(4);
+  assert.equal(held.length, 1);
+  assert.ok(!held[0].d.excludeOrigins.includes("https://z.a.example"));
+  // During the call: tab 30 takes tab 20's mark (it shows Z, whose page can register its worker again).
+  s.f.tabs_ = s.f.tabs_.filter((t) => t.id !== 20);
+  s.f.frames_.delete(20);
+  s.f.chrome.tabs.onReplaced.fire(30, 20);
+  delete s.f.impl["browsingData.remove"];
+  held[0].resolve();
+  await flush(40);
+  assert.ok(recorded(s).includes("https://z.a.example"), "Z stays recorded while marked tab 30 shows it");
+  commit(s, 30, "https://www.q.example/"); // tab 30 leaves Z
+  await flush(40);
+  assert.ok(removedAny(s).has("https://z.a.example"), "Z goes after the leave: " + JSON.stringify(leaves(s)));
+});
+
+// review-30f note 3: the version of a list end's removal is taken before its call.
+test("a list that begins during a pause of the decision loop after a list end's removal of every worker: the check stops, the origin that the call removed stays recorded, and its workers go at that list's end", async () => {
+  const s = await setup();
+  s.r.workers.max = 3;
+  s.r.workers.pendingMax = 600;
+  operatorTab(s, 20);
+  await flush();
+  commit(s, 20, X + "/home");
+  commit(s, 7, "https://www.a.example/"); // recorded (md): examined early in the decision loop
+  commit(s, 7, "https://cdn0.a.example/f", { frameId: 100, parentFrameId: 0 }); // the record is full
+  for (let i = 1; i < 600; i++) commit(s, 7, `https://cdn${i}.a.example/f`, { frameId: 100 + i, parentFrameId: 0 }); // 599 wait
+  commit(s, 3, "https://www.s.example/"); // waits last (on list spare)
+  commit(s, 7, "https://cdn600.a.example/f", { frameId: 700, parentFrameId: 0 }); // dropped: md's entry kept
+  await flush(20);
+  assert.ok(recorded(s).includes("https://www.a.example"));
+  // At the excludeOrigins call: a timer that starts list q (www.a.example) at the next pause (the
+  // decision loop's, after it found www.a.example to go). The call removed www.a.example's workers,
+  // and its page can register them again under list q.
+  const Q = { lists: { ops: ["o.example"], spare: ["s.example"], q: ["www.a.example"] }, scopes: { "md-lead": null }, default: null, operator: "*" };
+  s.f.impl["browsingData.remove"] = async (d) => {
+    if (d && d.excludeOrigins) {
+      assert.ok(!d.excludeOrigins.includes("https://www.a.example"), "the call does not keep www.a.example");
+      setTimeout(() => void s.set(Q), 0);
+    }
+  };
+  await s.set(SESSION_END); // md ends: the list end's removal of every worker
+  await flush(60);
+  delete s.f.impl["browsingData.remove"];
+  assert.equal(excluding(s).length, 1);
+  await s.fire(RECHECK_MS);
+  await s.fire(RECHECK_MS);
+  await flush(20);
+  assert.ok(recorded(s).includes("https://www.a.example"), "www.a.example stays recorded while list q covers it");
+  assert.ok(!removedAny(s).has("https://www.a.example"), "list q keeps its workers");
+  await s.set(SESSION_END); // list q ends
+  await flush(40);
+  assert.ok(removedAny(s).has("https://www.a.example"), "www.a.example goes at the end of list q: " + JSON.stringify(leaves(s).map((l) => l.length)));
+});
+
+test("origins that tabs commit during a list end's loops before its removal of every worker: the call keeps them (a listed origin, and a new origin of a marked tab)", async () => {
+  const s = await setup();
+  s.r.workers.max = 3;
+  s.r.workers.pendingMax = 600;
+  operatorTab(s, 20);
+  await flush();
+  commit(s, 20, X + "/home");
+  commit(s, 7, "https://www.a.example/");
+  commit(s, 7, "https://cdn0.a.example/f", { frameId: 100, parentFrameId: 0 }); // the record is full
+  for (let i = 1; i < 600; i++) commit(s, 7, `https://cdn${i}.a.example/f`, { frameId: 100 + i, parentFrameId: 0 }); // 599 wait
+  commit(s, 3, "https://www.s.example/"); // waits last (on list spare)
+  commit(s, 7, "https://cdn600.a.example/f", { frameId: 700, parentFrameId: 0 }); // dropped: md's entry kept
+  await flush(20);
+  s.r.workers.pendingMax = 610; // room for the commits below
+  const M = "http://m.nolist.localhost:8771"; // a new origin of the marked tab's site
+  let injected = 0;
+  const real = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, ms, ...a) => {
+    // At the first pause of the check (in the list end's loop over the record and the pending set):
+    // tab 3 commits a listed origin, and the marked tab commits a new origin of its site.
+    if (!ms && injected === 0 && /\bpause\b/.test(new Error().stack ?? "")) {
+      injected = 1;
+      assert.equal(excluding(s).length, 0, "before the call");
+      commit(s, 3, "https://api.s.example/");
+      commit(s, 20, M + "/frame", { frameId: 5, parentFrameId: 0 });
+    }
+    return real(fn, ms, ...a);
+  };
+  try {
+    await s.set(SESSION_END); // md ends: the list end's removal of every worker
+    await flush(60);
+  } finally {
+    globalThis.setTimeout = real;
+  }
+  assert.equal(injected, 1);
+  const ex = excluding(s);
+  assert.equal(ex.length, 1);
+  assert.ok(ex[0].includes("https://api.s.example"), "the call keeps the listed origin committed during its loops");
+  assert.ok(ex[0].includes(M), "the call keeps the marked tab's new origin");
+  assert.ok(!removedAny(s).has("https://api.s.example") && !removedAny(s).has(M));
+});
+
+test("a marked tab's new origin that the bound drops, committed during a list end's check before its loops (here during a frame read): the removal of every worker keeps it", async () => {
+  const s = await setup();
+  s.r.workers.max = 3;
+  s.r.workers.pendingMax = 600;
+  operatorTab(s, 20);
+  operatorTab(s, 21);
+  await flush();
+  commit(s, 20, X + "/home");
+  commit(s, 21, Y + "/");
+  commit(s, 7, "https://www.a.example/"); // the record is full
+  for (let i = 0; i < 599; i++) commit(s, 7, `https://cdn${i}.a.example/f`, { frameId: 100 + i, parentFrameId: 0 }); // 599 wait
+  commit(s, 3, "https://www.s.example/"); // the pending set is full
+  commit(s, 7, "https://cdn599.a.example/f", { frameId: 699, parentFrameId: 0 }); // dropped: md's entry kept
+  await flush(20);
+  const M = "http://m.nolist.localhost:8771"; // a new origin of tab 20's site: the bound drops it
+  const held = [];
+  s.f.impl["webNavigation.getAllFrames"] = ({ tabId }) => {
+    const frames = structuredClone(s.f.frames_.get(tabId) ?? []);
+    return tabId === 21 ? new Promise((resolve) => held.push(() => resolve(frames))) : Promise.resolve(frames);
+  };
+  commit(s, 21, Y + "/2"); // a check that reads tab 21 (held)
+  await flush(4);
+  assert.equal(held.length, 1, "the read waits");
+  await s.set(SESSION_END); // md ends during that check
+  commit(s, 20, M + "/frame", { frameId: 5, parentFrameId: 0 }); // during the read: no read of this check shows it
+  delete s.f.impl["webNavigation.getAllFrames"];
+  held[0]();
+  await flush(60);
+  const ex = excluding(s);
+  assert.equal(ex.length, 1);
+  assert.ok(ex[0].includes(M), "the call keeps the marked tab's origin committed during its check");
+});
+
+test("an origin on no list that a tab commits during a list end's loops: the call keeps it, it stays recorded, and the next check removes it by its own call (before any follow-up)", async () => {
+  const s = await setup();
+  s.r.workers.max = 3;
+  s.r.workers.pendingMax = 600;
+  operatorTab(s, 20);
+  await flush();
+  commit(s, 20, X + "/home");
+  commit(s, 7, "https://www.a.example/");
+  commit(s, 7, "https://cdn0.a.example/f", { frameId: 100, parentFrameId: 0 }); // the record is full
+  for (let i = 1; i < 600; i++) commit(s, 7, `https://cdn${i}.a.example/f`, { frameId: 100 + i, parentFrameId: 0 }); // 599 wait
+  commit(s, 3, "https://www.s.example/"); // waits last (on list spare)
+  commit(s, 7, "https://cdn600.a.example/f", { frameId: 700, parentFrameId: 0 }); // dropped: md's entry kept
+  await flush(20);
+  s.r.workers.pendingMax = 610; // room for the commit below
+  const U = "https://www.u.example"; // on no list, of no shown site
+  let injected = 0;
+  const real = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, ms, ...a) => {
+    if (!ms && injected === 0 && /\bpause\b/.test(new Error().stack ?? "")) {
+      injected = 1;
+      assert.equal(excluding(s).length, 0, "before the call");
+      commit(s, 3, U + "/");
+    }
+    return real(fn, ms, ...a);
+  };
+  try {
+    await s.set(SESSION_END); // md ends: the list end's removal of every worker
+    await flush(60);
+  } finally {
+    globalThis.setTimeout = real;
+  }
+  assert.equal(injected, 1);
+  const ex = excluding(s);
+  assert.equal(ex.length, 1);
+  assert.ok(ex[0].includes(U), "the call keeps the origin committed during its check");
+  assert.ok(removedAny(s).has(U), "the next check removes it by its own call, with no follow-up timer: " + JSON.stringify(leaves(s).map((l) => l.length)));
+  assert.ok(!recorded(s).includes(U) && !s.r.workers.pendingOrigins().includes(U));
+});
+
+test("an origin that a tab commits again during a list end's removal of every worker stays recorded, and a later check removes it by its own call", async () => {
+  const s = await setup();
+  s.r.workers.max = 2;
+  s.r.workers.pendingMax = 1;
+  operatorTab(s, 20);
+  await flush();
+  commit(s, 20, X + "/home");
+  commit(s, 7, "https://www.a.example/"); // recorded, on md
+  commit(s, 3, "https://api.o.example/"); // refused: waits (ops)
+  commit(s, 7, "https://cdn.a.example/"); // dropped: md's entry kept
+  await flush(20);
+  const held = [];
+  s.f.impl["browsingData.remove"] = (d) => (d && d.excludeOrigins ? new Promise((resolve) => held.push({ d, resolve })) : Promise.resolve());
+  await s.set(SESSION_END); // md ends: www.a.example is not kept by the call
+  await flush(4);
+  assert.equal(held.length, 1);
+  assert.ok(!held[0].d.excludeOrigins.includes("https://www.a.example"));
+  commit(s, 7, "https://www.a.example/again"); // the page of www.a.example commits again during the call
+  delete s.f.impl["browsingData.remove"];
+  held[0].resolve();
+  await flush(40);
+  assert.ok(removedAny(s).has("https://www.a.example"), "removed by its own call after its new commit: " + JSON.stringify(leaves(s)));
+});
+
+// review-30f note 4: after a list end's removal of every worker, the parts pause between them.
+test("after a list end's removal of every worker, the parts of more than SLICE origins pause between them (the record's state after part 1 is seen by a task)", async () => {
+  const s = await setup();
+  s.r.workers.max = 2;
+  s.r.workers.pendingMax = 600;
+  operatorTab(s, 20);
+  await flush();
+  commit(s, 20, X + "/home");
+  commit(s, 7, "https://www.a.example/");
+  for (let i = 0; i < 602; i++) commit(s, 7, `https://cdn${i}.a.example/f`, { frameId: 100 + i, parentFrameId: 0 }); // 600 wait, 2 dropped
+  await flush(20);
+  const total = () => recorded(s).length + s.r.workers.pendingOrigins().length;
+  assert.equal(total(), 602);
+  const sizes = [];
+  const real = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, ms, ...a) => {
+    if (!ms) sizes.push(total());
+    return real(fn, ms, ...a);
+  };
+  try {
+    await s.set(SESSION_END); // md ends: the removal of every worker, then 601 origins in parts of 500 and 101
+    await flush(60);
+  } finally {
+    globalThis.setTimeout = real;
+  }
+  assert.equal(excluding(s).length, 1);
+  assert.equal(total(), 1, "only X stays");
+  assert.ok(sizes.includes(102), "a task ran between part 1 and part 2: " + JSON.stringify([...new Set(sizes)]));
+});
+
 // ---- review-30e B3: the rules of round 4 with no test (G1 to G6) ----
 
 test("1200 origins to remove go in calls of at most 500 origins", async () => {

@@ -161,6 +161,11 @@ export class Workers {
   // The sites of the marked tabs' commits since the start of the running
   // check (null between checks): they count as shown in that check.
   #recent = null;
+  // The origins that any tab commits since the start of the running check
+  // (null between checks): a list end's removal of every worker keeps them
+  // (no read of the check shows them, and its loops go over copies of the
+  // record and the pending set; the bound can drop them).
+  #during = null;
   // The follow-up checks: one timer at a time. An origin that a removal
   // removed waits one whole period of the timer (RECHECK_MS), then it is due.
   #due = new Set();
@@ -292,6 +297,7 @@ export class Workers {
   // list is then the residue).
   #add(o, info) {
     this.#seq += 1;
+    if (this.#during !== null) this.#during.add(o);
     const e = this.#record.get(o) ?? this.#pending.get(o);
     if (e) {
       e.seq = this.#seq;
@@ -341,10 +347,12 @@ export class Workers {
   async #check() {
     const recent = new Set();
     this.#recent = recent;
+    this.#during = new Set();
     try {
       await this.#run(recent);
     } finally {
       this.#recent = null;
+      this.#during = null;
     }
   }
 
@@ -435,10 +443,12 @@ export class Workers {
     };
     // A list's end after the pending set dropped a listed origin: one removal
     // of every worker that keeps the shown origins, the origins of the shown
-    // sites and the listed origins (of the record and of the pending set).
+    // sites and the listed origins (of the record and of the pending set),
+    // and the origins that tabs committed since the check's start.
     let all = false;
+    const keep = new Set(); // the origins whose workers that removal keeps
+    let seqAll = 0;
     if ([...this.#listedGone].some((d) => !now.includes(d))) {
-      const keep = new Set();
       for (const id of tabs) {
         const c = this.#frames.get(id);
         if (c) {
@@ -453,6 +463,8 @@ export class Workers {
         if (sites.has(e.site) || recent.has(e.site) || this.#covered(e)) keep.add(o);
       }
       if (changed()) return stop();
+      for (const o of this.#during) keep.add(o);
+      seqAll = this.#seq;
       all = await removeWorkers(r, null, [...keep]);
       if (all) this.#listedGone.clear();
     }
@@ -472,18 +484,21 @@ export class Workers {
     // The removals, in parts of at most SLICE origins (each call, or after a
     // removal of every worker each part, is a pause). The last filter of each
     // part, with no pause before its call: the marked tabs' commits during
-    // the check count as shown, and a new mark or a list change stops it.
+    // the check count as shown, and a new mark or a list change stops it, also
+    // after a removal of every worker (review-30f B1). After that removal a
+    // part needs no call for an origin that it did not keep (its workers are
+    // gone); an origin that it kept stays, for the next check.
     const list = [...gone.keys()];
     const keys = [];
     for (let i = 0; i < list.length; i += SLICE) {
       if (all && i > 0) await pause();
       const part = list.slice(i, i + SLICE).filter((o) => !recent.has(gone.get(o).site));
       if (part.length === 0) continue;
-      if (!all && changed()) {
+      if (changed()) {
         stop();
         break;
       }
-      const seq1 = this.#seq;
+      const seq1 = all ? seqAll : this.#seq;
       if (!all && !(await removeWorkers(r, part))) {
         keepDue();
         break;
@@ -491,6 +506,7 @@ export class Workers {
       // An origin that a tab committed during the removal stays.
       const followUp = [];
       for (const o of part) {
+        if (all && keep.has(o)) continue;
         const e = this.#record.get(o) ?? this.#pending.get(o);
         if (e && e.seq > seq1) continue;
         if (this.#record.delete(o)) keys.push(WORKER_KEY + o);

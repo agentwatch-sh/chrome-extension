@@ -268,6 +268,10 @@ test("C5 states the worker removal of the recorded origins: every tab's origins,
     "A tab that gets the mark during the check (at `tabs.onReplaced` it can show an origin that it committed before the mark), or a change of the lists during the check, stops the check before its next removal call: it keeps the due origins, and one more check reads the new tab and decides",
     // review-30e notes 1 and 2.
     "Until that `set_scopes` a worker of a waiting origin stays, and the case of a host on no list stays open for it",
+    // review-30f B1, notes 1 and 3.
+    "Each stop (a new mark or a list change during the check, above) adds one more check, so while new marks or list changes keep coming during the checks (for example popups of a marked tab), the removal waits; each stop needs a new marked tab id or an applied `set_scopes` during that check",
+    "After that call the record and the pending set lose only the origins that it did not keep (their workers are gone), except one that a tab committed again during the call",
+    "and of the origins that tabs commit during that check before the call (no read of the check shows them, its loops go over copies of the record and the pending set, and the bound can drop them;",
     "(3) The follow-up sets hold at most 10,000 origins each: beyond 10,000 removed origins in one period of the follow-up timer, the others get no follow-up check",
     // review-30d B3: the shown sites come only from the reads and the marked commits during the check.
     "The version of a read is taken before the read, so an event of that tab during the read makes the read old for the next check",
@@ -285,7 +289,7 @@ test("C5 states the worker removal of the recorded origins: every tab's origins,
     // review-30c B3: the residue of the bound as the code does it.
     "(2) A new listed origin then loses its worker at the end of a list entry that covered such an origin (its own entry or the entry of another such origin), also when its own list stays in force",
     "The end of a list that covered no such origin removes nothing",
-    "until a list end's removal of every worker (2, below: it keeps such an origin only when a marked tab's last read shows that origin itself)",
+    "until a list end's removal of every worker (2, below: it keeps such an origin only when a marked tab's last read shows that origin itself, or when a tab commits it during that check before the call)",
     "also removes the partitioned workers of the listed third-party frames under that site",
     "about 50 KB at the bound",
     "The removals share one bounded call (`removeWorkers`)",
@@ -301,7 +305,7 @@ test("C5 states the worker removal of the recorded origins: every tab's origins,
   assert.ok(says(C5, "Those workers stay at this removal; the removal of the recorded origins (below) removes them when no list covers their host any more and no marked tab shows their site"), "C5: a scope with no list");
   assert.ok(!says(C5, "so no tab of them can reach a worker"), "C5 no longer says that no tab can reach such a worker");
   // review-30 note 3: the windows in the guard's sentence.
-  assert.ok(says(C5, "so this case stays open only while the operator's own tab is on that site, and then for the windows of that removal: the end of its check (at most about 4 x `REMOVAL_WAIT_MS` while each call ends in time), until the next frame event, close, replace or mark loss of the tab whose frame a page script removed (no time limit), until the next event after a failed read or removal, and for an origin that the bound did not keep (the residue of the bound, above)."), "C5: the windows of the case of a host on no list");
+  assert.ok(says(C5, "so this case stays open only while the operator's own tab is on that site, and then for the windows of that removal: the end of its check (at most about 4 x `REMOVAL_WAIT_MS` while each call ends in time and no stop comes; while new marks or list changes stop its checks, longer), until the next frame event, close, replace or mark loss of the tab whose frame a page script removed (no time limit), until the next event after a failed read or removal, and for an origin that the bound did not keep (the residue of the bound, above)."), "C5: the windows of the case of a host on no list");
   for (const old of ["at a marked tab's leave", "MEASURE_PLACEHOLDER", "at the end of any list", "so the workers of its sites go at the next check", "one frame read of each marked tab for each check", "evicts the oldest", "it pauses (one task) after each 1000 items", "Each removal arms its own follow-up timer", "until the next check after a frame that a page script removes", "A tab that gets the mark during the reads stops the check", "leaves the decision to its own check"]) assert.ok(!says(C5, old), `C5 no longer says: ${old}`);
 });
 
