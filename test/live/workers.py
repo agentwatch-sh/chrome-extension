@@ -78,7 +78,7 @@ from urllib.parse import quote, unquote
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from harness_guard import start_guard  # noqa: E402
+from harness_guard import RESERVED_DISPLAYS, start_guard  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 RUN = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(REPO, "test", "live", ".run", "workers-" + time.strftime("%Y%m%d-%H%M%S"))
@@ -86,6 +86,11 @@ PORT = int(sys.argv[2]) if len(sys.argv) > 2 else int(os.environ.get("LIVE_PORT"
 CHROMIUM = os.environ.get("CHROMIUM", "/usr/bin/chromium")
 RECEIVER = os.environ.get("RECEIVER", os.path.join(REPO, "agent"))
 DISPLAY_N = int(os.environ.get("DISPLAY_N", "142"))
+if DISPLAY_N in RESERVED_DISPLAYS:
+    # Before the run folder: a reserved display is refused even while it is free (README.md, "Two rules").
+    sys.stderr.write("DISPLAY_N names :%d, a reserved display (%s: :90 is agentwatch's agent browser, the others are other programs' on taylor): "
+                     "no harness takes it, even while it is free; pass another one\n" % (DISPLAY_N, ", ".join(map(str, RESERVED_DISPLAYS))))
+    sys.exit(2)
 with open(os.path.join(REPO, "docs", "protocol.md")) as _f:
     RECEIVER_ID = re.search(r"^- Receiver extension ID: `([a-p]{32})`$", _f.read(), re.M).group(1)
 PART_BYTES = 700000

@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -216,17 +216,17 @@ test("run.sh never takes a reserved display (0, 90, 147, 190-192), whatever LIVE
 });
 
 /** A run folder of run.sh up alone: its live guard (the pid-file form, no driver) and one stand-in process. */
-async function upRun(dir, name) {
+async function upRun(dir, name, pidDir = "pids") {
   const run = join(dir, name);
-  mkdirSync(join(run, "pids"), { recursive: true });
-  mkdirSync(join(run, "logs"));
-  const answer = execFileSync("python3", ["-I", "-B", GUARD, "--name", name, "--driver", "0", "--limit", "60", "--pid-dir", join(run, "pids"), "--log", join(run, "logs/guard.log")],
+  mkdirSync(join(run, pidDir), { recursive: true });
+  mkdirSync(join(run, "logs"), { recursive: true });
+  const answer = execFileSync("python3", ["-I", "-B", GUARD, "--name", name, "--driver", "0", "--limit", "60", "--pid-dir", join(run, pidDir), "--log", join(run, "logs/guard.log")],
     { env: { ...process.env, HARNESS_LOCK: join(dir, "harness.lock") }, encoding: "utf8" }).trim();
   const guard = Number(answer.split(" ")[1]);
   writeFileSync(join(run, "guard.pid"), `${guard}\n`);
   const x = spawn("sleep", ["604"], { stdio: "ignore", detached: true });
   x.unref();
-  writeFileSync(join(run, "pids/xvfb.160"), `${x.pid}\n`);
+  writeFileSync(join(run, pidDir, "xvfb.160"), `${x.pid}\n`);
   await sleep(1200); // the guard reads the pid folder every 0.5 s
   return { run, guard, pid: x.pid };
 }
@@ -240,7 +240,8 @@ test("run.sh down stops the run only through its live guard, and signals nothing
     pids.push(u.guard, u.pid);
     // The up-alone guard keeps no pipe of its caller (its stderr is the run's log) and no inherited fd.
     assert.equal(readlinkSync(`/proc/${u.guard}/fd/2`), join(u.run, "logs/guard.log"));
-    const r = spawnSync("/bin/sh", [RUN_SH, "down", u.run], { encoding: "utf8", timeout: 40_000 });
+    // A relative path with a trailing / names the same run: down finds its live guard.
+    const r = spawnSync("/bin/sh", [RUN_SH, "down", "live/"], { cwd: dir, encoding: "utf8", timeout: 40_000 });
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stderr, new RegExp(`run\\.sh: stopped the processes of ${u.run} \\(through its guard ${u.guard}\\)`));
     assert.deepEqual(running([u.pid, u.guard]), [], "down returned after the guard and the run's process were gone");
@@ -265,6 +266,15 @@ test("run.sh down stops the run only through its live guard, and signals nothing
     writeFileSync(join(none, "pids/server"), `${other.pid}\n`);
     assert.match(spawnSync("/bin/sh", [RUN_SH, "down", none], { encoding: "utf8" }).stderr, /has no guard\.pid .*: down signals nothing/);
     assert.deepEqual(running([other.pid]), [other.pid]);
+    // guard.pid names the live guard of another run whose pid folder only starts with this run's (<run>/pids2): the
+    // argv must match as whole fields, so down signals nothing, and that guard still runs.
+    const b = await upRun(dir, "prefix", "pids2");
+    pids.push(b.guard, b.pid);
+    const s3 = spawnSync("/bin/sh", [RUN_SH, "down", b.run], { encoding: "utf8", timeout: 40_000 });
+    assert.match(s3.stderr, /the guard already stopped the run .*prefix: down signals nothing/);
+    assert.deepEqual(running([b.guard, b.pid]).sort(), [b.guard, b.pid].sort(), "the other run's guard and process still run");
+    process.kill(b.guard, "SIGTERM");
+    assert.deepEqual(await goneWithin([b.guard, b.pid], GONE_MS), []);
   } finally { stopOwn(pids); rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -283,4 +293,18 @@ for start_delta in (1, 0):
 `], { encoding: "utf8", timeout: 60_000 });
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(r.stdout.trim().split("\n"), ["alive", "stopped"], r.stderr);
+});
+
+test("workers.py refuses a reserved DISPLAY_N before it makes its run folder", { skip }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "ce-guard-"));
+  try {
+    for (const n of ["90", "147", "0"]) {
+      const run = join(dir, `run-${n}`);
+      const r = spawnSync("python3", [join(LIVE, "workers.py"), run], { env: { ...process.env, DISPLAY_N: n, HARNESS_LOCK: join(dir, "harness.lock") }, encoding: "utf8", timeout: 30_000 });
+      assert.equal(r.status, 2, r.stderr);
+      assert.match(r.stderr, new RegExp(`^DISPLAY_N names :${n}, a reserved display \\(0, 90, 147, 190, 191, 192`));
+      assert.equal(existsSync(run), false);
+    }
+    assert.equal(existsSync(join(dir, "harness.lock")), false, "no lock taken");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

@@ -47,7 +47,8 @@ both repositories), and the same lock file:
    each recorded process that still runs with its recorded start time, and to their children
    (Chromium's helpers, `host.py`), SIGKILL after 5 s, and waits until all are gone (at most 20 s).
    It signals through the record's pidfd, so a process that took a recorded pid later gets no signal
-   (only with no fd left does it check the start time right before the signal, a short gap). So ps
+   (only when `pidfd_open` fails with an error other than ESRCH, for example with no fd left, does it
+   check the start time right before the signal, a short gap). So ps
    shows no recorded Xvfb, Chromium, `server.py` or `host.py` of the run within about 5 s of the
    driver's end. The limit: a process that leaves the driver's tree within 0.5 s of its start (a
    double fork, for example a crash handler such as Chromium's crashpad when crash reports are on)
@@ -69,7 +70,8 @@ The driver of `run.sh` (`all` mode) is the script itself. After `run.sh up` alon
 until `run.sh down` or until `LIVE_UP_LIMIT` seconds (default 3600): then the guard stops it. The
 limit also ends a `run.sh test DIR` that still runs: give `LIVE_UP_LIMIT` more than the cases need.
 The guard of a run writes its lines after the lock into `<run>/logs/guard.log` (so `run.sh up` keeps
-no pipe of its caller open). `run.sh down DIR` stops a run only through its live guard: it sends the
+no pipe of its caller open). `run.sh down DIR` (a relative path or a trailing `/` names the same run) stops a run only through its
+live guard, the process whose argv has `harness_guard.py` and `--pid-dir <run>/pids` as whole fields: it sends the
 guard SIGTERM and waits until the guard has stopped the run and ended. When the guard is gone (it
 already stopped the run, at the driver's end or at the limit), `down` signals nothing, because a pid
 file of the run can name a process that took that pid later.
@@ -77,7 +79,8 @@ file of the run can name a process that took that pid later.
 `run.sh` never takes the X displays 0, 90 (agentwatch's agent browser on taylor, the operator's),
 147, 190, 191 or 192, whatever `LIVE_DISPLAY` is (`RESERVED_DISPLAYS`, the same list as in
 `harness_guard.py`): when such a display stops, its socket and lock file go, so the free test alone
-would take it. `run.sh displays` prints the two displays that `up` would take now.
+would take it. `run.sh displays` prints the two displays that `up` would take now. `workers.py`
+refuses a reserved `DISPLAY_N` (exit 2, before it makes its run folder).
 
 `test/harness-guard.test.mjs` checks both forms with stand-in processes, and `run.sh displays` and
 `run.sh down` themselves.

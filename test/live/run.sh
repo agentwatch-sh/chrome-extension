@@ -32,8 +32,8 @@
 # test/live/.run/ by hand when you are done (the system clears /tmp).
 set -eu
 
-HERE=$(cd "$(dirname "$0")" && pwd)
-REPO=$(cd "$HERE/../.." && pwd)
+HERE=$(cd "$(dirname "$0")" && pwd -P)
+REPO=$(cd "$HERE/../.." && pwd -P)
 CHROMIUM=${CHROMIUM:-/usr/bin/chromium}
 PORT=${LIVE_PORT:-8771}
 FIRST_DISPLAY=${LIVE_DISPLAY:-90}
@@ -209,6 +209,15 @@ EOF
   echo "$run"
 }
 
+# True when the process $1 is the guard of the run $2: its argv has a field
+# ending in /harness_guard.py, and the field after a field --pid-dir is
+# exactly $2/pids (whole fields, not a part of one).
+guard_of() {  # PID RUN
+  args=$(tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null) || return 1
+  printf '%s\n' "$args" | grep -q -x '.*/harness_guard\.py' || return 1
+  printf '%s\n' "$args" | grep -A1 -x -e '--pid-dir' | tail -n +2 | grep -q -x -F -e "$2/pids"
+}
+
 down() {  # RUN
   # Only through the run's own guard (its pid in guard.pid, its command line
   # names this run's pid folder): the guard stops the run's processes by their
@@ -216,17 +225,21 @@ down() {  # RUN
   # that is gone already stopped the run (at the driver's end or at
   # LIVE_UP_LIMIT): then down signals nothing, because a pid file of the run
   # can name a process that took that pid later.
-  run=$1
+  # The run's real path (a relative path, a trailing / or a link name the same run), as up wrote it.
+  if ! run=$(cd "$1" 2>/dev/null && pwd -P); then
+    say "no run folder $1: down signals nothing"
+    return 1
+  fi
   if [ ! -f "$run/guard.pid" ]; then
     say "the run $run has no guard.pid (its guard did not start, so it started nothing): down signals nothing"
     return 0
   fi
   g=$(cat "$run/guard.pid")
   case "$g" in '' | *[!0-9]*) g=0 ;; esac
-  if [ "$g" -gt 0 ] && grep -q -F "$run/pids" "/proc/$g/cmdline" 2>/dev/null; then
+  if [ "$g" -gt 0 ] && guard_of "$g" "$run"; then
     kill "$g" 2>/dev/null || true
     i=0
-    while grep -q -F "$run/pids" "/proc/$g/cmdline" 2>/dev/null; do
+    while guard_of "$g" "$run"; do
       i=$((i + 1))
       if [ "$i" -gt 300 ]; then
         say "the guard $g of $run still runs after 30 s; see $run/logs/guard.log"
