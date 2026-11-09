@@ -1270,7 +1270,7 @@ first document request of a new tab (below).
   `agent/wire.js`).
 
 **The ops.** An arg name with `?` is optional. The default wait is the deadline of a request without
-`wait`. For the two `daemon.` ops (the last rows) the cell gives the wait that the relay sends and
+`wait`. For the `daemon.` ops (the last rows) the cell gives the wait that the relay sends and
 the receiver has no part (the daemon's own ops, below).
 
 | Op | Args | Result | Default wait | What the receiver does |
@@ -1297,6 +1297,7 @@ the receiver has no part (the daemon's own ops, below).
 | `bridge.tabScopes` | `[]` | `[{"tabId":<id>,"scope":"<scope>"}]` | `WAIT_DEFAULT_MS` | The receiver's own op (board ab-v16.41): every entry of the tab-to-scope map at the moment of the answer (each tab's scope, below). |
 | `daemon.pointerAt` | `[]` | `{"x":<int>,"y":<int>,"width":<int>,"height":<int>,"views":<int>}` | `POINTER_READ_WAIT_MS` | Nothing: the daemon answers it itself and never forwards it (board ab-v16.70; the daemon's own ops, below). A receiver that gets one answers `unknown op`. |
 | `daemon.movePointer` | `[move]` | `{"x":<int>,"y":<int>,"views":<int>}` | per request (below) | Nothing: the daemon answers it itself and never forwards it (board ab-v16.70; the daemon's own ops, below). A receiver that gets one answers `unknown op`. |
+| `daemon.blocked` | `[block]` | `{}` | `BLOCKED_WAIT_MS` | Nothing: the daemon answers it itself and never forwards it (the daemon's own ops, below). A receiver that gets one answers `unknown op`. |
 
 - `bridge.tabScopes` answers one item for each tab that has a scope in the map, in no set order: a
   tab of no scope and a marked tab are not in it. The receiver sends its events in Chrome's order,
@@ -1369,7 +1370,7 @@ that tab still reach Chrome in the relay's order.
   MCP leaves the dialog open while its model decides. `Runtime.evaluate` and
   `Runtime.callFunctionOn` with `awaitPromise` wait for a promise. So a CDP command fails only after
   10 minutes.
-- The relay sends each op's default wait. The two `daemon.` ops are the exception: the relay sends
+- The relay sends each op's default wait. The pointer `daemon.` ops are the exception: the relay sends
   `POINTER_READ_WAIT_MS` for `daemon.pointerAt` and a wait per request for `daemon.movePointer`, and the
   daemon uses neither (the daemon's own ops, below).
 - The receiver answers `timeout` when an op runs `wait` ms.
@@ -1437,8 +1438,8 @@ that tab still reach Chrome in the relay's order.
   - `MAX_IN_FLIGHT_PER_TAB = 64`, in the relay. The key of a request is its tab: the tab id of
     `debugger.attach`, `debugger.detach`, `debugger.sendCommand` (its `target`), `tabs.get`,
     `tabs.update`, `tabs.remove` and `bridge.release`. `daemon.movePointer` and `daemon.pointerAt`
-    have the key `pointer` of their own, so the shared key's queue never holds them back. Every
-    other op has one shared key. The relay keeps at most 64 requests in flight for each key. The
+    have the key `pointer` of their own, so the shared key's queue never holds them back.
+    `daemon.blocked` has its own key `blocked`. Every other op has one shared key. The relay keeps at most 64 requests in flight for each key. The
     next ones of that key wait in the relay, in order.
   - `MAX_BYTES_IN_FLIGHT = 268435456` (256 MiB), in the daemon. The daemon sends a request when the
     bytes of the requests in flight (sent and not answered) and its own bytes are at most this, or
@@ -1617,7 +1618,7 @@ sections 2 and 4).
 
 - The prefix `daemon.` is reserved: an op that starts with it is an op that the daemon answers
   itself. The daemon never forwards a `daemon.` op to the receiver, and it answers an unknown one
-  `unknown op` itself. The ops are `daemon.pointerAt` and `daemon.movePointer`.
+  `unknown op` itself. The ops are `daemon.pointerAt`, `daemon.movePointer` and `daemon.blocked`.
 - Its place in the daemon's handling of a relay line: after the parse and the duplicate-id check (the
   requests, above), before the link checks, and outside the daemon's queue and
   `MAX_BYTES_IN_FLIGHT`. So the daemon answers a `daemon.` op also while the link is down, and no
@@ -1632,7 +1633,22 @@ sections 2 and 4).
   daemon records it in `unit.json` when it starts the Xvfb, and reads it from X once for an adopted
   unit; never from the current config. The Mac has no unit Xvfb.
 - Only the relay's link reaches the ops: no gateway route, CLI verb, socket or receiver message. No
-  client method of C11 reaches a `daemon.` op.
+  client method of C11 directly calls a `daemon.` op. A navigation refusal can cause the relay to
+  report `daemon.blocked`.
+- `daemon.blocked`, args `[block]`, where `block` has exactly the keys `host` and `scope`.
+  `host` is a normalized host, in the same normal form as an allowlist entry (C5). `scope` is a
+  string or `null`. Other args get `bad args`. The carrier answers it itself and never forwards it
+  to the receiver. It calls the same `on_blocked(host, scope, from_host)` handler as the receiver's
+  `blocked`, with `from_host = null`, under the same per-host limit. It answers `ok: true` with empty
+  data `{}`, also when the per-host limit suppresses a repeated notice. An older carrier answers
+  `unknown op`.
+  The relay reports each off-list main-frame `Page.navigate` and `Target.createTarget` refusal,
+  including a delayed navigation after a list change. The relay checks the args before sending.
+  The relay sends `BLOCKED_WAIT_MS = 250` and waits at most that long with its own timer. A failed
+  answer or a timeout keeps the refusal's old text; a late answer changes nothing. Only an `ok`
+  answer lets the relay name the Browser permission prompt in its refusal. The op has its own
+  in-flight key `blocked`. It uses no X call and does not wait for a pointer op.
+  The vectors are `blockedVectors` in `test/vectors/bridge.json`; bad request b51 checks an older receiver.
 - `daemon.pointerAt`, args `[]`: one `xdotool getmouselocation`, with a timeout of
   `POINTER_READ_MS = 1000`. The answer, `{"x":<int>,"y":<int>,"width":<int>,"height":<int>,"views":<int>}`,
   gives the pointer's position, the running Xvfb's size, and `views`, the count of the operator's
