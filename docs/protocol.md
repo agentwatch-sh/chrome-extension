@@ -8,9 +8,9 @@ this holds since the two-modes design (agent-browser
 agentwatch plan's C4 text is older (`"v":1`, no channels). C10 and C11 are only here. They bind three
 repositories: this one (the receiver), agent-browser (its relay) and agentwatch (the daemon).
 
-For C1 and C5, this holds since board task ab-v16.24 (aw-lead agreed, mail m7ccc29b, 2026-11-04), on
+For C1 and C5, this holds since board task ab-v16.24 (the daemon lead agreed, mail m7ccc29b, 2026-11-04), on
 two conditions. A change of C1 or C5 that agentwatch must follow (an ID, a pin rule, an allowlist
-rule) goes to aw-lead by mail, with its commit, before it merges. agentwatch's pins
+rule) goes to the daemon lead by mail, with its commit, before it merges. agentwatch's pins
 (`CHROME_EXTENSION_COMMIT`, `CHROME_EXTENSION_RECEIVER_ID`, `AGENT_CRX_PATH`, `AGENT_CRX_SHA256`)
 move only in an agentwatch tip, so a chrome-extension merge alone never reaches a box.
 
@@ -20,12 +20,12 @@ C10 and C11 since board task ab-v16.30. This file is the master over that design
 differ (for example the session's 403 text, or a count in `refused`), this file holds. Each side
 builds the rules in a part of the design's section 12: the receiver in parts 1a to 1d (boards
 ab-v16.31 to ab-v16.34), the relay in part 2 (ab-v16.35, and ab-v16.51 for the peer check, which
-replaces ab-v16.36), agentwatch in part 3 (aw-lead). Until its
+replaces ab-v16.36), agentwatch in part 3 (the daemon lead). Until its
 part merges, a side still does what this file said before ab-v16.30 (main `27543ce`:
 `set_allowlist`, one list for the whole agent browser), and this repository's tests run the shared
 vectors that the receiver does not meet yet as `todo` tests. There
 is no backward compatibility: agentwatch pins both repositories and moves them at once, and it
-moves `CHROME_EXTENSION_COMMIT` to a commit with part 1a only together with its part 3 (aw-lead,
+moves `CHROME_EXTENSION_COMMIT` to a commit with part 1a only together with its part 3 (the daemon lead,
 mail md2ae63e). The operator answered the design's choice 1 in ab-dm6 with no key system: the peer
 check (below) takes the place of the per-scope key. The operator also decided the design's choices 3
 and 6 in ab-dm6, and this file states both as decided: the operator's own live-view tabs open any
@@ -38,7 +38,7 @@ a part of the per-scope build. With it the relay admits a connection of a scope 
 of the agentwatch session of that scope: the relay reads the connecting process from the kernel and
 walks from it to the session's root, its tmux pane's process. The daemon's `allowlist` line carries
 each session's roots (C10). There is no key, no token file and no secret in a URL. The receiver
-does not change (C4). The relay builds it in board ab-v16.51, agentwatch in its part 3 (aw-lead).
+does not change (C4). The relay builds it in board ab-v16.51, agentwatch in its part 3 (the daemon lead).
 Until the relay starts with `--peer-check`, the scope stays advisory (C11, the scope's session).
 
 The orphan-tabs rules (board task ab-v16.41; the design: agent-browser
@@ -60,7 +60,7 @@ and C11. When a window comes forward, the X server gives its page a
 real pointer event at the X pointer. So the daemon, which owns the agent display, moves the X pointer at
 the relay's request, along a path that the relay computes, before a window comes forward. The daemon
 answers the pointer ops itself (C10, the daemon's own ops), so the receiver does not change. agentwatch
-builds the daemon side in its task age-0kh.28 (aw-lead), and the relay its side in board ab-v16.71 (C11,
+builds the daemon side in its task age-0kh.28 (the daemon lead), and the relay its side in board ab-v16.71 (C11,
 the pointer at an activation). Until the daemon side ships, a `daemon.` op goes to the receiver as any
 op, the receiver answers `unknown op`, and the relay turns its paths off: it is then exactly as before.
 
@@ -177,7 +177,7 @@ One JSON object per native message. On the daemon's socket each message is one N
   `"scope":null` for a tab of no scope and `"from":null` for a tab with no listed host (C5, `blocked`;
   `from` since board ab-v16.33: the receiver from version 0.3.3 sends it, and a daemon that reads only
   `tab`, `host` and `scope` ignores it). `from` is the host of the tab's last main-frame commit that
-  C5's guard let stay, so a host that the guard sent away never becomes `from` (ab-lead, PR #23
+  C5's guard let stay, so a host that the guard sent away never becomes `from` (the lead, PR #23
   question 1). The carrier shares the per-host prompt limit of C10 `daemon.blocked` with this notice.
   on the bridge channel, the events of C10: `{"t":"ev","ch":"bridge","ev":"<event>",...}`, and a
   large res in parts (C10):
@@ -337,7 +337,7 @@ held one list for the whole agent browser. The request is above. Its fields and 
   choice 5 a) a dropped scope has no list, so its tabs fail closed, and the receiver then closes
   them (C5, the sweep), also when no relay runs. Only with a `default` list (choice 5 b) does the
   daemon first send the ended scope as `null`, so that it never falls back to the `default` list;
-  it drops the `null` entry by rule 3 below. aw-lead prefers choice 5 a, which needs no `null`
+  it drops the `null` entry by rule 3 below. The daemon lead prefers choice 5 a, which needs no `null`
   entry (mail mcbd5352), and builds the rest of 5 b only if the operator takes 5 b. The daemon can
   also write an `end_scope` for each alias of the ended session; the relay does nothing for a name
   that is no scope (C10, C11). From the `end_scope` on, the relay refuses new connections of the
@@ -375,8 +375,8 @@ held one list for the whole agent browser. The request is above. Its fields and 
 `set_scopes` that gives their scope no list (C5, the sweep), also while no relay runs, and it keeps
 its tab-to-scope map over a link drop and a daemon restart (C10, each tab's scope). The reasons and
 the measurements: the orphan-tabs design, sections 4, 10, 12 and 15. The daemon's rules for it
-(the design's section 15; aw-lead agreed with rules 1 to 5 and declined rule 6, mails m9e1ad35 and
-m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
+(the design's section 15; the daemon lead agreed with rules 1 to 5 and declined rule 6, mails m9e1ad35 and
+m1c19e2a; the daemon lead chose the file of rule 2, mail me680165):
 
 1. The first `set_scopes` on each connection names every live session, except a scope that rule 2
    keeps out: a name of the file of ended scopes, and the scope of a launch while rule 2's gate is
@@ -451,13 +451,13 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
    drop is its prune), so they stay over a daemon restart. A scope that ended while the daemon was
    down is in no file: with 5 b it falls back to the `default` list after the restart, and the
    sweep does not close its tabs (a limit; with 5 a it does not exist). A read of the scopes of the
-   receiver's map at each link up (`bridge.tabScopes`, C10) would close it; aw-lead builds that
+   receiver's map at each link up (`bridge.tabScopes`, C10) would close it; the daemon lead builds that
    only if the operator takes 5 b.
 4. `end_scope` stays as it is (C10, C11), and the daemon keeps no line for a relay that does not
    run. The sweep is the guarantee; `end_scope` is the fast path.
 5. agentwatch documents the gap (its stage 4, B7) until it pins parts 1a, 2 and 3 together. Then the
    note goes.
-6. Declined (aw-lead, mail m9e1ad35): the agent unit does not write `"session":
+6. Declined (the daemon lead, mail m9e1ad35): the agent unit does not write `"session":
    {"restore_on_startup": 5}` into the profile, because that would override the operator's own
    setting. So with the operator's "Continue where you left off" the pages of an earlier browser run
    open again as tabs of no scope: they fail closed, and the sweep never closes them (C5). If that
@@ -600,7 +600,7 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
   page came from the network: the worker was gone.
 - The worker removal of the recorded origins (board ab-v16.74, receiver 0.3.5; the operator chose on
   board item ab-214, 2026-11-06, the recommended option: remove such a site's workers when the
-  operator's tab leaves it; after review-30, ab-lead's decisions added the site rule and the origins
+  operator's tab leaves it; after review-30, the lead's decisions added the site rule and the origins
   of every tab). A worker that a marked tab registered for a host on no list answers a navigation of
   a scope's tab with its page, until layer 3 of the guard sends the tab away (the guard, below). So
   does a worker of a scope's site after that scope's list ended, and the removal of every worker
@@ -617,7 +617,7 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
     `o` (Chromium's `BrowsingDataFilterBuilder`, its default `kThirdPartiesIncluded`, and
     `StorageKey::MatchesOriginForTrustedStorageDeletion`; review-30). It does not remove a worker that
     a frame of `o` registered under the top-level site of another page.
-  - **The site rule** (ab-lead's decision on review-30 B3): the receiver never removes the workers of
+  - **The site rule** (the lead's decision on review-30 B3): the receiver never removes the workers of
     an origin while a marked tab shows a frame of the same site. So the operator's open pages of that
     site keep their workers, also the partitioned workers of their frames: this is ab-214's "the gap
     stays open while your tab is on that site". The site here is the scheme and the last two labels
@@ -663,7 +663,7 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
     at a time, and an origin is due after one whole period of it (review-30d's decision 3). A due
     origin that a list covers or whose site a marked tab shows then joins the record again (or the
     pending set, with the same bounds), so that a worker that its open page registers after the
-    removal goes when that list ends or the tab leaves (round 7, ab-lead's decision). The same holds
+    removal goes when that list ends or the tab leaves (round 7, the lead's decision). The same holds
     for a due origin that its part's last filter drops because a marked tab came to its site during
     the check (review-30g B1). A page can register its worker after the check of its own commit
     (review-30b note 2: a frame on no list in a scope's listed page). One check runs at a time; the
@@ -701,7 +701,7 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
     no new read, a list end, a leave of 11,000 origins and its follow-up): the check's longest
     synchronous part was at most 3.1 ms. Measured (review-30c's flood, below): while two marked tabs
     showed 1200 frames, the guard's times stayed near receiver 0.3.4's.
-  - The bound (review-30b B1, review-30d and ab-lead's decisions: no page content, any number of
+  - The bound (review-30b B1, review-30d and the lead's decisions: no page content, any number of
     frames or origins in any tab, can make the receiver remove a worker of a site that a marked tab
     shows, or of an origin that a list covers while that list is in force). The record holds at most
     `RECORD_MAX` = 1000 origins. At the bound it refuses a new origin; it never evicts one
@@ -824,7 +824,7 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
     navigation to the host was a network request (no worker).
 - The closing rule: on each `set_scopes` the receiver closes every tab whose `http:`/`https:` host
   its list does not cover (a `blob:` page counts by its inner origin's host, as for the guard below,
-  and a `blob:` page of an opaque origin has no host and stays; ab-lead, PR #23 question 2, board
+  and a `blob:` page of an opaque origin has no host and stays; the lead, PR #23 question 2, board
   ab-v16.33: before it, a `blob:` page whose inner host left the list stayed open, measured in part
   1c's live test); for a marked tab, its `operator` value counts (with `"*"` it never
   closes; with a list name, that list; with `null` no list, so its `http:`/`https:` page closes);
@@ -915,7 +915,7 @@ m1c19e2a; aw-lead chose the file of rule 2, mail me680165):
   `Target.createTarget` off the scope's list itself (C11, the refusals). The guard stops the page,
   not the request of a worker that passes the navigation on: with both receiver layers on, no page
   of such a worker committed in a scope-B tab (0 of 10), but its request reached the site in 10 of
-  10, with the site's cookies, and the site's answer came back to the worker (ab-lead's reviewer).
+  10, with the site's cookies, and the site's answer came back to the worker (a reviewer).
   The receiver builds the guard from part 1c (board ab-v16.33, version 0.3.3):
   - The guard judges by the lists of the last `set_scopes`, as the scope rules do, not by the last
     applied one, as the closing rule does: after a `set_scopes` that is not applied each tab of a
@@ -1481,7 +1481,7 @@ hold it; the last bullet gives the numbers and what the relay does about it.
   new tab's `tabs.onCreated` after the tab's `webNavigation.onCreatedNavigationTarget` (a popup), or
   `NEW_TAB_WAIT_MS = 50` after Chrome's `tabs.onCreated` when none comes (a tab that no page opened):
   each tab's scope, below. A tab that closes while its `tabs.onCreated` waits gets none; its
-  `tabs.onRemoved` goes as usual, as for a popup whose event is held (ab-lead, PR #21 question 3).
+  `tabs.onRemoved` goes as usual, as for a popup whose event is held (the lead, PR #21 question 3).
 - The receiver never attaches the restore tab of an import. The import sets a flag before it calls
   `tabs.create` for its restore tab, and it clears the flag when it knows that tab's id. A
   `tabs.onCreated` that comes while the flag is set waits until the import knows the id. Then the
@@ -1981,8 +1981,8 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
   and `Referer` as with no retry, and `Cache-Control: max-age=0` more (as any reload); for the
   sign-in pattern (`window.open("")`, then the opener sets `location`), which sends no
   `Sec-Fetch-User` with no retry, also `Sec-Fetch-User: ?1`. A one-shot session rule that removes
-  `Cache-Control` from the retried request did not remove it (20 of 20, ab-lead's reviewer).
-- The retry reloads a GET only (ab-lead, PR #21 question 1). The receiver reads the method of the
+  `Cache-Control` from the retried request did not remove it (20 of 20, a reviewer).
+- The retry reloads a GET only (the lead, PR #21 question 1). The receiver reads the method of the
   blocked request from `webRequest.onErrorOccurred` (permission `webRequest`; the receiver only
   reads it). The method of the tab's last blocked main-frame request of the same URL must be `GET`
   both when `webNavigation.onErrorOccurred` comes and at the reload's time (review-21 note 3); a
@@ -2004,7 +2004,7 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
   warning for `webRequest`: the permission warnings of the agent manifest
   (`chrome.management.getPermissionWarningsByManifest`) are the same with it and without it, so it
   is no privilege increase at an update of the CRX.
-- The retry is only for the popup's first navigation (ab-lead, PR #21 question 4): from its first
+- The retry is only for the popup's first navigation (the lead, PR #21 question 4): from its first
   main-frame commit that is not `about:blank` on, a block sends its notice at once and gets no
   retry, and a page that commits while the retry waits cancels it (the first request's notice
   goes).
@@ -2020,7 +2020,7 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
   notice does not stop that navigation. "Blocked again" is a second `ERR_BLOCKED_BY_CLIENT` of the
   reload's own navigation, not of a later one.
 - How often a popup with an opener needs the retry (it depends on load): in the probe 1 of 60 with
-  no hold and 2 of 60 with the hold; in ab-lead's reviewer's runs 3 to 4 of 20 with the hold, 2 of
+  no hold and 2 of 60 with the hold; in a reviewer's runs 3 to 4 of 20 with the hold, 2 of
   10 for the sign-in pattern, and 8 of 10 with one window per page (the plan of agent-browser PR
   #43, the research, before its build in PR #44) behind another window. The time of one assignment
   grows with the tabs open under the rules (the reviewer: median 9 ms with none, 13 ms with 50,
@@ -2046,7 +2046,7 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
   conditions end the hold. A popup of no scope or of the orphan set has no rule, so `RULE_QUIET_MS`
   never ends its hold: when it stays at `about:blank`, its `tabs.onCreated` comes `HOLD_MAX_MS` after
   Chrome's (or never, when it closes first). No session sees such a tab (C11), so that wait holds
-  no client back (ab-lead, PR #21 question 2). Chrome
+  no client back (the lead, PR #21 question 2). Chrome
   fires `tabs.onCreated` first, and the receiver holds it; other events of the popup (for example
   `tabs.onUpdated`) go to the relay as they come, and the relay keeps `bridge.tabScope` and drops
   the other events of a tab that it does not know yet. So the held `tabs.onCreated` carries the
@@ -2692,13 +2692,13 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
        limit, no path. When the front page holds a button, wait for its release. The rule "no path
        when its tab's next call waits in the activation chain (its gate is set, or becomes set
        during the wait)" applies only while the front page holds a button, because only then does
-       the release wait behind this step (ab-lead's decision in board ab-v16.71). No other page's
+       the release wait behind this step (the lead's decision in board ab-v16.71). No other page's
        button counts. Wait for the end of a catch-up that runs in the front page. Then chain the
        front page's gate on its old gate, so that its later calls wait behind the step in order.
        Last, wait for the answers of both pages' pointer input that already went to Chrome.
     4. Plan. Read both geometries (below) and, when it is unknown, `at`. No path when S or T is
        outside the front page's content box (its viewport less its scrollbars, 2 px inside its
-       edges; ab-lead's decision in board ab-v16.71); none is needed when `at` is T. The path
+       edges; the lead's decision in board ab-v16.71); none is needed when `at` is T. The path
        follows agent-browser's `src/input.ts` generator from S to T, sampled every 16 ms, each point
        clamped 2 px inside the front page's content box, in whole pixels (a page gets no mouse event
        over its scrollbars, so a path over one gave an unexplained change live), each `dt` at most
@@ -2788,7 +2788,7 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
     `Emulation.clearDeviceMetricsOverride` or `Page.clearDeviceMetricsOverride`, or until the tab is
     detached), when the window is minimized (the entering page's, by step 1's `windows.get`), or when
     it is a hidden front page. A read in flight gives no geometry.
-  - The kept geometry (ab-lead's decision in board ab-v16.71; review-68 N2). The relay keeps each
+  - The kept geometry (the lead's decision in board ab-v16.71; review-68 N2). The relay keeps each
     page's last usable geometry from its own reads. It keeps a read only when the read is usable as a
     front page's geometry: the rules above, not hidden, and not minimized when step 1 read the window.
     A read keeps or drops the kept geometry only when it answers within `GEOMETRY_WAIT_MS` and no drop
@@ -3148,7 +3148,7 @@ cgroup in ab-6gs.
   At a check the relay reads again only the scope's own roots (one `stat` and one cgroup read
   each): a root counts only while its start time matches, and its cgroup only while it is the
   cgroup of the line's read.
-- The roots' life (the daemon; aw-lead's part 3, the design's section 10):
+- The roots' life (the daemon; the daemon lead's part 3, the design's section 10):
   - The daemon sends the roots of every live session in each `allowlist` line, from the session's
     first line on: its pane's pid (`tmux list-panes -F '#{pane_pid}'`) and that process's start
     time.
@@ -3216,7 +3216,7 @@ cgroup in ab-6gs.
   without leaving the shell. On Linux with the pane's scope (P2, the operator's ab-6gs answer) such
   a job is admitted while it stays in the pane's scope; only `systemd-run` and a new tmux pane are
   refused.
-- The limit (aw-lead's point 3; the design's section 11). The check stops mistakes, an agent that
+- The limit (the daemon lead's point 3; the design's section 11). The check stops mistakes, an agent that
   names another session's scope, and an injected instruction that only names a scope. It does not
   stop a hostile process of the same OS user. Measured on taylor, such a process can join another
   session's pane scope with one write to `cgroup.procs`, run a command through a server that

@@ -217,7 +217,7 @@ test("each guard vector follows C5's guard: the host that it judges and the cove
     "Back restored that page from the cache (no request) in 3 of 3 runs, and the guard sent the tab to `about:blank`",
   ]) assert.ok(says(C5, s), `C5 says: ${s}`);
   assert.ok(!says(C5, "reports there (not measured)"), "the back/forward cache is measured now");
-  // ab-lead's decisions on PR #23: Q1 from in C4, Q2 the closing rule and the import judge a blob: page by its inner origin, Q3 the fact.
+  // the lead's decisions on PR #23: Q1 from in C4, Q2 the closing rule and the import judge a blob: page by its inner origin, Q3 the fact.
   assert.ok(says(C4, "`from` is the host of the tab's last main-frame commit that C5's guard let stay, so a host that the guard sent away never becomes `from`"), "C4: from");
   assert.ok(says(C5, "closes every tab whose `http:`/`https:` host its list does not cover (a `blob:` page counts by its inner origin's host, as for the guard below"), "C5: the closing rule and blob:");
   assert.ok(says(section("C6"), "Close every tab whose origin equals `origin` (a `blob:` page by its inner origin"), "C6: the import's close and blob:");
@@ -236,7 +236,7 @@ test("each guard vector follows C5's guard: the host that it judges and the cove
   for (const s of ["asked the operator again", "this text changes when the answer changes the build", "can replace it with a block of service workers", "from its cache (no request)", "with this residue:", "until that build this case stays open"]) assert.ok(!says(C5, s), `C5 no longer says: ${s}`);
 });
 
-// Board ab-v16.74 (the operator's answer ab-214; review-30 and ab-lead's decisions): the worker removal of the recorded origins, as
+// Board ab-v16.74 (the operator's answer ab-214; review-30 and the lead's decisions): the worker removal of the recorded origins, as
 // agent/workers.js builds it; review-28b note 3: the worker removal's sentence on a new scope and a scope with no list.
 test("C5 states the worker removal of the recorded origins: every tab's origins, Chrome's origin filter, the site rule, the check, the events, the windows, the bound, the shared call, the residue, the cost and the measure", () => {
   for (const s of [
@@ -283,7 +283,7 @@ test("C5 states the worker removal of the recorded origins: every tab's origins,
     // review-30b note 2: the follow-up check.
     "A follow-up check removes each origin of a removal again (unless it is listed or its site shown then), once, `RECHECK_MS` = 5000 ms to 2 x `RECHECK_MS` after that removal: one timer runs at a time",
     "A read that fails or comes late removes nothing: a worker of a shown origin would break the operator's open page. A removal that fails or comes late keeps its origins in the record or the pending set (Chrome can still end it later). Each logs one line with no origin, and the next check removes again; until then the case stays open.",
-    // review-30b B1 and ab-lead's decision: the bound, its residue and its cost.
+    // review-30b B1 and the lead's decision: the bound, its residue and its cost.
     "no page content, any number of frames or origins in any tab, can make the receiver remove a worker of a site that a marked tab shows, or of an origin that a list covers while that list is in force",
     "At the bound it refuses a new origin; it never evicts one",
     "A refused origin waits in a pending set in memory, at most `PENDING_MAX` = 10,000 origins, and each check handles it with the record's rules",
@@ -911,7 +911,7 @@ test("the orphan-tabs rules are in the text: the kept map, its copy and restore,
   const daemon = C4.slice(C4.indexOf("**The tabs of a session that ended (board ab-v16.41).**"));
   assert.ok(daemon.length > 100, "C4 has the daemon's rules");
   for (let i = 1; i <= 6; i++) assert.ok(daemon.includes(`\n${i}. `), `C4: rule ${i}`);
-  for (const s of ["first complete read of its sessions", "a good read of zero sessions sends an empty `scopes`", "splits a merged update", "not at the next `link` up", "`end_scope` stays as it is", "Declined (aw-lead"]) {
+  for (const s of ["first complete read of its sessions", "a good read of zero sessions sends an empty `scopes`", "splits a merged update", "not at the next `link` up", "`end_scope` stays as it is", "Declined (the daemon lead"]) {
     assert.ok(says(daemon, s), `C4 says: ${s}`);
   }
   assert.ok(protocol.includes("The orphan-tabs rules (board task ab-v16.41"), "the intro says which build holds them");
@@ -936,7 +936,7 @@ test("review-17f's notes (board ab-v16.48): the daemon's file and gate, the orph
     assert.ok(says(C4, s), `C4 says: ${s}`);
   }
   assert.ok(!says(C4, "sends that object again"), "C4: the old resend of that object is gone");
-  // Note 3: aw-lead's file of ended scopes, the restart gate, and the failure modes of the file with their fixes.
+  // Note 3: the daemon lead's file of ended scopes, the restart gate, and the failure modes of the file with their fixes.
   for (const s of ["The **file of ended scopes**: a small file of mode 0600 in the daemon's state folder", "The daemon writes a name into it at the session's end",
     "It prunes the name when a `set_scopes` without the name (with a `default` list: with its `null`), sent after the write, gets an `ok` in time",
     "No `set_scopes` names a scope while its name is in the file, also when a new live session has that name",
@@ -947,7 +947,7 @@ test("review-17f's notes (board ab-v16.48): the daemon's file and gate, the orph
     "A lost prune:", "the daemon removes a name from the file before any `set_scopes` names it again", "A stop of the box: the file needs no sync to disk",
     "A file that the daemon cannot read or parse at its start", "the daemon counts the name of every live session as a name of the file",
     "No `ok` in time for a long time", "the first `ok` in time prunes them all",
-    "The `null` entries are the names of the file of rule 2 (the drop is its prune), so they stay over a daemon restart", "aw-lead chose the file of rule 2, mail me680165"]) {
+    "The `null` entries are the names of the file of rule 2 (the drop is its prune), so they stay over a daemon restart", "the daemon lead chose the file of rule 2, mail me680165"]) {
     assert.ok(says(daemon, s), `C4 says: ${s}`);
   }
   for (const s of ["the rule needs no daemon memory", "The `null` entries live in the daemon's memory only"]) assert.ok(!says(C4, s), `C4: the old text is gone: ${s}`);
@@ -1266,13 +1266,13 @@ const errorOf = (v) => (v.res === null ? "no answer" : v.res.ok ? "ok" : v.res.e
 test("C10 states the daemon's own ops (board ab-v16.70): the prefix, its place, the X calls, both ops, the play, the counts, the kills, the waits, the key and the data rule", () => {
   for (const [name, value] of Object.entries(PK)) assert.ok(C10.includes(`\`${name} = ${value}\``), `C10 has \`${name} = ${value}\``);
   for (const s of [
-    // The prefix and its place (aw-lead's answer 1).
+    // The prefix and its place (the daemon lead's answer 1).
     "The prefix `daemon.` is reserved: an op that starts with it is an op that the daemon answers itself. The daemon never forwards a `daemon.` op to the receiver, and it answers an unknown one `unknown op` itself.",
     "Its place in the daemon's handling of a relay line: after the parse and the duplicate-id check (the requests, above), before the link checks, and outside the daemon's queue and `MAX_BYTES_IN_FLIGHT`.",
     "So the daemon answers a `daemon.` op also while the link is down, and no bridge request waits behind it. The daemon does not use its `wait`.",
     "It also drops a line whose `id` still waits for its answer (the duplicate-id check), also the `id` of a `daemon.` op that runs.",
     "Then it answers a `daemon.` op itself, before its link checks (`not connected`, `disconnected`)",
-    // The X calls (aw-lead's answer 2 and the build notes of mail mbf51aeb).
+    // The X calls (the daemon lead's answer 2 and the build notes of mail mbf51aeb).
     "The X calls run in a task of their own, one at a time, off the read lock of the relay's lines",
     "Each call runs `xdotool` by its absolute path, with no shell and no `--sync`, in an environment of only `DISPLAY=:<N>` and `XAUTHORITY=<the unit's X auth file>`.",
     "Its commands come from the checked integers only: absolute pointer moves and reads of the pointer, never a button, a key or a read of pixels.",
@@ -1300,21 +1300,21 @@ test("C10 states the daemon's own ops (board ab-v16.70): the prefix, its place, 
     "Its timeout is the path's total time plus `POINTER_KILL_MS = 1000`; at the timeout the daemon kills the call and answers `no display`.",
     "The `ok` answer comes after the last point: `{\"x\":<int>,\"y\":<int>,\"views\":<int>}`, the position that the script's `getmouselocation` read.",
     "The counts of `too many moves`: a play counts when it starts, and a read of `daemon.pointerAt` when its X call starts. The read before a play does not count, and the two counts are apart: a play counts only against the plays, and a read only against the reads. A refusal does not count.",
-    // The kills (aw-lead's answer 7) and the live view (answers 4 and 5).
+    // The kills (the daemon lead's answer 7) and the live view (answers 4 and 5).
     "The daemon kills a playing path at a relay end (the relay's epoch changes: no answer), at a unit stop (`no display`; the kill comes before the unit's stop steps), at a link change (`disconnected`), at its own stop (no answer: the relay's standard input ends), and at the operator's live-view input (`not now`). After a kill or any failed X call the pointer's place is unknown.",
     "The live view, when it exists (it is not built yet; its rows stay): `not now` for an old `views` and for `POINTER_VIEW_QUIET_MS = 10000` after the operator's last live-view input",
-    // The waits and the key (aw-lead's answer 6).
+    // The waits and the key (the daemon lead's answer 6).
     "`daemon.movePointer` has, per request, `POINTER_START_MS` plus the path's total time plus `POINTER_KILL_MS` plus `POINTER_SLACK_MS = 200` (1565 ms for the example above).",
     "The relay sends that `wait`, and waits at most that long with its own timer: then it goes on with no answer, takes the place as unknown, and drops a late answer. No path can still play then",
     "`daemon.movePointer` and `daemon.pointerAt` have the key `pointer` of their own, so the shared key's queue never holds them back.",
     "A `daemon.` op is outside this limit and the daemon's queue: it never goes to the receiver.",
     "The relay sends each op's default wait. The pointer `daemon.` ops are the exception: the relay sends `POINTER_READ_WAIT_MS` for `daemon.pointerAt` and a wait per request for `daemon.movePointer`, and the daemon uses neither",
-    // review-29 notes N2, N5 and the words of aw-lead's (c).
+    // review-29 notes N2, N5 and the words of the daemon lead's (c).
     "`views`: the `views` that the relay last read, an integer of 0 or more (`not now`, below).",
     "`width`, `height`: the screen size that the relay used (the pages' `screen.width` and `screen.height`), 1 or more.",
     "A `daemon.` op gets the daemon's own answer (the daemon's own ops, below), or none when the relay ends or the daemon stops.",
     "For a `daemon.` op the relay's own timer ends the wait",
-    // The data rule (aw-lead's answer 9) and the logs.
+    // The data rule (the daemon lead's answer 9) and the logs.
     "An error `res` of a `daemon.` op may also carry `\"data\"` (an object): `{\"t\":\"res\",\"ch\":\"bridge\",\"id\":\"<id>\",\"ok\":false,\"error\":\"<text>\",\"data\":{...}}`. A reader ignores `data` on an error that it does not know. The daemon sends `data` only with `pointer moved`",
     "No side logs a point of a `daemon.` op",
     "The daemon logs the op, the text and a count: one line for each text a minute, never a point. The relay logs each text at most once in 5 minutes.",
@@ -1332,7 +1332,7 @@ test("C10 states the daemon's own ops (board ab-v16.70): the prefix, its place, 
   assert.equal(sample.req.wait, 1565, "the example's wait");
   // The intro names the build, the design and who builds each side.
   assert.ok(says(protocol, "The agent pointer (board task ab-v16.70; the design: agent-browser `docs/superpowers/specs/2026-11-06-agent-pointer-move-design.md`, board ab-v16.37, first merged at agent-browser `6bb6838`; its build decisions are in agent-browser PR #68, board ab-v16.71) is in C10 and C11."), "the intro");
-  assert.ok(says(protocol, "agentwatch builds the daemon side in its task age-0kh.28 (aw-lead), and the relay its side in board ab-v16.71"), "the intro: the sides");
+  assert.ok(says(protocol, "agentwatch builds the daemon side in its task age-0kh.28 (the daemon lead), and the relay its side in board ab-v16.71"), "the intro: the sides");
   assert.ok(says(protocol, "Until the daemon side ships, a `daemon.` op goes to the receiver as any op, the receiver answers `unknown op`, and the relay turns its paths off"), "the intro: an older daemon");
 });
 
@@ -1606,12 +1606,12 @@ test("C11 states the pointer at an activation (board ab-v16.70): the paths' stat
   assert.equal(Math.round((3 * endpoint.constants.ACTIVATE_MAX_MS + 2 * PK.POINTER_READ_WAIT_MS + 3000) / 100) / 10, 11.4, "the worst case");
 });
 
-// ab-lead's decisions on agent-browser PR #68 (board ab-v16.71), in C11 by board ab-v16.77.
-test("C11 states ab-lead's decisions of board ab-v16.71 (board ab-v16.77): the content box, the kept geometry, a jump with no path and the gate rule", () => {
+// the lead's decisions on agent-browser PR #68 (board ab-v16.71), in C11 by board ab-v16.77.
+test("C11 states the lead's decisions of board ab-v16.71 (board ab-v16.77): the content box, the kept geometry, a jump with no path and the gate rule", () => {
   const has = (list) => { for (const s of list) assert.ok(says(C11, s), `C11 says: ${s}`); };
   // The content box: the tests and the clamp of the path, the clamp of the catch-up, and where it comes from.
   has([
-    "No path when S or T is outside the front page's content box (its viewport less its scrollbars, 2 px inside its edges; ab-lead's decision in board ab-v16.71); none is needed when `at` is T.",
+    "No path when S or T is outside the front page's content box (its viewport less its scrollbars, 2 px inside its edges; the lead's decision in board ab-v16.71); none is needed when `at` is T.",
     "each point clamped 2 px inside the front page's content box, in whole pixels (a page gets no mouse event over its scrollbars, so a path over one gave an unexplained change live)",
     "each point clamped 2 px inside the page's content box as in step 4 (from the page's kept geometry, else a read, which keeps no geometry; with neither, or with one that fails the read's own rules (below), no clamp), except the event's own point, which stays where the client sent it.",
     "The read also gives the content box: `visualViewport.width` and `height` (the viewport less its scrollbars, at a scale of 1; else `documentElement.clientWidth` and `clientHeight`).",
@@ -1621,7 +1621,7 @@ test("C11 states ab-lead's decisions of board ab-v16.71 (board ab-v16.77): the c
   // The kept geometry: what the relay keeps, who uses it, where it goes, no path without it, and its limit.
   has([
     "Each page's kept geometry: its last usable geometry from the relay's own reads (below).",
-    "The kept geometry (ab-lead's decision in board ab-v16.71; review-68 N2). The relay keeps each page's last usable geometry from its own reads.",
+    "The kept geometry (the lead's decision in board ab-v16.71; review-68 N2). The relay keeps each page's last usable geometry from its own reads.",
     "Step 4 uses it for a page that is no bridge tab (agent-browser's CLI ends its connection after each command, and the relay then detaches its page), and the catch-up uses it before a read.",
     "The relay drops it at every window event that it sees: any client's `Browser.setWindowBounds`; on the page's own session, a client's `Emulation.setDeviceMetricsOverride`, `Emulation.clearDeviceMetricsOverride`, `Emulation.setVisibleSize`, `Emulation.setPageScaleFactor`, `Emulation.setScrollbarsHidden`, `Page.setDeviceMetricsOverride` or `Page.clearDeviceMetricsOverride`; the page's `Page.frameResized`; its `tabs.onReplaced` (the new tab has none) and its `tabs.onRemoved`; and a link change.",
     "When a page that is no bridge tab has no kept geometry, the step sends no path.",
@@ -2156,7 +2156,7 @@ test("each cookie marker vector follows C11's rule", () => {
   assert.ok(endpoint.cookieHide.some((v) => Object.hasOwn(v.in, "redirectResponse")), "a vector for redirectResponse");
 });
 
-// ---- review-20 (board ab-v16.31): the decisions of ab-lead, in the text of C4, C5, C6 and C10 ----
+// ---- review-20 (board ab-v16.31): the decisions of the lead, in the text of C4, C5, C6 and C10 ----
 
 test("review-20's decisions are the contract: the closing rule at a set_scopes that is not applied, the sweep's tabs at a failed query, the owed worker removal, the import's cookies, a failed copy write, the fallback's detach and the limits of the start", () => {
   const C6 = section("C6");
@@ -2189,7 +2189,7 @@ test("review-20's decisions are the contract: the closing rule at a set_scopes t
 test("part 1b's decisions are the contract (ab-v16.32, PR #21 questions 1 to 4): the retry reloads a GET only, the waits of a held or waiting tabs.onCreated, the retry of the first navigation, the four names", () => {
   const checks = [
     // Q1: no reload for a request that is not a GET, so a form's POST fails closed with no dialog.
-    "The retry reloads a GET only (ab-lead, PR #21 question 1). The receiver reads the method of the blocked request from `webRequest.onErrorOccurred` (permission `webRequest`; the receiver only reads it).",
+    "The retry reloads a GET only (the lead, PR #21 question 1). The receiver reads the method of the blocked request from `webRequest.onErrorOccurred` (permission `webRequest`; the receiver only reads it).",
     // review-21 notes 3 and 5: the method when the block comes, and a withheld permission.
     "The method of the tab's last blocked main-frame request of the same URL must be `GET` both when `webNavigation.onErrorOccurred` comes and at the reload's time (review-21 note 3); a request that is not a GET, or whose method the receiver has not seen then, gets no reload.",
     "When Chrome withholds the permission (no `chrome.webRequest`), the bridge still starts and logs one line, every method is unknown, and no popup gets a retry (fail closed; review-21 note 5).",
@@ -2203,7 +2203,7 @@ test("part 1b's decisions are the contract (ab-v16.32, PR #21 questions 1 to 4):
     // Q3: a tab that closes while its tabs.onCreated waits.
     "A tab that closes while its `tabs.onCreated` waits gets none; its `tabs.onRemoved` goes as usual",
     // Q4: the first navigation only.
-    "The retry is only for the popup's first navigation (ab-lead, PR #21 question 4): from its first main-frame commit that is not `about:blank` on, a block sends its notice at once and gets no retry, and a page that commits while the retry waits cancels it",
+    "The retry is only for the popup's first navigation (the lead, PR #21 question 4): from its first main-frame commit that is not `about:blank` on, a block sends its notice at once and gets no retry, and a page that commits while the retry waits cancels it",
     // The measured delay of bridge.tabScope.
     "and before the popup's `tabs.onCreated` in 500 of 500",
   ];

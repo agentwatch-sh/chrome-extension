@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -232,7 +232,7 @@ async function upRun(dir, name, pidDir = "pids") {
 }
 
 test("run.sh down stops the run only through its live guard, and signals nothing when the guard is gone (a pid file can name a reused pid)", { skip }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), "ce-guard-"));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "ce-guard-")));
   const pids = [];
   try {
     // A live guard: down sends it SIGTERM and waits; the guard stops the run's process.
@@ -240,8 +240,12 @@ test("run.sh down stops the run only through its live guard, and signals nothing
     pids.push(u.guard, u.pid);
     // The up-alone guard keeps no pipe of its caller (its stderr is the run's log) and no inherited fd.
     assert.equal(readlinkSync(`/proc/${u.guard}/fd/2`), join(u.run, "logs/guard.log"));
+    // CDPATH offers a different folder with the same name. down must use the caller's relative run.
+    const elsewhere = join(dir, "elsewhere");
+    mkdirSync(join(elsewhere, "live"), { recursive: true });
+    writeFileSync(join(elsewhere, "live/guard.pid"), `${u.guard}\n`);
     // A relative path with a trailing / names the same run: down finds its live guard.
-    const r = spawnSync("/bin/sh", [RUN_SH, "down", "live/"], { cwd: dir, encoding: "utf8", timeout: 40_000 });
+    const r = spawnSync("/bin/sh", [RUN_SH, "down", "live/"], { cwd: dir, env: { ...process.env, CDPATH: elsewhere }, encoding: "utf8", timeout: 40_000 });
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stderr, new RegExp(`run\\.sh: stopped the processes of ${u.run} \\(through its guard ${u.guard}\\)`));
     assert.deepEqual(running([u.pid, u.guard]), [], "down returned after the guard and the run's process were gone");
@@ -341,15 +345,30 @@ test("a pid-file guard started with stdin, stdout and stderr closed still holds 
   try {
     mkdirSync(join(dir, "pids"));
     const env = { ...process.env, HARNESS_LOCK: join(dir, "harness.lock") };
+    // A second run of this user has the same guard name. It must keep its own lock and receive no signal.
+    const decoyDir = join(dir, "other");
+    mkdirSync(join(decoyDir, "pids"), { recursive: true });
+    const decoy = Number(execFileSync("python3", ["-I", "-B", GUARD, "--name", "closed", "--driver", "0", "--limit", "60", "--pid-dir", join(decoyDir, "pids"), "--log", join(decoyDir, "guard.log")],
+      { env: { ...env, HARNESS_LOCK: join(decoyDir, "harness.lock") }, encoding: "utf8" }).trim().split(" ")[1]);
+    pids.push(decoy);
     // As `run.sh up <&-`: the caller's fd 0 is closed (and 1 and 2 too here); the guard's pid goes to a file.
     spawnSync("/bin/sh", ["-c", `python3 -I -B "${GUARD}" --name closed --driver 0 --limit 60 --pid-dir "${join(dir, "pids")}" --log "${join(dir, "guard.log")}" <&- 1>&- 2>&- &
-      sleep 1.5; ps -o pid=,args= -u "$(id -u)" | grep -F -- "--name closed --driver 0" | grep -v grep | awk '{print $1}' > "${join(dir, "guard.pid")}"`], { env, encoding: "utf8", timeout: 20_000 });
+      sleep 1.5; ps -o pid=,args= -u "$(id -u)" | grep -F -- "--log ${join(dir, "guard.log")}" | grep -v grep | awk '{print $1}' > "${join(dir, "guard.pid")}"`], { env, encoding: "utf8", timeout: 20_000 });
+    const ownRows = execFileSync("ps", ["-e", "-o", "pid="], { encoding: "utf8" }).split("\n");
+    for (const row of ownRows) {
+      const pid = Number(row.trim().split(/\s+/)[0]);
+      try { if (readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").includes(join(dir, "guard.log"))) pids.push(pid); } catch { /* ended */ }
+    }
     const guard = Number(readFileSync(join(dir, "guard.pid"), "utf8").trim().split("\n")[0]);
     assert.ok(guard > 0, "the guard runs");
+    // Validate ownership before recording or signalling the selected pid, also when this test fails.
+    assert.ok(readFileSync(`/proc/${guard}/cmdline`, "utf8").split("\0").includes(join(dir, "guard.log")), "the selected guard belongs to this run");
+    assert.notEqual(guard, decoy, "the other run's guard is untouched");
     pids.push(guard);
     const second = spawnSync("python3", ["-I", "-B", GUARD, "--name", "second", "--driver", String(process.pid), "--wait", "1"], { env, encoding: "utf8", timeout: 20_000 });
     assert.match(second.stdout, /^refused the harness lock .* is still held after 1 s/, `the first guard still holds the lock: ${second.stdout}`);
     process.kill(guard, "SIGTERM");
     assert.deepEqual(await goneWithin([guard], GONE_MS), []);
+    assert.deepEqual(running([decoy]), [decoy], "the other run keeps its guard");
   } finally { stopOwn(pids); rmSync(dir, { recursive: true, force: true }); }
 });
