@@ -4,7 +4,7 @@ This test runs the sender and the receiver in two real, headed Chromium
 browsers on a Linux box, each on its own private X display. A local stub box
 and a local stub daemon stand in for agentwatch. The test sends a site's full
 state from the operator's Chromium to the agent's Chromium and checks what the
-site's first script sees there. It also checks the scope block (one list, one scope), and it
+site's first script sees there. It also checks the scope block (two lists, one scope), and it
 drives the agent package's bridge (contract C10) through the stub daemon: the
 frame rules, the navigation-header rule, and the eager attach with the hold of
 a new tab.
@@ -116,10 +116,10 @@ too if you want a clean tree.
 
 ## The per-scope contract in this harness
 
-The receiver (0.3.x) applies `set_scopes`, not `set_allowlist` (C4). The stub daemon keeps the one
-list of sites that the cases use and sends it as `{"lists": {"live": <list>}, "scopes": {"live":
-"live"}, "default": "live", "operator": "live"}`. So the one list `live` is the list of three kinds
-of tab:
+The receiver (0.3.x) applies `set_scopes`, not `set_allowlist` (C4). The stub daemon sends
+`{"lists": {"live": <sites>, "operator": <sites plus operator-only.localhost>},
+"scopes": {"live": "live"}, "default": "live", "operator": "operator"}`.
+The lists apply to these kinds of tab:
 
 - A tab that the harness opens through the bridge: `tabs.create` (and `windows.create`) take the
   scope as their second arg (`SCOPE = "live"` in `live.py`), and a popup of such a tab inherits it.
@@ -127,17 +127,28 @@ of tab:
   and sends `Page.navigate`.
 - The tab that the driver types into with xdotool in the agent Chromium. A tab of no scope and no
   mark has no list and fails closed (C5). So each case starts with Ctrl+T: a tab that starts at
-  `chrome://newtab/` has the operator mark (C10), and the `operator` field gives it the list. An
+  `chrome://newtab/` has the operator mark (C10), and the `operator` field gives it the separate `operator` list. An
   import or a list change closes the driver's tab, so the driver opens a new one before each case.
 - Any other tab: no list.
 
-The scope rules are two per list (`main_frame`, and `sub_frame` with `object`), so the first
-`set_scopes` answers `rules` 2. The receiver's hello must carry `"features": ["scopes"]`; the case
+The scope rules are two per list used by an open tab (`main_frame`, and `sub_frame` with `object`).
+At the first `set_scopes`, only marked tabs use a list, so it answers `rules` 2.
+The receiver's hello must carry `"features": ["scopes"]`; the case
 `link` checks it.
+
+The case `operator_list` checks the list choice explicitly. The marked tab loads
+`www.operator-only.localhost`. A tab in scope `live` gets a blocked event for that host,
+with no request at the server. A receiver that swaps the two lists fails this check.
 
 Since the receiver no longer lets a client open a tab at a URL, the case `hold` has no row for
 `tabs.create` with a URL, and its check of a page with a frame uses a blank tab that the client
-navigates (the page and its frame load after the release).
+navigates. Each frame request must reach the server at or after the release.
+A missing frame request fails the case. The case also keeps its checks that the first
+page request comes after the release and that the page loads. `hold.json` records each
+trial's `frame_after_release` and `release_to_frame_ms`.
+
+`npm test` also runs the Python tests in `test_live.py`. They reject missing or early
+frame requests and a shared operator and scope list.
 
 ## Run it with Google Chrome 157
 

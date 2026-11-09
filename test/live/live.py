@@ -260,12 +260,30 @@ class Live:
 
     def agent_old_state(self) -> None:
         a = self.allow(["s1.localhost"])
-        self.r.add("set_scopes [s1.localhost]", a.get("ok") is True and (a.get("data") or {}).get("rules") == 2,
+        self.r.add("set_scopes: scope and operator lists", a.get("ok") is True and (a.get("data") or {}).get("rules") == 2,
                    "receiver answer", data=a.get("data"), error=a.get("error"))
         m = self.ctl.mark()
         self.agent.goto(self.site("s1", "/agent-old"))
         ev = self.ctl.wait(m, 20, kind="page", page_kind="agent-old-done", host="www.s1.localhost")
         self.r.add("agent signs in on its own first (old state to replace)", ev is not None, "page log of the agent tab")
+
+    def operator_list(self) -> None:
+        """A swapped operator list and scope list must fail in both tab types."""
+        m = self.ctl.mark()
+        self.agent.goto(self.site("operator-only", "/p/operator-list-marked"))
+        loaded = self.ctl.wait(m, 10, kind="page", page_kind="page-load", page="/p/operator-list-marked",
+                               host="www.operator-only.localhost")
+        self.agent.key("ctrl+w")
+        tab = self.new_tab("about:blank")
+        m = self.ctl.mark()
+        self.cdp(tab, "Page.navigate", {"url": self.site("operator-only", "/p/operator-list-scoped")})
+        blocked = self.ctl.wait(m, 10, kind="blocked", host="www.operator-only.localhost", tab=tab)
+        requests = [e for e in self.ctl.events(m) if e["kind"] == "req" and e["path"] == "/p/operator-list-scoped"]
+        self.close_tab(tab)
+        self.r.add("the operator-only host loads in a marked tab and is blocked in scope live",
+                   bool(loaded) and bool(blocked) and not requests,
+                   "page log of the marked tab; scoped tab's blocked event and no server request; swapped lists fail",
+                   marked_loaded=bool(loaded), scoped_blocked=bool(blocked), scoped_requests=len(requests))
 
     def add_box(self) -> None:
         self.op.goto("chrome-extension://%s/options.html" % self.env["sender_id"])
@@ -733,7 +751,8 @@ class Live:
                    "release_to_req_ms": round((req["ts"] - t_rel) * 1000) if req else None,
                    "loaded": bool(page), "relay_pauses": [e.get("path") for e in pauses],
                    "forwarded": (forwarded or {}).get("path"),
-                   "frame_before_release": bool(framed) and framed["ts"] < t_rel if frame else None}
+                   "frame_after_release": bool(framed) and framed["ts"] >= t_rel if frame else None,
+                   "release_to_frame_ms": round((framed["ts"] - t_rel) * 1000) if framed else None}
             if client:
                 self.cdp(tab, "Fetch.disable")
             self.close_tab(tab)
@@ -783,9 +802,10 @@ class Live:
                    and any(r["caught"] for r in redirect), "server request time; page log",
                    release_to_req_ms=[r["release_to_req_ms"] for r in redirect])
         self.r.add("a page with a frame, held at its first request, loads with its frame after the release",
-                   all(r["caught"] and r["loaded"] and r["frame_before_release"] is False for r in framed),
+                   all(r["caught"] and r["loaded"] and r["frame_after_release"] is True for r in framed),
                    "the page's and the frame's request time at the server against the release",
-                   frame_before_release=[r["frame_before_release"] for r in framed], caught=[r["caught"] for r in framed])
+                   frame_after_release=[r["frame_after_release"] for r in framed],
+                   release_to_frame_ms=[r["release_to_frame_ms"] for r in framed], caught=[r["caught"] for r in framed])
         self.r.add("bridge.attachNew [false]: a new tab is neither attached nor held", all(
                    r["attached"] is False and r["held"] is False and r["loaded"] for r in off),
                    "bridge tabs.onCreated events", event_to_req_ms=[r["event_to_req_ms"] for r in off])
@@ -819,7 +839,7 @@ class Live:
                    restore_debugger_events=len(onev))
 
 
-CASES = ["link", "stub_refusals", "static_block", "agent_old_state", "add_box", "operator_setup", "popup_before_login",
+CASES = ["link", "stub_refusals", "static_block", "agent_old_state", "operator_list", "add_box", "operator_setup", "popup_before_login",
          "box_login", "send_s1", "nav_cases", "allowlist_change", "service_worker", "sw_removed", "big30", "big33",
          "bridge_info", "nav_header", "frame_rule", "hold", "hold_import"]
 
