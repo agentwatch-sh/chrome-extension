@@ -455,7 +455,7 @@ test("C10's op table names exactly the ops of the vector, with the same args, re
       assert.equal(cells[0], "`[" + d.args.join(", ") + "]`", `${name}: args`);
       assert.equal(cells[1], d.result, `${name}: result`);
       assert.equal(cells[2], d.wait, `${name}: wait`);
-      assert.equal(d.inFlightKey, "pointer", `${name}: its own in-flight key`);
+      assert.equal(d.inFlightKey, name === "daemon.blocked" ? "blocked" : "pointer", `${name}: its own in-flight key`);
       assert.ok(cells[3].startsWith("Nothing: the daemon answers it itself and never forwards it") && cells[3].includes("A receiver that gets one answers `unknown op`."), `${name}: the receiver's part`);
       continue;
     }
@@ -1232,6 +1232,8 @@ function daemonAnswer(req, w, skip = new Set()) {
   const res = (body) => (body === null ? null : { t: "res", ch: "bridge", id: req.id, ...body });
   const no = (error, extra = {}) => ({ res: res({ ok: false, error, ...(extra.data ? { data: extra.data } : {}) }), read: extra.read ?? false, script: null });
   if (!DAEMON_OPS.has(req.op)) return no("unknown op");
+  if (req.op === "daemon.blocked") return blockedArgsFit(req.args)
+    ? { res: res({ ok: true, data: {} }), read: false, script: null } : no("bad args");
   const move = req.op === "daemon.movePointer";
   const args = req.args ?? [];
   const m = Array.isArray(args) ? args[0] : undefined;
@@ -1276,7 +1278,7 @@ test("C10 states the daemon's own ops (board ab-v16.70): the prefix, its place, 
     "Its commands come from the checked integers only: absolute pointer moves and reads of the pointer, never a button, a key or a read of pixels.",
     "The daemon reads a failure from the exit code, not from standard error; a `getmouselocation` whose `x` and `y` it cannot parse is a failure too.",
     "the daemon records it in `unit.json` when it starts the Xvfb, and reads it from X once for an adopted unit; never from the current config",
-    "Only the relay's link reaches the ops: no gateway route, CLI verb, socket or receiver message. No client method of C11 reaches a `daemon.` op.",
+    "Only the relay's link reaches the ops: no gateway route, CLI verb, socket or receiver message. No client method of C11 directly calls a `daemon.` op.",
     // The two ops and their fields.
     "`daemon.pointerAt`, args `[]`: one `xdotool getmouselocation`, with a timeout of `POINTER_READ_MS = 1000`.",
     "`views`, the count of the operator's live-view inputs (0 while there is no live view). The relay sends it as a probe at each link up",
@@ -1290,7 +1292,7 @@ test("C10 states the daemon's own ops (board ab-v16.70): the prefix, its place, 
     "and sends its clock plus `POINTER_START_MS = 300`. The daemon reads its clock as `time.monotonic_ns() // 1000000` (injected for its tests). The daemon starts no path after `notAfter`.",
     "Each number of `move` is an integer: a JSON number with no fraction part (`true` and `false` are no numbers). A distance is Euclidean: two points are at most `d` px apart when `dx*dx + dy*dy <= d*d`, in integers.",
     // The order and the play.
-    "The checks, in this order. The first check that fails gives the answer, and the daemon makes no later X call.",
+    "For `daemon.pointerAt` and `daemon.movePointer` only, the checks run in this order. In the table, `both` means these two pointer ops. The first check that fails gives the answer, and the daemon makes no later X call.",
     "`no display` for a failed or killed X call comes at that call: the read (of either op) or the play.",
     "the daemon plays nothing and answers `pointer moved` with `data` `{\"x\":<int>,\"y\":<int>,\"views\":<int>}`, the read position and the current `views`. The daemon keeps no state of the place.",
     "Else it checks `notAfter` against its clock after the read, so a slow read ends in `too late`, never in a late play.",
@@ -1306,7 +1308,7 @@ test("C10 states the daemon's own ops (board ab-v16.70): the prefix, its place, 
     "The relay sends that `wait`, and waits at most that long with its own timer: then it goes on with no answer, takes the place as unknown, and drops a late answer. No path can still play then",
     "`daemon.movePointer` and `daemon.pointerAt` have the key `pointer` of their own, so the shared key's queue never holds them back.",
     "A `daemon.` op is outside this limit and the daemon's queue: it never goes to the receiver.",
-    "The relay sends each op's default wait. The two `daemon.` ops are the exception: the relay sends `POINTER_READ_WAIT_MS` for `daemon.pointerAt` and a wait per request for `daemon.movePointer`, and the daemon uses neither",
+    "The relay sends each op's default wait. The pointer `daemon.` ops are the exception: the relay sends `POINTER_READ_WAIT_MS` for `daemon.pointerAt` and a wait per request for `daemon.movePointer`, and the daemon uses neither",
     // review-29 notes N2, N5 and the words of aw-lead's (c).
     "`views`: the `views` that the relay last read, an integer of 0 or more (`not now`, below).",
     "`width`, `height`: the screen size that the relay used (the pages' `screen.width` and `screen.height`), 1 or more.",
@@ -1339,7 +1341,7 @@ test("the checks of the daemon's own ops: C10's table has them in the reference'
   assert.deepEqual([...rows.keys()], POINTER_CHECKS, "the rows are the checks, in their order");
   // Each "When" cell, word for word (review-29 note N1): the reference above follows these cells.
   const WHEN = {
-    "unknown op": "an unknown `daemon.` op; also the answer of a daemon from before this build, whose receiver answers it",
+    "unknown op": "an unknown daemon. op (the pointer ops and daemon.blocked are known); also the answer of a daemon from before this build, whose receiver answers it",
     "bad args": "the args are not exactly the fields above (for `daemon.pointerAt`: not `[]`); a limit of the path is broken; `at` is outside `0..width-1` and `0..height-1` of the request's `width` and `height`; or `notAfter` is negative, not an integer, or more than `POINTER_AHEAD_MAX_MS = 2000` ahead of the daemon's clock",
     "no display": "no unit Xvfb (also on the Mac) or no `xdotool`; or an X call failed or was killed",
     "wrong display": "`width` and `height` are not the running Xvfb's size",
@@ -1589,7 +1591,7 @@ test("C11 states the pointer at an activation (board ab-v16.70): the paths' stat
     // No path, the fallback and an older daemon (review-63e note C).
     "When the relay sends no path, that activation is as with the paths off",
     "(the first activation after the relay's start, after a link change, and after the paths turn on)",
-    "With an older daemon (`unknown op`, `not connected`) the paths stay off. On the Mac the relay sends no `daemon.` op.",
+    "With an older daemon (`unknown op`, `not connected`) the paths stay off. On the Mac the relay sends no pointer op (`daemon.pointerAt` or `daemon.movePointer`).",
     // The links from the existing text.
     "With the paths on, the activation has the steps and the limits of the pointer at an activation (below).",
     "With the paths on (Linux), both go through the activation step (the pointer at an activation, below).",
@@ -2284,4 +2286,75 @@ test("C11 holds review-19b's notes", () => {
   assert.ok(says(C11, "With 5 b it gets the session's 403 only until the line of C4's rule 3 drops the `null` entry"), "note 5");
   assert.ok(says(C11, "after the rule 3 line the scope is unnamed and step 5 gives the no-list 503 (review-19b note 5)"), "note 5: step 5");
   assert.ok(says(C11, "a parent whose start time is later than the other root's start time is no parent, so it is no ancestor; review-19b note 7"), "note 7");
+});
+
+// C10: a local navigation refusal needs the same operator prompt as a receiver block.
+function blockedArgsFit(args) {
+  if (!Array.isArray(args) || args.length !== 1 || !isObj(args[0])) return false;
+  const b = args[0];
+  return Object.keys(b).length === 2 && Object.hasOwn(b, "host") && Object.hasOwn(b, "scope")
+    && normalized(b.host) && (b.scope === null || validName(b.scope));
+}
+
+test("C10 defines daemon.blocked with checked host and scope, a bounded wait and the carrier's prompt", () => {
+  assert.ok(bridge.daemonOps.some((o) => o.op === "daemon.blocked"));
+  for (const text of [
+    "`daemon.blocked`, args `[block]`, where `block` has exactly the keys `host` and `scope`.",
+    "`host` is a normalized host, in the same normal form as an allowlist entry (C5). `scope` is the kind `scope` (above) or `null`. Other args get `bad args`.",
+    "The carrier answers it itself and never forwards it to the receiver.",
+    "It calls the same `on_blocked(host, scope, from_host)` handler as the receiver's `blocked`, with `from_host = null`, under the same per-host limit.",
+    "It answers `ok: true` with empty data `{}`, also when the limit drops the event.",
+    "The relay sends `BLOCKED_WAIT_MS = 250` and waits at most that long with its own timer. A failed answer or a timeout keeps the refusal's old text; a late answer changes nothing.",
+    "An older carrier answers `unknown op`.",
+    "The relay reports each off-list main-frame `Page.navigate` and `Target.createTarget` refusal, including the delayed `Target.createTarget` after a list change.",
+    "Only an `ok` answer lets the relay name the Browser permission prompt in its refusal.",
+    "Its only answers are `ok`, `bad args`, and `unknown op` from an older carrier.",
+    "The limit uses one shared state for the receiver's `blocked` notice and `daemon.blocked`, keyed by the host only.",
+    "It emits at most one prompt event per host per `BLOCKED_EVENT_MIN_S = 10` seconds.",
+    "It keeps at most 256 hosts. If all 256 hosts are inside their 10 seconds, it drops a new host's event.",
+    "If the relay's own args check fails, it sends nothing and keeps the old text.",
+    "The carrier logs the host once per emitted prompt event, from either source. The per-host limit bounds that log. The one-line-a-minute rule does not apply to it. Dropped events are not logged. The scope is never logged.",
+    "The 10 seconds of a host start at its last emitted prompt event; an event that the limit drops does not start them again. An event that comes 10 seconds or more after the host's last emitted prompt event is emitted.",
+    "A block of the same host from another scope within the 10 seconds gives no prompt event.",
+    "The limit state is in the carrier's memory only and starts empty when the carrier starts.",
+    "The relay's timer starts when it creates the request, before sending or queuing it, so the 250 ms includes time in the queue.",
+    "The op has its own in-flight key `blocked`, so the shared key and the key `pointer` never hold it back.",
+    "On every platform it also accepts a relay report of a refused navigation, to make the operator's allow prompt.",
+  ]) assert.ok(says(C10, text), text);
+  for (const [part, text] of [
+    [C4, "The carrier shares the per-host prompt limit of C10 `daemon.blocked` with this notice."],
+    [C11, "The navigation refusal reports `daemon.blocked` (C10, the daemon's own ops). Only an `ok` answer lets the relay name the Browser permission prompt in its refusal; otherwise it keeps the text in the row."],
+    [C10, "`daemon.blocked` has its own key `blocked`, so the shared key and the key `pointer` never hold it back."],
+    [C10, "The carrier may log the host of `daemon.blocked` as specified below."],
+    [C10, "For `daemon.blocked`, `previous` holds emitted prompt events only; `at` and `now` are milliseconds on the carrier's monotonic clock."],
+  ]) assert.ok(says(part, text), text);
+});
+
+test("daemon.blocked vectors check args before a prompt and keep older carriers compatible", () => {
+  assert.equal(bridge.blockedVectors?.length, 43, "the shared blocked vectors");
+  for (const v of bridge.blockedVectors) {
+    assert.equal(v.req.op, "daemon.blocked", v.req.id);
+    assert.equal(v.req.wait, 250, v.req.id);
+    const fits = blockedArgsFit(v.req.args);
+    const error = v.olderCarrier ? "unknown op" : fits ? null : "bad args";
+    assert.deepEqual(v.res, { t: "res", ch: "bridge", id: v.req.id,
+      ...(error ? { ok: false, error } : { ok: true, data: {} }) }, v.req.id);
+    const history = [...(v.previous ?? [])];
+    for (const attempt of v.attempts ?? []) {
+      const recent = history.filter((x) => attempt.at - x.at < 10000);
+      const emitted = !recent.some((x) => x.host === attempt.host) && new Set(recent.map((x) => x.host)).size < 256;
+      assert.equal(emitted, attempt.emitted, v.req.id + ": the earlier attempt");
+      if (emitted) history.push(attempt);
+    }
+    const recent = history.filter((x) => v.now - x.at < 10000);
+    const limited = recent.some((x) => x.host === v.req.args?.[0]?.host) || new Set(recent.map((x) => x.host)).size >= 256;
+    assert.deepEqual(v.notice, error || limited ? null : {
+      host: v.req.args[0].host, scope: v.req.args[0].scope, from: null,
+    }, v.req.id);
+  }
+  assert.ok(bridge.blockedVectors.some((v) => v.olderCarrier));
+  assert.ok(bridge.blockedVectors.some((v) => v.previous?.length && v.notice === null && v.res.ok));
+  for (const v of bridge.blockedVectors.filter((v) => !v.olderCarrier)) {
+    assert.deepEqual(daemonAnswer(v.req, { ...bridge.pointerWorld, xvfb: null }).res, v.res, v.req.id + ": no pointer checks");
+  }
 });
