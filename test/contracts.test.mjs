@@ -1576,6 +1576,7 @@ test("C11 states the pointer at an activation (board ab-v16.70): the paths' stat
     "A new tab that comes on top also marks the old front page. The mark changes no last point.",
     "The relay marks the leaving page before the raise, even when no X path plays or `at` is T.",
     "A failed or late answer can still have raised the window.",
+    "A raise with an unknown front page sets no cover mark.",
     "for a page whose point is an X record or has a cover mark",
     "The catch-up runs once after each X record or cover. The first pointer input consumes the cover mark; unrelated calls keep it.",
     "Another record or cover is necessary for another catch-up between the client's events.",
@@ -1670,7 +1671,7 @@ test("C11 states review-68's rules of agent-browser PR #68 (board ab-v16.77): th
     "A window change that the relay cannot observe remains outside this rule.",
     "An unexplained change is a pointer event whose position change from the page's last pointer event does not agree with its movement (`movementX`, `movementY`).",
   ]);
-  for (const s of ["The entering page is the front page now.", "(in the read, or in the read that gave its kept geometry)", "the world again", "still sets or drops it", "so no client sees the world, and the page's own events reach the client", "(unknown for the front page when it is outside its viewport)", "whose raise the relay sent (step 2)", "or the relay sent the raise (step 2)", "7. Bring the page forward:", "the kept geometries go"]) assert.ok(!says(C11, s), `C11: no ${s}`);
+  for (const s of ["The entering page is the front page now.", "(in the read, or in the read that gave its kept geometry)", "the world again", "still sets or drops it", "so no client sees the world, and the page's own events reach the client", "(unknown for the front page when it is outside its viewport)", "whose raise the relay sent (step 2)", "or the relay sent the raise (step 2)", "7. Bring the page forward:", "the kept geometries go", "covers it only after an X record", "never between a client's own events"]) assert.ok(!says(C11, s), `C11: no ${s}`);
 });
 
 // Board ab-v16.71's measure of `xdotool sleep` (the design's section 7.1 at agent-browser 4400370) in C10, by board ab-v16.77.

@@ -2624,6 +2624,7 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
     A new tab that comes on top also marks the old front page. The mark changes no last point.
     The relay marks the leaving page before the raise, even when no X path plays or `at` is T.
     A failed or late answer can still have raised the window.
+    A raise with an unknown front page sets no cover mark.
   - The activation step, with the paths on, one step at a time for all connections.
     `Page.bringToFront` and `Target.activateTarget` go through it too: they wait for the chain and for
     their tab's gate, as an input does, and answer after the step.
