@@ -2092,7 +2092,9 @@ ends).
     `REMOVAL_WAIT_MS` after that answer (the tab stays). A
     command that has not answered (it counts as failed after `REMOVAL_WAIT_MS`) still runs: the
     fallback then calls `chrome.tabs.remove` at once and ends its own attach only after the command
-    answered, because a detach makes a running command fail (review-17b E4b; review-20 note 2). Its
+    answered, because a detach makes a running command fail (review-17b E4b; review-20 note 2).
+    Its detach also follows the deferred-detach rule above: no close command of the tab remains
+    open when the detach runs. Its
     limit: a `beforeunload` handler can then hold that close (measured, below). A later item tries
     again; the sweep takes such a tab out of its scope into the orphan set (C5, the sweep).
 - The **window rule**. Before an item closes its tabs, the receiver reads every tab (`tabs.query`

@@ -71,7 +71,7 @@ export function makeFakeChrome() {
     manifest: { version: "0.1.0" },
     targets_: [],
     trackAttachments: false, // model Chrome's attachment ownership for removal races
-    trackDebuggerCommands: false, // detach fails running commands and fires onDetach
+    trackDebuggerCommands: false, // detach fails running commands; an explicit detach sends no onDetach
     debuggerCommands_: new Set(),
     sessionRules_: [],
     dynamicRules_: [],
@@ -248,7 +248,6 @@ export function makeFakeChrome() {
           for (const c of fake.debuggerCommands_) {
             if (c.tabId === tabId) c.reject(new Error("Detached while handling command."));
           }
-          chrome.debugger.onDetach.fire({ tabId }, "canceled_by_user");
         }
       }),
       getTargets: rec("debugger.getTargets", async () => fake.targets_.map((t) => ({ ...t }))),

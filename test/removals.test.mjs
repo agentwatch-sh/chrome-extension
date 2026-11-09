@@ -633,6 +633,42 @@ test("B1: a dropped close's deferred detach keeps a third close's running comman
   assert.equal(s.r.att.isAttached(7), false);
 });
 
+test("T1: deferred detach checks again after the third close's command also passes its limit", async () => {
+  const s = await startReceiver({ tabs: [blank(7), blank(3)], targets: [target(7)] });
+  s.f.trackAttachments = true;
+  s.f.trackDebuggerCommands = true;
+  const answers = [];
+  let n = 0;
+  s.f.impl["debugger.sendCommand"] = () => (++n === 1 ? Promise.resolve({ success: true }) : new Promise((res, rej) => (answers[n] = rej)));
+  s.f.impl["tabs.remove"] = async () => { throw new Error("held"); };
+  s.send({ t: "req", id: "r1", op: "tabs.remove", args: [7] });
+  await flush();
+  const [itemWait, watch] = s.pending(REMOVAL_WAIT_MS);
+  s.send({ t: "req", id: "r2", op: "tabs.remove", args: [7] });
+  itemWait.cleared = true;
+  itemWait.fn();
+  await flush();
+  watch.cleared = true;
+  watch.fn();
+  await s.fire(REMOVAL_WAIT_MS);
+  await s.fire(REMOVAL_WAIT_MS);
+  s.send({ t: "req", id: "r3", op: "tabs.remove", args: [7] });
+  await flush();
+  assert.equal(n, 3);
+  await s.fire(REMOVAL_WAIT_MS); // the third close leaves the chain with its command still open
+  assert.deepEqual(s.f.callsTo("tabs.remove"), [[7], [7], [7]]);
+  assert.deepEqual(s.f.callsTo("debugger.detach"), []);
+  answers[2](new Error("second close refused"));
+  await flush();
+  assert.deepEqual(s.f.callsTo("debugger.detach"), [], "the second check sees the third command still open");
+  assert.deepEqual(s.resOf("r3"), [], "the third command remains pending after its fallback failed");
+  answers[3](new Error("third close refused"));
+  await flush();
+  assert.deepEqual(s.f.callsTo("debugger.detach"), [[{ tabId: 7 }]]);
+  assert.deepEqual(s.resOf("r3").map((m) => m.error), ["held"]);
+  assert.equal(s.r.att.isAttached(7), false);
+});
+
 test("B1: an own command's deferred detach keeps a later close's running command after a timeout", async () => {
   const s = await startReceiver({ tabs: [blank(7), blank(3)], targets: [target(7)] });
   s.f.trackAttachments = true;

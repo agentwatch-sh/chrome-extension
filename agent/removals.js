@@ -235,9 +235,10 @@ export class Removals {
     return this.#fallback(c, own, running);
   }
 
-  // The fallback ends the close's own attach first, but never while its
-  // command still runs (running: a detach makes that command fail): then only
-  // after the command answered. Then it calls chrome.tabs.remove.
+  // own: this close made the attachment. running is only a flag here: when
+  // truthy, chrome.tabs.remove goes now and detach cleanup waits outside the
+  // chain. Cleanup reads the live commands again and ends the attachment
+  // only when no close command of the tab is open.
   async #fallback(c, own, running = null) {
     if (c.done) return;
     const { tabId } = c;
