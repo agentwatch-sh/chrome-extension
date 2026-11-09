@@ -32,7 +32,9 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PART_BYTES = 700000
-LIVE_SCOPE = "live"  # the one scope and the one list name of the harness (see set_scopes)
+LIVE_SCOPE = "live"  # the scope and its list name (see set_scopes)
+OPERATOR_LIST = "operator"
+OPERATOR_ONLY = "operator-only.localhost"
 MAX_SEND_BYTES = 33554432
 LOGIN_COOKIE = "aw_test_login"
 BOX_HOST = "box.localhost"
@@ -241,14 +243,15 @@ class StubDaemon:
         return out
 
     def set_scopes(self, domains: list[str]) -> dict:
-        """The harness keeps one list of sites. It sends it as the per-scope
-        contract (C4): one list, named after the one scope of every tab that
-        the harness opens through the bridge. The same list is the default and
-        the operator value: the tab that the driver types into (a tab that
-        starts at chrome://newtab/ has the operator mark, C10) has that list."""
+        """Send the scope's list and a separate operator list (C4).
+
+        Both lists keep the cases' sites. Only the operator list includes the
+        canary host, so the driver can detect a receiver that swaps the lists.
+        """
         self.allow = sorted(set(domains))
-        return self.request("set_scopes", lists={LIVE_SCOPE: self.allow}, scopes={LIVE_SCOPE: LIVE_SCOPE},
-                            default=LIVE_SCOPE, operator=LIVE_SCOPE)
+        return self.request("set_scopes", lists={LIVE_SCOPE: self.allow,
+                            OPERATOR_LIST: sorted(set(self.allow) | {OPERATOR_ONLY})},
+                            scopes={LIVE_SCOPE: LIVE_SCOPE}, default=LIVE_SCOPE, operator=OPERATOR_LIST)
 
 
 def _summary_data(op: str, data: object) -> object:
