@@ -2655,7 +2655,7 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
     input make it unknown. The pointer's place `at`, from the daemon's answers: unknown at the
     relay's start, at a link change, and after a failed or killed path or the relay's timer. The front
     page, the page under the pointer: the page of the last activation step that made it the front page
-    (step 6, after the raise of step 7), or a new tab that comes on top, with no raise (a new active tab
+    (by the rule of step 6, when step 7's raise succeeds), or a new tab that comes on top, with no raise (a new active tab
     that opens a window, or that becomes the active tab of the front page's window); unknown at the
     relay's start, at a link change, at its `tabs.onRemoved` or `tabs.onReplaced`, after failed reads
     of step 1, after a raise that reached its limit or that failed for an input or a
@@ -2678,8 +2678,7 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
        one `ACTIVATE_MAX_MS` (review-68 N3).
     2. Decide. With the front page known, a page comes under the pointer when it is not the front
        page, or, for `Target.activateTarget`, when its tab is not active and its window is the front
-       page's window. The front page decides, not the focus, and the raise (step 7) sends
-       `windows.update` with `{"focused":true}` also to a focused window. With the front page unknown,
+       page's window. The front page decides, not the focus, and for an input the raise (step 7) sends `windows.update` with `{"focused":true}` also to a focused window. With the front page unknown,
        the focus decides as above, and no path plays. Then a page becomes the front page (and step 6
        records it) only when the raise brings a window forward: the `windows.update` of an input whose
        window does not have the focus, or the client's `Page.bringToFront` (review-68 N1). A raise that
@@ -2765,18 +2764,25 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
     default wait. Each read first sends `Page.createIsolatedWorld` on the main frame and evaluates in
     the context id that it returns; when the evaluate names an unknown context (a navigation between
     the two calls), the relay sends both once more (review-68 B1: after a cross-site navigation
-    Chromium reuses context ids, so an id of an earlier read can name a page's own context). Each read
-    replaces the set of the world's ids with its new id. On the tab's own session only, the relay drops
-    the world's `Runtime.executionContextCreated` (by the world's name, for any id; the id joins the
-    set), and `Runtime.executionContextDestroyed`, `Debugger.scriptParsed` and
-    `Debugger.scriptFailedToParse` of the ids in the set, so no client sees the world. An id that left
-    the set is no longer the relay's: its events go to the client as any page's events (also a
-    `Runtime.executionContextDestroyed` of the relay's old world, of a context that the client never
-    saw created; a client ignores an id that it does not know). `Runtime.executionContextsCleared`
-    empties the set and still goes to the client. An id that stays in the set until the next read can
-    name a page's context after a navigation, and the relay then drops that page's own events of that
-    id (`Runtime.executionContextDestroyed`, `Debugger.scriptParsed` and
-    `Debugger.scriptFailedToParse`). The relay stops waiting after `GEOMETRY_WAIT_MS` and
+    Chromium reuses context ids, so an id of an earlier read can name a page's own context).
+    The relay retains a union of at most 128 world ids per tab as refusal candidates, including
+    worlds in the back-forward cache.
+    The relay never evicts a retained id while the tab stays in the model.
+    Geometry reads, navigation, context destruction, context clearing and a client's world
+    creation keep all retained ids.
+    The tab's removal or a link reset clears the retained state.
+    On the tab's own session only, the relay drops the world's `Runtime.executionContextCreated`
+    by its name, records its id within the bound, and adds the id to the event filter.
+    A separate set filters the current document's `Runtime.executionContextDestroyed`,
+    `Debugger.scriptParsed` and `Debugger.scriptFailedToParse` events.
+    Each geometry read replaces this event filter with its current world.
+    A dropped `Runtime.executionContextDestroyed` removes its id from the event filter only.
+    A context of another name, or a successful answer to a client's `Page.createIsolatedWorld` on
+    the tab's own session, releases that id from the event filter only.
+    A context clear or a main-frame navigation resets the event filter and still reaches the
+    client.
+    These event-filter changes never remove a retained refusal candidate, so a client can see its
+    own context's events after renderer reuse. The relay stops waiting after `GEOMETRY_WAIT_MS` and
     drops the late answer. The read also gives the content box: `visualViewport.width` and `height`
     (the viewport less its scrollbars, at a scale of 1; else `documentElement.clientWidth` and
     `clientHeight`). It also gives `document.visibilityState`. The read's own rules: a geometry is not
@@ -2788,6 +2794,70 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
     `Emulation.clearDeviceMetricsOverride` or `Page.clearDeviceMetricsOverride`, or until the tab is
     detached), when the window is minimized (the entering page's, by step 1's `windows.get`), or when
     it is a hidden front page. A read in flight gives no geometry.
+    The relay records a device-metrics set or clear when it sends the call to Chrome, before
+    Chrome answers.
+    A set that Chrome refuses counts as an override until its clear or a detach.
+  - The relay refuses a client's call into its own isolated world before the call reaches Chrome
+    (agent-browser PR #72 and PR #85).
+    The check runs when the call goes to Chrome, so a call behind an activation step uses the
+    world that the step's read made.
+    The check applies on the tab's own session to integer `contextId` and `executionContextId`
+    values, including `Runtime.evaluate`, `Runtime.callFunctionOn`, `DOM.resolveNode` and
+    `Runtime.compileScript`.
+    It also reads `objectId`, `callFrameId` and each key whose name ends in `ObjectId`, at the top
+    level and in nested objects and lists down to 3 levels.
+    The same 3-level search also reads `contextId` and `executionContextId` in nested objects and
+    lists.
+    These paths include `Runtime.callFunctionOn` arguments and `Debugger.setVariableValue`'s
+    `newValue`.
+    The relay extracts the context from V8's object-id and call-frame-id form
+    `<isolate>.<ctx>.<n>`, with an optional minus sign on the isolate and decimal integers in all
+    three parts.
+    The refusal depends on that form: another form, including the old JSON form
+    `{"injectedScriptId":...}`, names no context for this check.
+    The check does not read `uniqueContextId`, so the protection also depends on keeping the
+    world's unique id and name hidden from clients.
+    The relay's own reads use `returnByValue`, and their answers never go to a client.
+    The error code is `-32000`, with this exact text (`<method>` is the client's method): `Not
+    available in the agent browser: the relay's own isolated world (<method> names its execution
+    context, or an object or a call frame in it). Use the page's main world or a world of your own
+    (Page.createIsolatedWorld).`
+    `Runtime.runIfWaitingForDebugger` is exempt because it runs no code in a context and must
+    release a held tab.
+    Child sessions are exempt because each numbers its contexts on its own.
+    Calls that name no context are exempt.
+    Before a call that names a retained id, the relay resolves its private world on the current
+    main frame with `Page.createIsolatedWorld`.
+    This native lookup runs no script and enables no domain.
+    Chrome returns the existing world's id for that document, or creates the world when the
+    document has none with that name.
+    The returned id joins the retained union within the same 128-id bound.
+    A native lookup also adds its returned id to the event filter.
+    The relay refuses the call when it names the returned current id.
+    A numeric id reused for a client's context in another renderer stays usable, and the cached
+    renderer's world stays protected when it returns.
+    At 128 retained ids, the relay checks every context-bearing call with the same native lookup,
+    retains all 128 ids and allocates no more entries.
+    Newly created or restored worlds thus stay protected after the bound.
+    A failed lookup, a malformed answer, a lost frame, a removed tab, a detach or a wait beyond
+    `GEOMETRY_WAIT_MS = 200` ms refuses the call.
+    A late lookup answer never forwards the call.
+    The tab's later forwarded calls wait behind the lookup and the first call's submission or
+    refusal, including later calls with no context and navigations.
+    The gate opens after submission or refusal and does not wait for an ordinary CDP answer, so a
+    dialog or held target can receive its release command.
+    Activation steps also wait for lookup and submission.
+    A `Page.bringToFront` keeps its bounded reply wait, including when the tab read fails.
+    A client's world with a reused id pays one native lookup round trip on each call that names
+    it, potentially for the tab's lifetime.
+    Each lookup can hold later calls for up to 200 ms.
+    With an old daemon, or on the Mac, the relay makes no world and this check refuses nothing.
+    A call can reach Chrome between the world's first `Page.createIsolatedWorld` in a document and
+    its answer.
+    A navigation can commit between the native lookup and the forwarded client call, or between
+    world creation and the geometry evaluate.
+    These separate CDP commands are not atomic: retention closes the cache-restore gap between
+    geometry reads, but the navigation races and object-id format dependency remain.
   - The kept geometry (the lead's decision in board ab-v16.71; review-68 N2). The relay keeps each
     page's last usable geometry from its own reads. It keeps a read only when the read is usable as a
     front page's geometry: the rules above, not hidden, and not minimized when step 1 read the window.
