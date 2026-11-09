@@ -1572,7 +1572,14 @@ test("C11 states the pointer at an activation (board ab-v16.70): the paths' stat
     // The catch-up and its bound per tab (review-63d B1, review-63e note E).
     "a move more than 50 px from it, or a press or a wheel more than 2 px from it, the relay first sends CDP `mouseMoved` events (no button)",
     "The relay decides it when the event leaves the tab's gate, against the page's point at that time.",
-    "The catch-up runs once after each X record: never between a client's own events, and never while the page holds a button.",
+    "Each page's cover mark: another page came on top of it.",
+    "A new tab that comes on top also marks the old front page. The mark changes no last point.",
+    "The relay marks the leaving page before the raise, even when no X path plays or `at` is T.",
+    "A failed or late answer can still have raised the window.",
+    "for a page whose point is an X record or has a cover mark",
+    "The catch-up runs once after each X record or cover. The first pointer input consumes the cover mark; unrelated calls keep it.",
+    "Another record or cover is necessary for another catch-up between the client's events.",
+    "The relay sends no catch-up while the page holds a button.",
     "A tab has at most `CATCH_UP_MAX_UNANSWERED = 4` catch-up moves without an answer: no catch-up starts while the tab has unanswered catch-up moves, and when a move is due while 4 wait (a page with an open dialog answers none), the catch-up stops and the client's event goes as with the paths off.",
     "A step and a catch-up never overlap on one page.",
     // The geometry read.
@@ -1657,8 +1664,10 @@ test("C11 states review-68's rules of agent-browser PR #68 (board ab-v16.77): th
     // B3: Browser.setWindowBounds in the activation chain.
     "A client's `Browser.setWindowBounds`, with the paths on, waits in the activation chain (review-68 B3): behind every step already in the chain (the path of the step that runs plays at the window's old place), and behind the catch-ups that run in its window's pages; then the front page is unknown, the kept geometry of every page in the relay's model goes (of every window and every scope), and the window changes. Later steps wait behind it. The window's scope check runs first: a call whose window holds no tab of the client's scope gets `Browser window not found` and changes nothing. With the paths off or unknown it goes at once.",
     // The limit of movement 0 (board ab-v16.76).
-    "Movement 0 after a page loses the pointer (measured in board ab-v16.71; its follow-up is board ab-v16.76): when another window comes over a page under the pointer, the page gets `mouseout`, and Chrome then gives its next pointer event a movement of 0.",
-    "is then an unexplained change when the page's point is no X record; the catch-up covers it only after an X record.",
+    "Movement 0 after a page loses the pointer (measured in board ab-v16.71; fixed for known raises by board ab-v16.76): Chrome gives the covered page's next event movement 0.",
+    "The cover mark now applies the catch-up even when its point is a client point.",
+    "The same thresholds, path limits, held-button rule and per-tab bound of 4 unanswered catch-up moves apply. An unknown point still has no catch-up.",
+    "A window change that the relay cannot observe remains outside this rule.",
     "An unexplained change is a pointer event whose position change from the page's last pointer event does not agree with its movement (`movementX`, `movementY`).",
   ]);
   for (const s of ["The entering page is the front page now.", "(in the read, or in the read that gave its kept geometry)", "the world again", "still sets or drops it", "so no client sees the world, and the page's own events reach the client", "(unknown for the front page when it is outside its viewport)", "whose raise the relay sent (step 2)", "or the relay sent the raise (step 2)", "7. Bring the page forward:", "the kept geometries go"]) assert.ok(!says(C11, s), `C11: no ${s}`);
