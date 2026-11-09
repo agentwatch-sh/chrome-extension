@@ -284,6 +284,25 @@ The test sites:
 
 ## Results
 
+Run of 2026-11-09 on Linux, Chromium 156.0.8078.79, receiver 0.3.6,
+`LIVE_DISPLAY=160 test/live/run.sh` (`all` mode, `HOLD_TRIALS=10`): **75 checks,
+74 passed, 1 failed**. The run uses the harness guard and the shared heavy lock,
+with `timeout 1500` inside the lock. Both Chromium instances use private displays,
+160 and 161. Only the known partitioned-cookie check (CHIPS on an HTTP
+`*.localhost` site) fails.
+
+The operator-list check passes: the marked tab loads the operator-only host,
+the scoped tab reports a block, and the server receives no scoped request.
+All three hold frame trials report `caught`, `loaded`, and `frame_after_release`
+as true. Their frame requests arrive 34, 32, and 35 ms after release.
+
+The outer command exits 143 during cleanup. `down` signals the guard, which then
+terminates the sleep child that `down` uses to wait. With `set -e`, the shell
+exits 143. A shell-and-sleep reproduction and its signal trace confirm this cause.
+The complete run takes about 265 seconds; the driver takes about 261 seconds
+(an estimate). The guard measures cleanup at 0.1 seconds. The timeout does not
+fire. The guard and a process check confirm that every recorded process stops.
+
 Run of 2026-11-05 on taylor (Debian 13), Chromium from `/usr/bin/chromium`, `HOLD_TRIALS=10
 test/live/run.sh` (`all` mode) in two private Xvfb displays, against the unpacked `agent/` of board
 task ab-v16.56's branch (receiver 0.3.3, hello `features ["scopes"]`): **74 checks, 73 passed, 1

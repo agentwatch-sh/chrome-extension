@@ -50,6 +50,33 @@ class LiveChecks(unittest.TestCase):
                 row = next(r for r in driver.r.rows if r["case"].startswith("a page with a frame,"))
                 self.assertEqual(row["result"], "pass" if expected else "FAIL")
 
+    def test_operator_list_requires_a_block_and_no_scoped_request(self):
+        for loaded, blocked, requests, expected in (
+            (True, True, [], True),
+            (False, True, [], False),
+            (True, False, [], False),
+            (True, True, [{"kind": "req", "path": "/p/operator-list-scoped"}], False),
+        ):
+            with self.subTest(loaded=loaded, blocked=blocked, requests=requests), tempfile.TemporaryDirectory() as run:
+                driver = live.Live.__new__(live.Live)
+                driver.run, driver.port = run, 8771
+                driver.r = live.Results(run)
+                driver.agent = Mock()
+                driver.ctl = Mock()
+                driver.ctl.mark.return_value = 0
+                driver.ctl.wait.side_effect = [
+                    {"kind": "page", "page_kind": "page-load", "page": "/p/operator-list-marked",
+                     "host": "www.operator-only.localhost"} if loaded else None,
+                    {"kind": "blocked", "host": "www.operator-only.localhost", "tab": 1} if blocked else None,
+                ]
+                driver.ctl.events.return_value = requests
+                driver.new_tab = Mock(return_value=1)
+                driver.cdp = Mock()
+                driver.close_tab = Mock()
+                with patch("builtins.print"):
+                    driver.operator_list()
+                self.assertEqual(driver.r.rows[0]["result"], "pass" if expected else "FAIL")
+
     def test_daemon_gives_operator_tabs_a_distinct_list(self):
         daemon = server.StubDaemon("unused", Mock())
         # Capture the message at the wire boundary; set_scopes builds it itself.
