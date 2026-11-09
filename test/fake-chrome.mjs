@@ -71,6 +71,8 @@ export function makeFakeChrome() {
     manifest: { version: "0.1.0" },
     targets_: [],
     trackAttachments: false, // model Chrome's attachment ownership for removal races
+    trackDebuggerCommands: false, // detach fails running commands and fires onDetach
+    debuggerCommands_: new Set(),
     sessionRules_: [],
     dynamicRules_: [],
     trackNewTabs: false,
@@ -81,7 +83,13 @@ export function makeFakeChrome() {
   const rec = (path, impl) => (...args) => {
     calls.push([path, args]);
     const f = Object.hasOwn(fake.impl, path) ? fake.impl[path] : impl;
-    return f ? f(...args) : undefined;
+    const result = f ? f(...args) : undefined;
+    if (path !== "debugger.sendCommand" || !fake.trackDebuggerCommands) return result;
+    let reject;
+    const detached = new Promise((res, rej) => (reject = rej));
+    const command = { tabId: args[0].tabId, reject };
+    fake.debuggerCommands_.add(command);
+    return Promise.race([result, detached]).finally(() => fake.debuggerCommands_.delete(command));
   };
   const port = {
     posted: [],
@@ -236,6 +244,12 @@ export function makeFakeChrome() {
         if (!fake.trackAttachments) return;
         const t = fake.targets_.find((x) => x.tabId === tabId);
         if (t) t.attached = false;
+        if (fake.trackDebuggerCommands) {
+          for (const c of fake.debuggerCommands_) {
+            if (c.tabId === tabId) c.reject(new Error("Detached while handling command."));
+          }
+          chrome.debugger.onDetach.fire({ tabId }, "canceled_by_user");
+        }
       }),
       getTargets: rec("debugger.getTargets", async () => fake.targets_.map((t) => ({ ...t }))),
       sendCommand: rec("debugger.sendCommand", async (target, method, params) => {

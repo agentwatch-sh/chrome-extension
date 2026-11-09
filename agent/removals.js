@@ -242,7 +242,7 @@ export class Removals {
     if (c.done) return;
     const { tabId } = c;
     c.fallback = true;
-    if (own && running) void running.then(() => call(() => this.#att.detachForClose(tabId)).catch(() => {}));
+    if (own && running) this.#detachWhenIdle(tabId);
     else if (own) await call(() => this.#att.detachForClose(tabId)).catch(() => {});
     if (c.done) return;
     const removing = call(() => this.#chrome.tabs.remove(tabId));
@@ -250,6 +250,21 @@ export class Removals {
       c.fallbackError = e;
       c.check();
     });
+  }
+
+  // The detach runs in the chain, but waits outside it. A later close can
+  // borrow the attachment during that wait: check every command again when
+  // the detach's chain op runs, rather than keeping a snapshot of commands.
+  #detachWhenIdle(tabId) {
+    void this.#att.inChain(tabId, () => {
+      const running = [...(this.#pending.get(tabId) ?? [])]
+        .filter((c) => c.commandOpen).map((c) => c.commandAnswer);
+      if (running.length) {
+        void Promise.all(running).then(() => this.#detachWhenIdle(tabId));
+        return;
+      }
+      return this.#att.detachForClose(tabId);
+    }).catch(() => {});
   }
 
   // The command answered with no error. When no tabs.onRemoved of the tab
