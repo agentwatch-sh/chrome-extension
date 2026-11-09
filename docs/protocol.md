@@ -2772,13 +2772,13 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
     creation keep all retained ids.
     The tab's removal or a link reset clears the retained state.
     On the tab's own session only, the relay drops the world's `Runtime.executionContextCreated`
-    by its name and records its id within the bound.
+    by its name, records its id within the bound, and adds the id to the event filter.
     A separate set filters the current document's `Runtime.executionContextDestroyed`,
     `Debugger.scriptParsed` and `Debugger.scriptFailedToParse` events.
     Each geometry read replaces this event filter with its current world.
     A dropped `Runtime.executionContextDestroyed` removes its id from the event filter only.
-    A context of another name, or a client's successful `Page.createIsolatedWorld` answer,
-    releases that id from the event filter only.
+    A context of another name, or a successful answer to a client's `Page.createIsolatedWorld` on
+    the tab's own session, releases that id from the event filter only.
     A context clear or a main-frame navigation resets the event filter and still reaches the
     client.
     These event-filter changes never remove a retained refusal candidate, so a client can see its
@@ -2806,6 +2806,8 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
     `Runtime.compileScript`.
     It also reads `objectId`, `callFrameId` and each key whose name ends in `ObjectId`, at the top
     level and in nested objects and lists down to 3 levels.
+    The same 3-level search also reads `contextId` and `executionContextId` in nested objects and
+    lists.
     These paths include `Runtime.callFunctionOn` arguments and `Debugger.setVariableValue`'s
     `newValue`.
     The relay extracts the context from V8's object-id and call-frame-id form
@@ -2813,6 +2815,8 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
     three parts.
     The refusal depends on that form: another form, including the old JSON form
     `{"injectedScriptId":...}`, names no context for this check.
+    The check does not read `uniqueContextId`, so the protection also depends on keeping the
+    world's unique id and name hidden from clients.
     The relay's own reads use `returnByValue`, and their answers never go to a client.
     The error code is `-32000`, with this exact text (`<method>` is the client's method): `Not
     available in the agent browser: the relay's own isolated world (<method> names its execution
@@ -2828,6 +2832,7 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
     Chrome returns the existing world's id for that document, or creates the world when the
     document has none with that name.
     The returned id joins the retained union within the same 128-id bound.
+    A native lookup also adds its returned id to the event filter.
     The relay refuses the call when it names the returned current id.
     A numeric id reused for a client's context in another renderer stays usable, and the cached
     renderer's world stays protected when it returns.
@@ -2837,7 +2842,7 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
     A failed lookup, a malformed answer, a lost frame, a removed tab, a detach or a wait beyond
     `GEOMETRY_WAIT_MS = 200` ms refuses the call.
     A late lookup answer never forwards the call.
-    The tab's later calls to Chrome wait behind the lookup and the first call's submission or
+    The tab's later forwarded calls wait behind the lookup and the first call's submission or
     refusal, including later calls with no context and navigations.
     The gate opens after submission or refusal and does not wait for an ordinary CDP answer, so a
     dialog or held target can receive its release command.
