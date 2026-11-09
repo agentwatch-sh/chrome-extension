@@ -52,7 +52,9 @@ both repositories), and the same lock file:
    shows no recorded Xvfb, Chromium, `server.py` or `host.py` of the run within about 5 s of the
    driver's end. The limit: a process that leaves the driver's tree within 0.5 s of its start (a
    double fork, for example a crash handler such as Chromium's crashpad when crash reports are on)
-   and that the driver does not name is not recorded, and can outlive the run.
+   and that the driver does not name is not recorded, and can outlive the run. So can a process of
+   the driver's tree that started less than about 0.03 s before a SIGTERM to the guard, if no poll
+   recorded it and the driver does not name it (board ab-v16.89).
 2. **One at a time.** The guard takes `flock` on `~/.cache/agent-harness/harness.lock` (one file for
    each user, the same file as agent-browser's harnesses) before the harness starts Xvfb or Chromium.
    It waits at most `HARNESS_LOCK_WAIT` seconds (default 1200) and writes one line on stderr while it
@@ -75,10 +77,13 @@ no pipe of its caller open). A caller that closed stdin, stdout or stderr (`run.
 live guard, the process whose argv has `harness_guard.py` and `--pid-dir <run>/pids` as whole fields: it sends the
 guard SIGTERM and waits until the guard has stopped the run and ended. When the guard is gone (it
 already stopped the run, at the driver's end or at the limit), `down` signals nothing, because a pid
-file of the run can name a process that took that pid later. After the SIGTERM, the guard takes no
-new process of the driver's tree into the run. In `all` mode, `down` runs in the script's EXIT trap,
-inside the driver's tree, so the guard stops no process of `down` itself (its `sleep`), and `run.sh`
-exits with the live run's own code (board ab-v16.89).
+file of the run can name a process that took that pid later. After the SIGTERM, the guard takes a
+new process of the driver's tree into the run only if that process started before the SIGTERM (by its
+start time). In `all` mode, after a successful `up`, `down` runs in the script's EXIT trap, inside the
+driver's tree, so the guard stops no process of `down` itself (its `sleep`), and `run.sh` exits with
+the live run's own code (board ab-v16.89). When a step of `up` fails, `down` runs in the subshell of
+`up`, which is itself a process of the run: the guard stops that subshell and its `sleep`, and
+`run.sh` exits 130, not with the code of `up`.
 
 `run.sh` never takes the X displays 0, 90 (agentwatch's agent browser on taylor, the operator's),
 147, 190, 191 or 192, whatever `LIVE_DISPLAY` is (`RESERVED_DISPLAYS`, the same list as in
@@ -302,8 +307,9 @@ as true. Their frame requests arrive 34, 32, and 35 ms after release.
 The outer command exits 143 during cleanup. `down` signals the guard, which then
 terminates the sleep child that `down` uses to wait. With `set -e`, the shell
 exits 143. A shell-and-sleep reproduction and its signal trace confirm this cause.
-Board ab-v16.89 fixes it: after the SIGTERM, the guard takes no new process of
-the driver's tree into the run, so `run.sh` exits with the live run's code (1 here).
+Board ab-v16.89 fixes it: after the SIGTERM, the guard takes a new process of the
+driver's tree into the run only if it started before the SIGTERM, so `run.sh`
+exits with the live run's code (1 here).
 The complete run takes about 265 seconds; the driver takes about 261 seconds
 (an estimate). The guard measures cleanup at 0.1 seconds. The timeout does not
 fire. The guard and a process check confirm that every recorded process stops.
