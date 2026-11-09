@@ -1341,7 +1341,7 @@ test("the checks of the daemon's own ops: C10's table has them in the reference'
   assert.deepEqual([...rows.keys()], POINTER_CHECKS, "the rows are the checks, in their order");
   // Each "When" cell, word for word (review-29 note N1): the reference above follows these cells.
   const WHEN = {
-    "unknown op": "an unknown `daemon.` op; also the answer of a daemon from before this build, whose receiver answers it",
+    "unknown op": "an unknown pointer op; also the answer of a daemon from before this build, whose receiver answers it",
     "bad args": "the args are not exactly the fields above (for `daemon.pointerAt`: not `[]`); a limit of the path is broken; `at` is outside `0..width-1` and `0..height-1` of the request's `width` and `height`; or `notAfter` is negative, not an integer, or more than `POINTER_AHEAD_MAX_MS = 2000` ahead of the daemon's clock",
     "no display": "no unit Xvfb (also on the Mac) or no `xdotool`; or an X call failed or was killed",
     "wrong display": "`width` and `height` are not the running Xvfb's size",
@@ -2303,7 +2303,7 @@ test("C10 defines daemon.blocked with checked host and scope, a bounded wait and
     "`host` is a normalized host, in the same normal form as an allowlist entry (C5). `scope` is the kind `scope` (above) or `null`. Other args get `bad args`.",
     "The carrier answers it itself and never forwards it to the receiver.",
     "It calls the same `on_blocked(host, scope, from_host)` handler as the receiver's `blocked`, with `from_host = null`, under the same per-host limit.",
-    "It answers `ok: true` with empty data `{}`, also when the per-host limit suppresses a repeated notice.",
+    "It answers `ok: true` with empty data `{}`, also when the limit drops the event.",
     "The relay sends `BLOCKED_WAIT_MS = 250` and waits at most that long with its own timer. A failed answer or a timeout keeps the refusal's old text; a late answer changes nothing.",
     "An older carrier answers `unknown op`.",
     "The relay reports each off-list main-frame `Page.navigate` and `Target.createTarget` refusal, including the delayed `Target.createTarget` after a list change.",
@@ -2313,12 +2313,25 @@ test("C10 defines daemon.blocked with checked host and scope, a bounded wait and
     "It emits at most one prompt event per host per `BLOCKED_EVENT_MIN_S = 10` seconds.",
     "It keeps at most 256 hosts. If all 256 hosts are inside their 10 seconds, it drops a new host's event.",
     "If the relay's own args check fails, it sends nothing and keeps the old text.",
-    "The carrier may log the host, as for the receiver's notice, and never logs the scope.",
+    "The carrier logs the host once per emitted prompt event, from either source. The per-host limit bounds that log. The one-line-a-minute rule does not apply to it. Dropped events are not logged. The scope is never logged.",
+    "The 10 seconds of a host start at its last emitted prompt event; an event that the limit drops does not start them again. An event 10 seconds or more after it is emitted.",
+    "A block of the same host from another scope within the 10 seconds gives no prompt event.",
+    "The limit state is in the carrier's memory only and starts empty when the carrier starts.",
+    "The relay's timer starts when it creates the request, before sending or queuing it, so the 250 ms includes time in the queue.",
+    "The op has its own in-flight key `blocked`, so the shared key and the key `pointer` never hold it back.",
+    "On every platform it also accepts a relay report of a refused navigation, to make the operator's allow prompt.",
   ]) assert.ok(says(C10, text), text);
+  for (const [part, text] of [
+    [C4, "The carrier shares the per-host prompt limit of C10 `daemon.blocked` with this notice."],
+    [C11, "The navigation refusal reports `daemon.blocked` (C10, the daemon's own ops). Only an `ok` answer lets the relay name the Browser permission prompt in its refusal; otherwise it keeps the text in the row."],
+    [C10, "`daemon.blocked` has its own key `blocked`, so the shared key and the key `pointer` never hold it back."],
+    [C10, "The carrier may log the host of `daemon.blocked` as specified below."],
+    [C10, "For `daemon.blocked`, `previous` holds emitted prompt events only; `at` and `now` are milliseconds on the carrier's monotonic clock."],
+  ]) assert.ok(says(part, text), text);
 });
 
 test("daemon.blocked vectors check args before a prompt and keep older carriers compatible", () => {
-  assert.equal(bridge.blockedVectors?.length, 31, "the shared blocked vectors");
+  assert.equal(bridge.blockedVectors?.length, 43, "the shared blocked vectors");
   for (const v of bridge.blockedVectors) {
     assert.equal(v.req.op, "daemon.blocked", v.req.id);
     assert.equal(v.req.wait, 250, v.req.id);
@@ -2326,7 +2339,14 @@ test("daemon.blocked vectors check args before a prompt and keep older carriers 
     const error = v.olderCarrier ? "unknown op" : fits ? null : "bad args";
     assert.deepEqual(v.res, { t: "res", ch: "bridge", id: v.req.id,
       ...(error ? { ok: false, error } : { ok: true, data: {} }) }, v.req.id);
-    const recent = (v.previous ?? []).filter((x) => v.now - x.at < 10000);
+    const history = [...(v.previous ?? [])];
+    for (const attempt of v.attempts ?? []) {
+      const recent = history.filter((x) => attempt.at - x.at < 10000);
+      const emitted = !recent.some((x) => x.host === attempt.host) && new Set(recent.map((x) => x.host)).size < 256;
+      assert.equal(emitted, attempt.emitted, v.req.id + ": the earlier attempt");
+      if (emitted) history.push(attempt);
+    }
+    const recent = history.filter((x) => v.now - x.at < 10000);
     const limited = recent.some((x) => x.host === v.req.args?.[0]?.host) || new Set(recent.map((x) => x.host)).size >= 256;
     assert.deepEqual(v.notice, error || limited ? null : {
       host: v.req.args[0].host, scope: v.req.args[0].scope, from: null,
