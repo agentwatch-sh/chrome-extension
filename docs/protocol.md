@@ -2067,7 +2067,21 @@ ends).
     for the tab, when the command fails and the tab stays, or at a dropped close (above), the
     receiver ends its attach for the close (only when it made one: never the bridge's attachment)
     and calls `chrome.tabs.remove`. The fallback of a dropped close is one more op of the tab's
-    chain, after the command's answer, so that attach can end at once. When the command answered
+    chain, after the command's answer. If another close borrowed that attachment and its command
+    still runs after its time limit, the dropped close's fallback waits for that command's answer
+    before it detaches or calls `chrome.tabs.remove`, for at most one extra `REMOVAL_WAIT_MS`.
+    This wait stays outside the tab's chain and the removal queue: the chain operation returns
+    at once. Later closes of this tab and other tabs remain free to run. At the extra limit,
+    the fallback calls `chrome.tabs.remove` once, but keeps its attachment until the running
+    commands answer. The retry checks for running commands again inside the chain. If the
+    second close's fallback failed, these two closes make at most two `chrome.tabs.remove`
+    calls in all. A failed retry ends the dropped close as failed; it never retries again.
+    A command answer or `tabs.onRemoved` before the extra limit cancels its timer. A removed
+    tab gets no retry, and no retry timer stays after either result. The fallback skips a close
+    that already ended, also when it ended during the awaited detach.
+    A link reset clears the close's attachment ownership for each tab that it detaches. A later
+    fallback detaches only an attachment still owned by a close, so it keeps a new bridge attachment.
+    When the command answered
     with no error after its limit, the fallback ran already: a failed fallback then ends the close
     `REMOVAL_WAIT_MS` after that answer (the tab stays). A
     command that has not answered (it counts as failed after `REMOVAL_WAIT_MS`) still runs: the

@@ -70,6 +70,7 @@ export function makeFakeChrome() {
     pageResult: { local: 0, session: 0, idb_databases: 0, idb_records: 0, cache_entries: 0, errors: [] },
     manifest: { version: "0.1.0" },
     targets_: [],
+    trackAttachments: false, // model Chrome's attachment ownership for removal races
     sessionRules_: [],
     dynamicRules_: [],
     trackNewTabs: false,
@@ -224,8 +225,18 @@ export function makeFakeChrome() {
       remove: rec("cookies.remove", async (details) => ({ ...details })),
     },
     debugger: {
-      attach: rec("debugger.attach", async () => {}),
-      detach: rec("debugger.detach", async () => {}),
+      attach: rec("debugger.attach", async ({ tabId }) => {
+        if (!fake.trackAttachments) return;
+        const t = fake.targets_.find((x) => x.tabId === tabId);
+        if (!t) throw new Error("No target with given id found");
+        if (t.attached) throw new Error("Another debugger is already attached to the tab");
+        t.attached = true;
+      }),
+      detach: rec("debugger.detach", async ({ tabId }) => {
+        if (!fake.trackAttachments) return;
+        const t = fake.targets_.find((x) => x.tabId === tabId);
+        if (t) t.attached = false;
+      }),
       getTargets: rec("debugger.getTargets", async () => fake.targets_.map((t) => ({ ...t }))),
       sendCommand: rec("debugger.sendCommand", async (target, method, params) => {
         if (method === "Target.closeTarget") {

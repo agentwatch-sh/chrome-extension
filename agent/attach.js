@@ -133,7 +133,7 @@ export class Attachments {
   }
 
   detachForClose(tabId) {
-    this.#closing.delete(tabId);
+    if (!this.#closing.delete(tabId)) return Promise.resolve();
     return call(() => this.#chrome.debugger.detach({ tabId }));
   }
 
@@ -243,7 +243,10 @@ export class Attachments {
     this.holds.releaseAll();
     const known = [...this.#tabs];
     this.#tabs.clear();
-    const quiet = (tabId) => this.#queue(tabId, "detach", () => this.#detachNow(tabId)).catch(() => {});
+    const quiet = (tabId) => this.#queue(tabId, "detach", () => {
+      this.#closing.delete(tabId);
+      return this.#detachNow(tabId);
+    }).catch(() => {});
     const detaching = known.map(quiet);
     let targets = [];
     try {
