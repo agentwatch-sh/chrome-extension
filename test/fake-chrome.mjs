@@ -70,6 +70,9 @@ export function makeFakeChrome() {
     pageResult: { local: 0, session: 0, idb_databases: 0, idb_records: 0, cache_entries: 0, errors: [] },
     manifest: { version: "0.1.0" },
     targets_: [],
+    trackAttachments: false, // model Chrome's attachment ownership for removal races
+    trackDebuggerCommands: false, // detach fails running commands; an explicit detach sends no onDetach
+    debuggerCommands_: new Set(),
     sessionRules_: [],
     dynamicRules_: [],
     trackNewTabs: false,
@@ -80,7 +83,13 @@ export function makeFakeChrome() {
   const rec = (path, impl) => (...args) => {
     calls.push([path, args]);
     const f = Object.hasOwn(fake.impl, path) ? fake.impl[path] : impl;
-    return f ? f(...args) : undefined;
+    const result = f ? f(...args) : undefined;
+    if (path !== "debugger.sendCommand" || !fake.trackDebuggerCommands) return result;
+    let reject;
+    const detached = new Promise((res, rej) => (reject = rej));
+    const command = { tabId: args[0].tabId, reject };
+    fake.debuggerCommands_.add(command);
+    return Promise.race([result, detached]).finally(() => fake.debuggerCommands_.delete(command));
   };
   const port = {
     posted: [],
@@ -224,8 +233,23 @@ export function makeFakeChrome() {
       remove: rec("cookies.remove", async (details) => ({ ...details })),
     },
     debugger: {
-      attach: rec("debugger.attach", async () => {}),
-      detach: rec("debugger.detach", async () => {}),
+      attach: rec("debugger.attach", async ({ tabId }) => {
+        if (!fake.trackAttachments) return;
+        const t = fake.targets_.find((x) => x.tabId === tabId);
+        if (!t) throw new Error("No target with given id found");
+        if (t.attached) throw new Error("Another debugger is already attached to the tab");
+        t.attached = true;
+      }),
+      detach: rec("debugger.detach", async ({ tabId }) => {
+        if (!fake.trackAttachments) return;
+        const t = fake.targets_.find((x) => x.tabId === tabId);
+        if (t) t.attached = false;
+        if (fake.trackDebuggerCommands) {
+          for (const c of fake.debuggerCommands_) {
+            if (c.tabId === tabId) c.reject(new Error("Detached while handling command."));
+          }
+        }
+      }),
       getTargets: rec("debugger.getTargets", async () => fake.targets_.map((t) => ({ ...t }))),
       sendCommand: rec("debugger.sendCommand", async (target, method, params) => {
         if (method === "Target.closeTarget") {

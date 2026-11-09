@@ -54,6 +54,7 @@ class Close {
   closed = false;
   error = null;
   commandOpen = false; // a Target.closeTarget command went and has not answered
+  commandAnswer = null; // its answer, also after the command's time limit
   commandClosed = false; // that command answered with no error: the tab closes
   fallback = false; // the fallback ran
   fallbackError = null;
@@ -216,6 +217,7 @@ export class Removals {
       c.commandOpen = true;
       const sent = call(() => this.#chrome.debugger.sendCommand({ tabId }, "Target.closeTarget", { targetId }));
       const answered = sent.then(() => true, (e) => message(e) === DETACHED);
+      c.commandAnswer = answered;
       void answered.then((ok) => {
         c.commandOpen = false;
         if (ok) {
@@ -233,20 +235,37 @@ export class Removals {
     return this.#fallback(c, own, running);
   }
 
-  // The fallback ends the close's own attach first, but never while its
-  // command still runs (running: a detach makes that command fail): then only
-  // after the command answered. Then it calls chrome.tabs.remove.
+  // own: this close made the attachment. running is only a flag here: when
+  // truthy, chrome.tabs.remove goes now and detach cleanup waits outside the
+  // chain. Cleanup reads the live commands again and ends the attachment
+  // only when no close command of the tab is open.
   async #fallback(c, own, running = null) {
     if (c.done) return;
     const { tabId } = c;
     c.fallback = true;
-    if (own && running) void running.then(() => call(() => this.#att.detachForClose(tabId)).catch(() => {}));
+    if (own && running) this.#detachWhenIdle(tabId);
     else if (own) await call(() => this.#att.detachForClose(tabId)).catch(() => {});
+    if (c.done) return;
     const removing = call(() => this.#chrome.tabs.remove(tabId));
     void removing.then(() => c.end(true), (e) => {
       c.fallbackError = e;
       c.check();
     });
+  }
+
+  // The detach runs in the chain, but waits outside it. A later close can
+  // borrow the attachment during that wait: check every command again when
+  // the detach's chain op runs, rather than keeping a snapshot of commands.
+  #detachWhenIdle(tabId) {
+    void this.#att.inChain(tabId, () => {
+      const running = [...(this.#pending.get(tabId) ?? [])]
+        .filter((c) => c.commandOpen).map((c) => c.commandAnswer);
+      if (running.length) {
+        void Promise.all(running).then(() => this.#detachWhenIdle(tabId));
+        return;
+      }
+      return this.#att.detachForClose(tabId);
+    }).catch(() => {});
   }
 
   // The command answered with no error. When no tabs.onRemoved of the tab
@@ -262,9 +281,35 @@ export class Removals {
       if (c.done) return;
       c.commandClosed = false;
       if (c.fallback) c.check();
-      else void this.#att.inChain(c.tabId, () => this.#fallback(c, own)).catch(() => {});
+      else this.#watchedFallback(c, own);
     }, REMOVAL_WAIT_MS);
     void c.ended.then(() => this.#clock.clearTimer(handle));
+  }
+
+  #watchedFallback(c, own) {
+    if (c.done) return;
+    void this.#att.inChain(c.tabId, () => {
+      if (c.done) return;
+      // A later close can borrow this close's attach and pass its command
+      // limit. Wait outside the chain: a later close must still be free to run.
+      const running = [...(this.#pending.get(c.tabId) ?? [])]
+        .filter((x) => x.commandOpen).map((x) => x.commandAnswer);
+      if (running.length) {
+        const ready = Promise.race([c.ended, Promise.all(running)]);
+        // One extra limit, outside both queues. A command that never answers
+        // must neither hold later closes nor prevent this fallback forever.
+        void this.#limit(() => ready).then(() => {
+          if (c.done) return;
+          void this.#att.inChain(c.tabId, () => {
+            const stillRunning = [...(this.#pending.get(c.tabId) ?? [])]
+              .filter((x) => x.commandOpen).map((x) => x.commandAnswer);
+            return this.#fallback(c, own, stillRunning.length ? Promise.all(stillRunning) : null);
+          }).catch(() => {});
+        });
+        return;
+      }
+      return this.#fallback(c, own);
+    }).catch(() => {});
   }
 
   // ---- the items ----
