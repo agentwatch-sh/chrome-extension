@@ -2620,7 +2620,11 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
     B2), until Chrome answered a `mouseReleased` on any of them, or until the tab closes, the link
     changes, the client's connection closes, or the tab is detached; a frame's pointer input still
     makes the page's point unknown. Each page's kept geometry: its last usable geometry from the
-    relay's own reads (below).
+    relay's own reads (below). Each page's cover mark: another page came on top of it.
+    A new tab that comes on top also marks the old front page. The mark changes no last point.
+    The relay marks the leaving page before the raise, even when no X path plays or `at` is T.
+    A failed or late answer can still have raised the window.
+    A raise with an unknown front page sets no cover mark.
   - The activation step, with the paths on, one step at a time for all connections.
     `Page.bringToFront` and `Target.activateTarget` go through it too: they wait for the chain and for
     their tab's gate, as an input does, and answer after the step.
@@ -2693,8 +2697,9 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
     call whose window holds no tab of the client's scope gets `Browser window not found` and changes
     nothing. With the paths off or unknown it goes at once.
   - The catch-up keeps each page's pointer events continuous. When a client's next
-    `Input.dispatchMouseEvent` or `Input.dispatchDragEvent` for a page whose point is an X record is a
-    move more than 50 px from it, or a press or a wheel more than 2 px from it, the relay first sends CDP
+    `Input.dispatchMouseEvent` or `Input.dispatchDragEvent` for a page whose point is an X record
+    or has a cover mark is a move more than 50 px from it, or a press or a wheel more than 2 px from it,
+    the relay first sends CDP
     `mouseMoved` events (no button) along a path of the same generator from the recorded point to the
     event's point, with C10's path limits (else no catch-up), each point clamped 2 px inside the page's
     content box as in step 4 (from the page's kept geometry, else a read, which keeps no geometry;
@@ -2702,8 +2707,10 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
     own point, which stays where the client sent it. The relay decides it when the event leaves the
     tab's gate, against the page's point at that time. For a move, the client's move is the path's
     last step; for another event, the path ends with a move at its point. The catch-up
-    runs once after each X record: never between a client's own events, and never while the page holds
-    a button. It is a step of the tab's gate: the client's event and the tab's later calls wait behind
+    runs once after each X record or cover. The first pointer input consumes the cover mark; unrelated calls keep it.
+    Another record or cover is necessary for another catch-up between the client's events.
+    The relay sends no catch-up while the page holds a button.
+    It is a step of the tab's gate: the client's event and the tab's later calls wait behind
     it. A tab has at most `CATCH_UP_MAX_UNANSWERED = 4` catch-up moves without an answer: no catch-up
     starts while the tab has unanswered catch-up moves, and when a move is due while 4 wait (a page with
     an open dialog answers none), the catch-up stops and the client's event goes as with the paths off.
@@ -2774,12 +2781,11 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
     ab-v16.71: a press held 3 s, whose step ended at its limit with no path, gave the entering page a
     jump of 304 px). With an older daemon (`unknown op`, `not connected`) the paths stay off. On the Mac
     the relay sends no `daemon.` op.
-  - Movement 0 after a page loses the pointer (measured in board ab-v16.71; its follow-up is board
-    ab-v16.76): when another window comes over a page under the pointer, the page gets `mouseout`, and
-    Chrome then gives its next pointer event a movement of 0. A client's raw move into such a page
-    (Playwright sends its move before its press, so the move reaches a page that is still behind
-    another window) is then an unexplained change when the page's point is no X record; the catch-up
-    covers it only after an X record.
+  - Movement 0 after a page loses the pointer (measured in board ab-v16.71; fixed for known raises
+    by board ab-v16.76): Chrome gives the covered page's next event movement 0. The cover mark now
+    applies the catch-up even when its point is a client point. The same thresholds, path limits, held-button
+    rule and per-tab bound of 4 unanswered catch-up moves apply. An unknown point still has no catch-up.
+    A window change that the relay cannot observe remains outside this rule.
 
 **Permissions and content settings.**
 
