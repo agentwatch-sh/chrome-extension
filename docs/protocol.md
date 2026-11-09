@@ -1659,8 +1659,9 @@ are in the agent pointer design (agent-browser
   The limit uses one shared state for the receiver's `blocked` notice and `daemon.blocked`, keyed by
   the host only. It emits at most one prompt event per host per `BLOCKED_EVENT_MIN_S = 10` seconds.
   The 10 seconds of a host start at its last emitted prompt event; an event that the limit drops
-  does not start them again. An event 10 seconds or more after it is emitted. A block of the same
-  host from another scope within the 10 seconds gives no prompt event. It keeps at most 256 hosts.
+  does not start them again. An event that comes 10 seconds or more after the host's last emitted
+  prompt event is emitted. A block of the same host from another scope within the 10 seconds gives
+  no prompt event. It keeps at most 256 hosts.
   If all 256 hosts are inside their 10 seconds, it drops a new host's event. The limit state is in
   the carrier's memory only and starts empty when the carrier starts.
 
@@ -1716,7 +1717,7 @@ are in the agent pointer design (agent-browser
 
 | Text | Op | When | The pointer |
 | --- | --- | --- | --- |
-| `unknown op` | both | an unknown pointer op; also the answer of a daemon from before this build, whose receiver answers it | not moved |
+| `unknown op` | both | an unknown daemon. op (the pointer ops and daemon.blocked are known); also the answer of a daemon from before this build, whose receiver answers it | not moved |
 | `bad args` | both | the args are not exactly the fields above (for `daemon.pointerAt`: not `[]`); a limit of the path is broken; `at` is outside `0..width-1` and `0..height-1` of the request's `width` and `height`; or `notAfter` is negative, not an integer, or more than `POINTER_AHEAD_MAX_MS = 2000` ahead of the daemon's clock | not moved |
 | `no display` | both | no unit Xvfb (also on the Mac) or no `xdotool`; or an X call failed or was killed | place unknown |
 | `wrong display` | move | `width` and `height` are not the running Xvfb's size | not moved |

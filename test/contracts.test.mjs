@@ -1341,7 +1341,7 @@ test("the checks of the daemon's own ops: C10's table has them in the reference'
   assert.deepEqual([...rows.keys()], POINTER_CHECKS, "the rows are the checks, in their order");
   // Each "When" cell, word for word (review-29 note N1): the reference above follows these cells.
   const WHEN = {
-    "unknown op": "an unknown pointer op; also the answer of a daemon from before this build, whose receiver answers it",
+    "unknown op": "an unknown daemon. op (the pointer ops and daemon.blocked are known); also the answer of a daemon from before this build, whose receiver answers it",
     "bad args": "the args are not exactly the fields above (for `daemon.pointerAt`: not `[]`); a limit of the path is broken; `at` is outside `0..width-1` and `0..height-1` of the request's `width` and `height`; or `notAfter` is negative, not an integer, or more than `POINTER_AHEAD_MAX_MS = 2000` ahead of the daemon's clock",
     "no display": "no unit Xvfb (also on the Mac) or no `xdotool`; or an X call failed or was killed",
     "wrong display": "`width` and `height` are not the running Xvfb's size",
@@ -2314,7 +2314,7 @@ test("C10 defines daemon.blocked with checked host and scope, a bounded wait and
     "It keeps at most 256 hosts. If all 256 hosts are inside their 10 seconds, it drops a new host's event.",
     "If the relay's own args check fails, it sends nothing and keeps the old text.",
     "The carrier logs the host once per emitted prompt event, from either source. The per-host limit bounds that log. The one-line-a-minute rule does not apply to it. Dropped events are not logged. The scope is never logged.",
-    "The 10 seconds of a host start at its last emitted prompt event; an event that the limit drops does not start them again. An event 10 seconds or more after it is emitted.",
+    "The 10 seconds of a host start at its last emitted prompt event; an event that the limit drops does not start them again. An event that comes 10 seconds or more after the host's last emitted prompt event is emitted.",
     "A block of the same host from another scope within the 10 seconds gives no prompt event.",
     "The limit state is in the carrier's memory only and starts empty when the carrier starts.",
     "The relay's timer starts when it creates the request, before sending or queuing it, so the 250 ms includes time in the queue.",
