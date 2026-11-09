@@ -59,7 +59,7 @@ agent-browser `6bb6838`; its build decisions are in agent-browser PR #68, board 
 and C11. When a window comes forward, the X server gives its page a
 real pointer event at the X pointer. So the daemon, which owns the agent display, moves the X pointer at
 the relay's request, along a path that the relay computes, before a window comes forward. The daemon
-answers the two ops itself (C10, the daemon's own ops), so the receiver does not change. agentwatch
+answers the pointer ops itself (C10, the daemon's own ops), so the receiver does not change. agentwatch
 builds the daemon side in its task age-0kh.28 (aw-lead), and the relay its side in board ab-v16.71 (C11,
 the pointer at an activation). Until the daemon side ships, a `daemon.` op goes to the receiver as any
 op, the receiver answers `unknown op`, and the relay turns its paths off: it is then exactly as before.
@@ -175,6 +175,7 @@ One JSON object per native message. On the daemon's socket each message is one N
   C10);
   `{"t":"blocked","tab":<tab id>,"host":"<host>","scope":"<scope>","from":"<host>"}`, with
   `"scope":null` for a tab of no scope and `"from":null` for a tab with no listed host (C5, `blocked`;
+  the carrier shares the per-host prompt limit of C10 `daemon.blocked` with this notice;
   `from` since board ab-v16.33: the receiver from version 0.3.3 sends it, and a daemon that reads only
   `tab`, `host` and `scope` ignores it). `from` is the host of the tab's last main-frame commit that
   C5's guard let stay, so a host that the guard sent away never becomes `from` (ab-lead, PR #23
@@ -1607,11 +1608,15 @@ hold it; the last bullet gives the numbers and what the relay does about it.
     link up, and the sweep still closes it at its scope's end (C5).
 - No side logs the args, the results or the event params of the bridge: they can contain page
   content and sign-in values. A log line contains an op, a CDP method, a tab id, a size or a time.
-  No side logs a point of a `daemon.` op (the daemon's own ops, below).
+  No side logs a point of a `daemon.` op (the daemon's own ops, below). The carrier may log the
+  host of `daemon.blocked` as specified below.
 
 **The daemon's own ops (board ab-v16.70).** On Linux the daemon owns the unit's Xvfb, the agent
-display. At the relay's request it moves the X pointer along a path that the relay computed (C11, the
-pointer at an activation), or reads the pointer's position. No agent makes an X call: only the relay,
+display. At the relay's request it moves the X pointer along a path that the relay computed (C11,
+the
+pointer at an activation), or reads the pointer's position. On every platform it also accepts
+a relay report of a refused navigation, to make the operator's allow prompt. No agent makes an X
+call: only the relay,
 the daemon's own child, writes these requests, on its standard output. The reasons are in the agent
 pointer design (agent-browser `docs/superpowers/specs/2026-11-06-agent-pointer-move-design.md`,
 sections 2 and 4).
@@ -1636,19 +1641,32 @@ sections 2 and 4).
   client method of C11 directly calls a `daemon.` op. A navigation refusal can cause the relay to
   report `daemon.blocked`.
 - `daemon.blocked`, args `[block]`, where `block` has exactly the keys `host` and `scope`.
-  `host` is a normalized host, in the same normal form as an allowlist entry (C5). `scope` is a
-  string or `null`. Other args get `bad args`. The carrier answers it itself and never forwards it
+  `host` is a normalized host, in the same normal form as an allowlist entry (C5).
+  `scope` is the kind `scope` (above) or `null`. Other args get `bad args`. The carrier answers it
+  itself and never forwards it
   to the receiver. It calls the same `on_blocked(host, scope, from_host)` handler as the receiver's
-  `blocked`, with `from_host = null`, under the same per-host limit. It answers `ok: true` with empty
+  `blocked`, with `from_host = null`, under the same per-host limit. It answers `ok: true` with
+  empty
   data `{}`, also when the per-host limit suppresses a repeated notice. An older carrier answers
   `unknown op`.
   The relay reports each off-list main-frame `Page.navigate` and `Target.createTarget` refusal,
-  including a delayed navigation after a list change. The relay checks the args before sending.
+  including the delayed `Target.createTarget` after a list change. The relay checks the args before
+  sending.
+  If the relay's own args check fails, it sends nothing and keeps the old text.
   The relay sends `BLOCKED_WAIT_MS = 250` and waits at most that long with its own timer. A failed
   answer or a timeout keeps the refusal's old text; a late answer changes nothing. Only an `ok`
   answer lets the relay name the Browser permission prompt in its refusal. The op has its own
-  in-flight key `blocked`. It uses no X call and does not wait for a pointer op.
-  The vectors are `blockedVectors` in `test/vectors/bridge.json`; bad request b51 checks an older receiver.
+  in-flight key `blocked`, so the shared key and the key `pointer` never hold it back.
+  It uses no X call and does not wait for a pointer op.
+  Its only answers are `ok`, `bad args`, and `unknown op` from an older carrier.
+  The limit uses one shared state for the receiver's `blocked` notice and `daemon.blocked`, keyed
+  by the host only. It emits at most one prompt event per host per `BLOCKED_EVENT_MIN_S = 10`
+  seconds.
+  It keeps at most 256 hosts. If all 256 hosts are inside their 10 seconds, it drops a new host's
+  event.
+  The carrier may log the host, as for the receiver's notice, and never logs the scope.
+  The vectors are `blockedVectors` in `test/vectors/bridge.json`; bad request b51 checks an older
+  receiver.
 - `daemon.pointerAt`, args `[]`: one `xdotool getmouselocation`, with a timeout of
   `POINTER_READ_MS = 1000`. The answer, `{"x":<int>,"y":<int>,"width":<int>,"height":<int>,"views":<int>}`,
   gives the pointer's position, the running Xvfb's size, and `views`, the count of the operator's
@@ -1684,7 +1702,9 @@ sections 2 and 4).
   Each number of `move` is an integer: a JSON number with no fraction part (`true` and `false` are no
   numbers). A distance is Euclidean: two points are at most `d` px apart when
   `dx*dx + dy*dy <= d*d`, in integers.
-- The checks, in this order. The first check that fails gives the answer, and the daemon makes no
+- For `daemon.pointerAt` and `daemon.movePointer` only, the checks run in this order.
+  In the table, `both` means these two pointer ops. The first check that fails gives the answer, and
+  the daemon makes no
   later X call. `no display` for a failed or killed X call comes at that call: the read (of either
   op) or the play.
 
@@ -1734,15 +1754,16 @@ sections 2 and 4).
   `POINTER_KILL_MS` plus `POINTER_SLACK_MS = 200` (1565 ms for the example above). The relay sends
   that `wait`, and waits at most that long with its own timer: then it goes on with no answer, takes
   the place as unknown, and drops a late answer. No path can still play then: it started at the
-  latest at `notAfter`, and the daemon killed it `POINTER_KILL_MS` after its total time. Both ops have
+  latest at `notAfter`, and the daemon killed it `POINTER_KILL_MS` after its total time. The pointer ops have
   the in-flight key `pointer` (parts and sizes, above).
 - The logs. The daemon logs the op, the text and a count: one line for each text a minute, never a
-  point. The relay logs each text at most once in 5 minutes.
+  point. The relay logs each text at most once in 5 minutes. The host logging exception for
+  `daemon.blocked` is above.
 - The vectors: `daemonOps`, `pointerConstants`, `pointerWorld` and `pointerVectors` in
   `test/vectors/bridge.json`, and the bad requests b49 and b50 (a `daemon.` op at the receiver gets
   `unknown op`). Each pointer vector gives the daemon's state, the request, the answer, whether the
   daemon reads the pointer, and the lines that it plays. The daemon's and the relay's tests use the
-  same vectors.
+  same vectors. `blockedVectors` and bad request b51 cover `daemon.blocked`.
 
 **Each tab's scope (board ab-v16.23).** The receiver keeps the scope of each tab, so that each tab is
 blocked by its own list (C5; the per-scope design, sections 4 and 5).
@@ -2796,7 +2817,7 @@ the relay keeps its tabs until board task ab-v16.27 measures the Mac.
     so it is a jump when the X pointer is more than 100 px from that point (measured in board
     ab-v16.71: a press held 3 s, whose step ended at its limit with no path, gave the entering page a
     jump of 304 px). With an older daemon (`unknown op`, `not connected`) the paths stay off. On the Mac
-    the relay sends no `daemon.` op.
+    the relay sends no pointer op (`daemon.pointerAt` or `daemon.movePointer`).
   - Movement 0 after a page loses the pointer (measured in board ab-v16.71; fixed for known raises
     by board ab-v16.76): Chrome gives the covered page's next event movement 0. The cover mark now
     applies the catch-up even when its point is a client point. The same thresholds, path limits, held-button
@@ -2947,6 +2968,9 @@ sections 6 and 8.4):
 | A result above `MAX_RESULT` | The receiver or the daemon answered `too large` | `The answer of <method> is larger than the agent browser's link allows (128 MiB).` |
 | A command whose bridge request is above `MAX_REQUEST` | Any | `The command is too large for the agent browser: <method>.` |
 | A deadline (C10) | The receiver or the daemon answered `timeout` | `The agent browser did not answer <method> in <seconds> s.` |
+
+The navigation refusal reports `daemon.blocked` (C10, the daemon's own ops). Only an `ok` answer
+lets the relay append the Browser permission prompt text; otherwise it keeps the text in the row.
 
 - A tab's main frame: a `Page.navigate` with no `frameId`, or with the `frameId` of the tab's own
   target (Playwright's `goto` sends the main frame's id). A frame's navigation is not refused (O11).

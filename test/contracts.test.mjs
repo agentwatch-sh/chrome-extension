@@ -1232,6 +1232,8 @@ function daemonAnswer(req, w, skip = new Set()) {
   const res = (body) => (body === null ? null : { t: "res", ch: "bridge", id: req.id, ...body });
   const no = (error, extra = {}) => ({ res: res({ ok: false, error, ...(extra.data ? { data: extra.data } : {}) }), read: extra.read ?? false, script: null });
   if (!DAEMON_OPS.has(req.op)) return no("unknown op");
+  if (req.op === "daemon.blocked") return blockedArgsFit(req.args)
+    ? { res: res({ ok: true, data: {} }), read: false, script: null } : no("bad args");
   const move = req.op === "daemon.movePointer";
   const args = req.args ?? [];
   const m = Array.isArray(args) ? args[0] : undefined;
@@ -1290,7 +1292,7 @@ test("C10 states the daemon's own ops (board ab-v16.70): the prefix, its place, 
     "and sends its clock plus `POINTER_START_MS = 300`. The daemon reads its clock as `time.monotonic_ns() // 1000000` (injected for its tests). The daemon starts no path after `notAfter`.",
     "Each number of `move` is an integer: a JSON number with no fraction part (`true` and `false` are no numbers). A distance is Euclidean: two points are at most `d` px apart when `dx*dx + dy*dy <= d*d`, in integers.",
     // The order and the play.
-    "The checks, in this order. The first check that fails gives the answer, and the daemon makes no later X call.",
+    "For `daemon.pointerAt` and `daemon.movePointer` only, the checks run in this order. In the table, `both` means these two pointer ops. The first check that fails gives the answer, and the daemon makes no later X call.",
     "`no display` for a failed or killed X call comes at that call: the read (of either op) or the play.",
     "the daemon plays nothing and answers `pointer moved` with `data` `{\"x\":<int>,\"y\":<int>,\"views\":<int>}`, the read position and the current `views`. The daemon keeps no state of the place.",
     "Else it checks `notAfter` against its clock after the read, so a slow read ends in `too late`, never in a late play.",
@@ -1589,7 +1591,7 @@ test("C11 states the pointer at an activation (board ab-v16.70): the paths' stat
     // No path, the fallback and an older daemon (review-63e note C).
     "When the relay sends no path, that activation is as with the paths off",
     "(the first activation after the relay's start, after a link change, and after the paths turn on)",
-    "With an older daemon (`unknown op`, `not connected`) the paths stay off. On the Mac the relay sends no `daemon.` op.",
+    "With an older daemon (`unknown op`, `not connected`) the paths stay off. On the Mac the relay sends no pointer op (`daemon.pointerAt` or `daemon.movePointer`).",
     // The links from the existing text.
     "With the paths on, the activation has the steps and the limits of the pointer at an activation (below).",
     "With the paths on (Linux), both go through the activation step (the pointer at an activation, below).",
@@ -2291,26 +2293,32 @@ function blockedArgsFit(args) {
   if (!Array.isArray(args) || args.length !== 1 || !isObj(args[0])) return false;
   const b = args[0];
   return Object.keys(b).length === 2 && Object.hasOwn(b, "host") && Object.hasOwn(b, "scope")
-    && normalized(b.host) && (b.scope === null || typeof b.scope === "string");
+    && normalized(b.host) && (b.scope === null || validName(b.scope));
 }
 
 test("C10 defines daemon.blocked with checked host and scope, a bounded wait and the carrier's prompt", () => {
   assert.ok(bridge.daemonOps.some((o) => o.op === "daemon.blocked"));
   for (const text of [
     "`daemon.blocked`, args `[block]`, where `block` has exactly the keys `host` and `scope`.",
-    "`host` is a normalized host, in the same normal form as an allowlist entry (C5). `scope` is a string or `null`. Other args get `bad args`.",
+    "`host` is a normalized host, in the same normal form as an allowlist entry (C5). `scope` is the kind `scope` (above) or `null`. Other args get `bad args`.",
     "The carrier answers it itself and never forwards it to the receiver.",
     "It calls the same `on_blocked(host, scope, from_host)` handler as the receiver's `blocked`, with `from_host = null`, under the same per-host limit.",
     "It answers `ok: true` with empty data `{}`, also when the per-host limit suppresses a repeated notice.",
     "The relay sends `BLOCKED_WAIT_MS = 250` and waits at most that long with its own timer. A failed answer or a timeout keeps the refusal's old text; a late answer changes nothing.",
     "An older carrier answers `unknown op`.",
-    "The relay reports each off-list main-frame `Page.navigate` and `Target.createTarget` refusal, including a delayed navigation after a list change.",
+    "The relay reports each off-list main-frame `Page.navigate` and `Target.createTarget` refusal, including the delayed `Target.createTarget` after a list change.",
     "Only an `ok` answer lets the relay name the Browser permission prompt in its refusal.",
+    "Its only answers are `ok`, `bad args`, and `unknown op` from an older carrier.",
+    "The limit uses one shared state for the receiver's `blocked` notice and `daemon.blocked`, keyed by the host only.",
+    "It emits at most one prompt event per host per `BLOCKED_EVENT_MIN_S = 10` seconds.",
+    "It keeps at most 256 hosts. If all 256 hosts are inside their 10 seconds, it drops a new host's event.",
+    "If the relay's own args check fails, it sends nothing and keeps the old text.",
+    "The carrier may log the host, as for the receiver's notice, and never logs the scope.",
   ]) assert.ok(says(C10, text), text);
 });
 
 test("daemon.blocked vectors check args before a prompt and keep older carriers compatible", () => {
-  assert.ok(bridge.blockedVectors?.length >= 15, "the shared blocked vectors");
+  assert.equal(bridge.blockedVectors?.length, 31, "the shared blocked vectors");
   for (const v of bridge.blockedVectors) {
     assert.equal(v.req.op, "daemon.blocked", v.req.id);
     assert.equal(v.req.wait, 250, v.req.id);
@@ -2318,10 +2326,15 @@ test("daemon.blocked vectors check args before a prompt and keep older carriers 
     const error = v.olderCarrier ? "unknown op" : fits ? null : "bad args";
     assert.deepEqual(v.res, { t: "res", ch: "bridge", id: v.req.id,
       ...(error ? { ok: false, error } : { ok: true, data: {} }) }, v.req.id);
-    assert.deepEqual(v.notice, error || v.limited ? null : {
+    const recent = (v.previous ?? []).filter((x) => v.now - x.at < 10000);
+    const limited = recent.some((x) => x.host === v.req.args?.[0]?.host) || new Set(recent.map((x) => x.host)).size >= 256;
+    assert.deepEqual(v.notice, error || limited ? null : {
       host: v.req.args[0].host, scope: v.req.args[0].scope, from: null,
     }, v.req.id);
   }
   assert.ok(bridge.blockedVectors.some((v) => v.olderCarrier));
-  assert.ok(bridge.blockedVectors.some((v) => v.limited && v.res.ok));
+  assert.ok(bridge.blockedVectors.some((v) => v.previous?.length && v.notice === null && v.res.ok));
+  for (const v of bridge.blockedVectors.filter((v) => !v.olderCarrier)) {
+    assert.deepEqual(daemonAnswer(v.req, { ...bridge.pointerWorld, xvfb: null }).res, v.res, v.req.id + ": no pointer checks");
+  }
 });
