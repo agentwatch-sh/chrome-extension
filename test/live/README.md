@@ -61,7 +61,7 @@ both repositories), and the same lock file:
    closes every fd that it inherited, from 3 up (for example heavy.lock's fd under `flock`), so it
    holds no outer lock. `HARNESS_LOCK` names another lock file, for the tests only: such a guard says
    so on stderr, and that harness waits only for harnesses with the same `HARNESS_LOCK`. The agents'
-   outer lock, `flock /home/selden/.cache/ab-lead/heavy.lock timeout 1200 <command>`, is always the
+   outer lock, the box's shared heavy-job lock, if it has one, around a whole job, is always the
    outer one: no harness takes it, so the two locks cannot deadlock. This repository has no fuzz or
    mutation runner; the agents' runners outside it keep the manager's cap (at most 2 fuzz runs at
    once, each under heavy.lock).
@@ -172,7 +172,7 @@ Chromium start of the agent. The sender (operator) side stays on Chromium.
 ## The worker removal of the recorded origins: `workers.py`
 
 `workers.py` is the live check of board task ab-v16.74 (C5, the worker removal of the recorded
-origins; the operator's answer ab-214, review-30 and ab-lead's decisions). It repeats the measure of
+origins; the operator's answer ab-214, review-30 and the lead's decisions). It repeats the measure of
 board task ab-v16.73: a service worker of a host on no list, registered from the operator's marked
 tab with `"*"`, answers a navigation of a client-attached tab of scope A with its own page, or with
 a cached signed-in page (a made-up cookie). It is one Python file (standard library only) with its

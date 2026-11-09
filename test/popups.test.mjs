@@ -34,8 +34,8 @@ const created = (s, tabId, from = 0) => s.evs().slice(from).filter((e) => e.ev =
 const reloads = (s) => s.f.callsTo("tabs.reload");
 const paused = (requestId, tabId = 9, url = URL_A) => ({ requestId, request: { url, method: "GET" }, frameId: "F" + tabId, resourceType: "Document" });
 
-// The receiver with the vector's set_scopes (ab-lead has list md: a.example; md-gone has none) and a
-// fixed clock. Tab 7 has scope ab-lead (from the copy), tab 3 has no scope.
+// The receiver with the vector's set_scopes (my-repo has list md: a.example; md-gone has none) and a
+// fixed clock. Tab 7 has scope my-repo (from the copy), tab 3 has no scope.
 async function popupSetup({ eager = false, tabs = [blank(7), blank(3)], copy = { "tab:7": B.scope }, scopes = B.setScopes, targets = [], chromeEdit } = {}) {
   const s = await startReceiver({ tabs, copy, scopes, targets, chromeEdit });
   let now = 1000;
@@ -551,7 +551,7 @@ test("a page that commits while the retry waits: the first request stays blocked
   assert.equal(s.notices().length, 1);
 });
 
-// ab-lead's decision on PR #21's question 1: Chrome's tabs.reload of a blocked POST opens its "Confirm
+// The lead's decision on PR #21's question 1: Chrome's tabs.reload of a blocked POST opens its "Confirm
 // Form Resubmission" dialog, which waits for a person. So the retry reloads a GET only (the method from
 // webRequest), and a form that posts into a new tab fails closed with its notice, with no dialog.
 test("the retry reloads a GET only: a blocked POST (a form into a new tab) gets no reload and sends its notice at the decision, which ends the hold", async () => {

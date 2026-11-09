@@ -166,11 +166,11 @@ test("bridge.tabScopes is C10's op, and its request vector gets the vector's res
   assert.deepEqual(OPS[o.op].kinds, o.kinds);
   assert.equal(OPS[o.op].required, o.required);
   assert.equal(OPS[o.op].wait, V.constants[o.defaultWait]);
-  const s = await setup({ tabs: [{ id: 9, windowId: 2, url: "about:blank" }, { id: 12, windowId: 2, url: "about:blank" }], copy: { "tab:9": "ab-lead", "tab:12": "ab-lead" } });
+  const s = await setup({ tabs: [{ id: 9, windowId: 2, url: "about:blank" }, { id: 12, windowId: 2, url: "about:blank" }], copy: { "tab:9": "my-repo", "tab:12": "my-repo" } });
   await requestVectors(s, V.requests.filter(newOp));
 });
 
-// tabs.create of tab 8 and windows.create of tab 9 (scope ab-lead); tabs.remove of tab 8 by the
+// tabs.create of tab 8 and windows.create of tab 9 (scope my-repo); tabs.remove of tab 8 by the
 // receiver's close (debugger.getTargets gives target D8E9F0 for tab 8; tab 8 is open with tab 7, so
 // the window rule opens no about:blank; a tabs.onRemoved of tab 8 comes, as the fake timers never
 // fire); debugger.detach, tabs.get and bridge.release of tab 13 of the orphan set.
@@ -187,8 +187,8 @@ test("each request vector of the per-scope build: tabs.create and windows.create
     },
   });
   assert.ok(!s.f.callsTo("tabs.remove").some(([id]) => id === 8), "no chrome.tabs.remove of tab 8: the receiver's close");
-  assert.deepEqual(s.r.map.list(), [{ tabId: 9, scope: "ab-lead" }], "tab 8 left the map at its close; tab 9 has its scope");
-  assert.deepEqual(s.f.storage_.session, { "tab:9": "ab-lead" }, "the copy");
+  assert.deepEqual(s.r.map.list(), [{ tabId: 9, scope: "my-repo" }], "tab 8 left the map at its close; tab 9 has its scope");
+  assert.deepEqual(s.f.storage_.session, { "tab:9": "my-repo" }, "the copy");
 });
 
 async function badRequestVectors(s, vectors) {
@@ -210,8 +210,8 @@ const BAD_TABS = [
 test("each bad request vector gets its error, and its op never reaches Chrome", async () =>
   badRequestVectors(await setup({ tabs: [{ id: 7, windowId: 1, url: "https://a.example/" }, ...BAD_TABS] }), V.badRequests.filter((v) => !scoped(v) && !v.perScope)));
 
-// The setup applies the vector's setScopes (md-gone has no list, ab-lead has md) and keeps a positive
-// tabs.create of ab-lead, so a receiver that ignored set_scopes would fail (review-17 L8). Tab 13 is in
+// The setup applies the vector's setScopes (md-gone has no list, my-repo has md) and keeps a positive
+// tabs.create of my-repo, so a receiver that ignored set_scopes would fail (review-17 L8). Tab 13 is in
 // the orphan set.
 test("each bad request vector of the per-scope build: tabs.create and windows.create (the scope arg, no list), the orphan set", async () => {
   const s = await orphanSetup({ tabs: BAD_TABS });
@@ -249,11 +249,11 @@ test("the kinds of args: each case fits or gets bad args", async () => {
   const s = await setup({ tabs: [{ id: 1, url: "about:blank" }] });
   const fits = [
     ["debugger.getTargets", undefined],
-    ["tabs.create", [{ url: "about:blank", active: true, windowId: 0, index: 2 }, "ab-lead"]],
-    ["tabs.create", [{ url: "about:blank" }, "ab-lead"]],
+    ["tabs.create", [{ url: "about:blank", active: true, windowId: 0, index: 2 }, "my-repo"]],
+    ["tabs.create", [{ url: "about:blank" }, "my-repo"]],
     ["tabs.query", [{ active: true, anything: [1] }]],
     ["windows.get", [1, { populate: true }]],
-    ["windows.create", [{ url: "about:blank", left: -10, top: 0, width: 800, height: 600, state: "normal", focused: false }, "ab-lead"]],
+    ["windows.create", [{ url: "about:blank", left: -10, top: 0, width: 800, height: 600, state: "normal", focused: false }, "my-repo"]],
     ["windows.create", [{ url: "about:blank" }, "A.b_c-9"]],
     ["windows.update", [1, { state: "maximized" }]],
     ["contentSettings.set", ["camera", { primaryPattern: "*://*.a.example/*", setting: "block" }]],
@@ -284,14 +284,14 @@ test("the kinds of args: each case fits or gets bad args", async () => {
     ["debugger.sendCommand", [{ tabId: 1 }, "Page.enable", null]],
     // A new tab or window opens at about:blank only, and names its scope (C10).
     ["tabs.create", [{ url: "about:blank" }]],
-    ["tabs.create", [{ url: "about:blank#x" }, "ab-lead"]],
-    ["tabs.create", [{ url: "about:newtab" }, "ab-lead"]],
-    ["tabs.create", [{ url: "data:text/html,x" }, "ab-lead"]],
-    ["tabs.create", [{ url: "file:///etc/passwd" }, "ab-lead"]],
-    ["tabs.create", [{ url: "https:a.example" }, "ab-lead"]],
-    ["tabs.create", [{ url: "HTTPS://A.example/x?y#z" }, "ab-lead"]],
-    ["tabs.create", [{ url: "about:blank", windowId: -2 }, "ab-lead"]],
-    ["tabs.create", [{ url: "about:blank", active: 1 }, "ab-lead"]],
+    ["tabs.create", [{ url: "about:blank#x" }, "my-repo"]],
+    ["tabs.create", [{ url: "about:newtab" }, "my-repo"]],
+    ["tabs.create", [{ url: "data:text/html,x" }, "my-repo"]],
+    ["tabs.create", [{ url: "file:///etc/passwd" }, "my-repo"]],
+    ["tabs.create", [{ url: "https:a.example" }, "my-repo"]],
+    ["tabs.create", [{ url: "HTTPS://A.example/x?y#z" }, "my-repo"]],
+    ["tabs.create", [{ url: "about:blank", windowId: -2 }, "my-repo"]],
+    ["tabs.create", [{ url: "about:blank", active: 1 }, "my-repo"]],
     ["tabs.create", [{ url: "about:blank" }, "-ab"]],
     ["tabs.create", [{ url: "about:blank" }, "x".repeat(65)]],
     ["tabs.create", [{ url: "about:blank" }, null]],
@@ -299,9 +299,9 @@ test("the kinds of args: each case fits or gets bad args", async () => {
     ["tabs.update", [1, { active: "yes" }]],
     ["tabs.update", [1, { active: true, muted: true }]],
     ["windows.create", [{ url: "about:blank" }]],
-    ["windows.create", [{ url: "http://a.example:8080/" }, "ab-lead"]],
-    ["windows.create", [{ url: "about:blank", width: "800" }, "ab-lead"]],
-    ["windows.create", [{ url: "about:blank" }, "ab lead"]],
+    ["windows.create", [{ url: "http://a.example:8080/" }, "my-repo"]],
+    ["windows.create", [{ url: "about:blank", width: "800" }, "my-repo"]],
+    ["windows.create", [{ url: "about:blank" }, "my repo"]],
     ["windows.update", [1, { focused: 1 }]],
     ["windows.update", [1, { type: "popup" }]],
     ["contentSettings.set", ["location", { primaryPattern: "https://*.example/*", setting: "allow" }]],

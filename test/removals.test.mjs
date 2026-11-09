@@ -341,7 +341,7 @@ test("a tabs.create during a sweep that takes its scope's list: no entry, the ne
   s.f.impl["tabs.create"] = () => new Promise((r) => (made = r));
   s.send({ t: "req", id: "c", op: "tabs.create", args: [{ url: "about:blank" }, B.scope] });
   await flush();
-  await s.set({ lists: B.setScopes.lists, scopes: { "md-gone": null }, default: null }); // the session of ab-lead ended
+  await s.set({ lists: B.setScopes.lists, scopes: { "md-gone": null }, default: null }); // The session of my-repo ended
   s.f.tabs_.push(blank(40));
   s.f.targets_.push(target(40));
   made({ id: 40, windowId: 1, url: "", pendingUrl: "about:blank" });

@@ -1,5 +1,5 @@
 // The worker removal of the recorded origins (C5; board ab-v16.74: the operator's answer ab-214, review-30,
-// review-30b and ab-lead's decisions): the receiver records each web origin that a frame of any tab
+// review-30b and the lead's decisions): the receiver records each web origin that a frame of any tab
 // commits (the top frame and every sub-frame), in memory and in chrome.storage.session, at most
 // RECORD_MAX origins. A check reads the frames of the marked tabs (webNavigation.getAllFrames) and
 // removes the workers of each recorded origin that no list of the last applied set_scopes covers and
@@ -360,7 +360,7 @@ test("a tab that gets the mark while a check reads the frames (tabs.onReplaced):
   assert.ok(s.f.callsTo("webNavigation.getAllFrames").some(([q]) => q.tabId === 30), "the next check read tab 30");
 });
 
-// ---- the site rule (review-30 B3 b; ab-lead's decision) ----
+// ---- the site rule (review-30 B3 b; the lead's decision) ----
 
 test("siteOf: the scheme and the last two labels of the host, the port dropped; an IP address or a host of one or two labels as it is", () => {
   assert.equal(siteOf("http://www.pp.localhost:8799"), "http://pp.localhost");
@@ -400,7 +400,7 @@ test("an origin whose site a marked tab shows in any frame keeps its workers: th
   assert.deepEqual(leaves(s), [[W3], ["http://login.pp.localhost:8797", P, R].sort()]);
 });
 
-// ---- every tab: a scope's list that ends (ab-lead's decision after review-30) ----
+// ---- every tab: a scope's list that ends (the lead's decision after review-30) ----
 
 test("a scope's tab's origins stay recorded while a list covers them; the set_scopes that ends that list removes them unless a marked tab shows their site", async () => {
   const s = await setup({ tabs: [blank(7), blank(8), blank(3)], copy: { "tab:7": "md-lead", "tab:8": "v-lead" }, scopes: scopesWith("*", { lists: { ...LISTS, v: ["v.example"] }, scopes: { "md-lead": "md", "v-lead": "v" } }) });
@@ -436,7 +436,7 @@ test("a scope's tab that commits a page on no list (a worker's page before layer
   assert.deepEqual(recorded(s), [X]);
 });
 
-// ---- the bound (review-30b B1, review-30d and ab-lead's decisions: no page content removes a worker of a shown site or of a listed
+// ---- the bound (review-30b B1, review-30d and the lead's decisions: no page content removes a worker of a shown site or of a listed
 // origin; the record refuses at the bound, with no eviction; a refused origin waits in memory with the same rules) ----
 
 // Every call of browsingData.remove that is no removal of given origins (a removal of every worker, with or without excludeOrigins).
@@ -718,7 +718,7 @@ test("a tab that gets the mark during a check's read and shows a new origin Z: t
   assert.ok(!removedAny(s).has("https://www.z.example"), "Z is shown by marked tab 30: " + JSON.stringify(leaves(s)));
 });
 
-// review-30d B1 and ab-lead's decision 2: each loop of a check pauses (one task) after SLICE items.
+// review-30d B1 and the lead's decision 2: each loop of a check pauses (one task) after SLICE items.
 test("a check that reads more than SLICE frames, or handles more than SLICE pending origins, lets a queued task run before its removal", async () => {
   for (const kind of ["frames", "pending"]) {
     const s = await setup();
@@ -1358,7 +1358,7 @@ test("after a list end's removal of every worker, the parts of more than SLICE o
   assert.ok(sizes.includes(102), "a task ran between part 1 and part 2: " + JSON.stringify([...new Set(sizes)]));
 });
 
-// ---- round 7 (ab-lead's decision on round 6's open point): the follow-up check records again a due
+// ---- round 7 (the lead's decision on round 6's open point): the follow-up check records again a due
 // origin that a list covers or whose site a marked tab shows, so that a worker that its open page
 // registers after the part's call goes when that list ends or the tab leaves ----
 
