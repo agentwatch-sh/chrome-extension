@@ -301,7 +301,7 @@ test("the kinds of args: each case fits or gets bad args", async () => {
     ["windows.create", [{ url: "about:blank" }]],
     ["windows.create", [{ url: "http://a.example:8080/" }, "my-repo"]],
     ["windows.create", [{ url: "about:blank", width: "800" }, "my-repo"]],
-    ["windows.create", [{ url: "about:blank" }, "ab lead"]],
+    ["windows.create", [{ url: "about:blank" }, "my repo"]],
     ["windows.update", [1, { focused: 1 }]],
     ["windows.update", [1, { type: "popup" }]],
     ["contentSettings.set", ["location", { primaryPattern: "https://*.example/*", setting: "allow" }]],

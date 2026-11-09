@@ -156,7 +156,7 @@ test("the closing rule per list: a tab's http(s) page off its scope's list close
   assert.deepEqual(s.f.callsTo("debugger.sendCommand").filter((a) => a[1] === "Target.closeTarget").map((a) => a[2].targetId), ["T2", "T4", "T8"]);
 });
 
-// the lead's decision on PR #23 question 2 (board ab-v16.33): the closing rule judges a blob: page by
+// The lead's decision on PR #23 question 2 (board ab-v16.33): the closing rule judges a blob: page by
 // its inner origin's host, as C5's guard does; an opaque blob: page has no host and stays.
 test("the closing rule judges a blob: page by its inner host: one whose inner host leaves the tab's list closes; one on it, and an opaque one, stay", async () => {
   const tabs = [

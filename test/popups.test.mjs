@@ -551,7 +551,7 @@ test("a page that commits while the retry waits: the first request stays blocked
   assert.equal(s.notices().length, 1);
 });
 
-// the lead's decision on PR #21's question 1: Chrome's tabs.reload of a blocked POST opens its "Confirm
+// The lead's decision on PR #21's question 1: Chrome's tabs.reload of a blocked POST opens its "Confirm
 // Form Resubmission" dialog, which waits for a person. So the retry reloads a GET only (the method from
 // webRequest), and a form that posts into a new tab fails closed with its notice, with no dialog.
 test("the retry reloads a GET only: a blocked POST (a form into a new tab) gets no reload and sends its notice at the decision, which ends the hold", async () => {

@@ -607,7 +607,7 @@ test("the origin's tabs close before the cookie swap and before the restore tab 
   ]);
 });
 
-// the lead's decision on PR #23 question 2 (board ab-v16.33): a blob: page counts by its inner origin.
+// The lead's decision on PR #23 question 2 (board ab-v16.33): a blob: page counts by its inner origin.
 test("a blob: page of the origin (its inner origin) closes before the cookie swap; one of another origin and an opaque one stay", async () => {
   const f = makeFakeChrome();
   f.setTabs([

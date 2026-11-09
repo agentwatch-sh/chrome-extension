@@ -1122,7 +1122,7 @@ def site_case(op1, op2, out):
 
 
 def session_case(a, out):
-    """the lead's scope change: a worker of a scope's site after that scope's list ends."""
+    """The lead's scope change: a worker of a scope's site after that scope's list ends."""
     with_c = {"lists": {**LISTS, "lc": ["sitec.localhost"]}, "scopes": {**SCOPES, "scope-c": "lc"}, "default": None, "operator": "*"}
     r = D.set_scopes(with_c)
     c = agent_tab("scope-c", SITEC, "/c1")
