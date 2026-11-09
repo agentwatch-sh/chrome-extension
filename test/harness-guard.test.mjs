@@ -282,6 +282,62 @@ test("run.sh down stops the run only through its live guard, and signals nothing
   } finally { stopOwn(pids); rmSync(dir, { recursive: true, force: true }); }
 });
 
+/** run.sh all's end (board ab-v16.89): the script is the guard's driver, the live run fails (exit 1, as 74 of 75
+ *  checks), and the EXIT trap runs run.sh's own down in the driver. The run's processes: an "Xvfb" (a pid file), a
+ *  process that only the guard's records of the driver's tree name, and a "Chromium" (a pid file) with a helper; at its
+ *  SIGTERM the Chromium starts one more child, which only the guard's look at the children of recorded processes
+ *  finds. down's sleep 0.1 lasts 1 s here, longer than the guard's 0.5 s poll, so the guard's next look at the
+ *  driver's tree after the SIGTERM surely finds it. */
+function allModeEnd(down) {
+  return `#!/bin/sh
+set -eu
+answer=$(python3 -I -B "${GUARD}" --name "$NAME" --driver $$ --pid-dir "$RUN/pids" --log "$RUN/guard.log") || true
+case "$answer" in locked\\ * | nested\\ *) ;; *) echo "$answer" >&2; exit 2 ;; esac
+echo "$answer" | cut -d' ' -f2 > "$RUN/guard.pid"
+sleep 609 & echo $! > "$RUN/pids/xvfb"
+sleep 610 & echo $! > "$RUN/tree"
+sh -c 'trap "sleep 611 & echo \\$! > \\"\\$RUN/late\\"; wait" TERM; sleep 608 & echo $! > "$RUN/helper"; wait' & echo $! > "$RUN/pids/chromium"
+${down}
+sleep() { if [ "$1" = 0.1 ]; then command sleep 1; else command sleep "$@"; fi; }
+trap 'down "$RUN"' EXIT
+sleep 1.5
+exit 1
+`;
+}
+
+test("run.sh all's down in the driver's EXIT trap keeps the live run's own exit code: the guard stops the run, and no process of down", { skip }, async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "ce-guard-")));
+  const run = join(dir, "all");
+  const pids = [];
+  const pidOf = (file) => { try { return Number(readFileSync(join(run, file), "utf8")); } catch { return 0; } };
+  try {
+    mkdirSync(join(run, "pids"), { recursive: true });
+    const sh = readFileSync(RUN_SH, "utf8");
+    const down = `${/^say\(\) \{.*\}$/m.exec(sh)[0]}\n${sh.slice(sh.indexOf("\nguard_of() {"), sh.indexOf('\ncase "${1:-all}" in'))}`;
+    assert.match(down, /\ndown\(\) \{[^]*sleep 0\.1\n/, "run.sh's down, with its sleep 0.1");
+    writeFileSync(join(dir, "driver.sh"), allModeEnd(down), { mode: 0o755 });
+    const child = spawn("/bin/sh", [join(dir, "driver.sh")], {
+      env: { ...process.env, HARNESS_LOCK: join(dir, "harness.lock"), HARNESS_GUARD_HELD: "", NAME: "all", RUN: run },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    own.push(child.pid);
+    let err = "";
+    child.stderr.on("data", (b) => { err += b; });
+    const code = await Promise.race([new Promise((r) => child.once("exit", (c, s) => r(c ?? s))), new Promise((r) => setTimeout(r, 40_000, "still running after 40 s").unref())]);
+    const [guard, xvfb, tree, chromium, helper, late] = ["guard.pid", "pids/xvfb", "tree", "pids/chromium", "helper", "late"].map(pidOf);
+    const all = [guard, xvfb, tree, chromium, helper, late].filter(Boolean);
+    pids.push(...all);
+    const log = () => { try { return readFileSync(join(run, "guard.log"), "utf8"); } catch { return ""; } };
+    assert.equal(code, 1, `the live run's own exit code, not 143 of a killed sleep of down: ${err}${log()}`);
+    assert.match(err, new RegExp(`run\\.sh: stopped the processes of ${run} \\(through its guard ${guard}\\)`));
+    assert.deepEqual(running(all), [], `down returned after the guard and every process of the run were gone: ${log()}`);
+    assert.ok(late > 0, "the Chromium started its late child at its SIGTERM");
+    const stopped = /the guard got SIGTERM; it stops (\d+) processes of the harness: (.*)/.exec(log());
+    assert.ok(stopped, log());
+    assert.deepEqual([stopped[1], stopped[2].split(", ").map((x) => Number(x.split(" ")[1])).sort()], ["4", [xvfb, tree, chromium, helper].sort()], `only the run's processes: ${log()}`);
+  } finally { stopOwn(pids); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("a record whose pid another process took since (another start time) gets no signal; a record with its own start time does", { skip }, () => {
   const r = spawnSync("python3", ["-I", "-B", "-c", `import sys; sys.path.insert(0, ${JSON.stringify(LIVE)})
 import argparse, subprocess, harness_guard as h

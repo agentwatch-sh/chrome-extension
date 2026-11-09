@@ -75,7 +75,10 @@ no pipe of its caller open). A caller that closed stdin, stdout or stderr (`run.
 live guard, the process whose argv has `harness_guard.py` and `--pid-dir <run>/pids` as whole fields: it sends the
 guard SIGTERM and waits until the guard has stopped the run and ended. When the guard is gone (it
 already stopped the run, at the driver's end or at the limit), `down` signals nothing, because a pid
-file of the run can name a process that took that pid later.
+file of the run can name a process that took that pid later. After the SIGTERM, the guard takes no
+new process of the driver's tree into the run. In `all` mode, `down` runs in the script's EXIT trap,
+inside the driver's tree, so the guard stops no process of `down` itself (its `sleep`), and `run.sh`
+exits with the live run's own code (board ab-v16.89).
 
 `run.sh` never takes the X displays 0, 90 (agentwatch's agent browser on taylor, the operator's),
 147, 190, 191 or 192, whatever `LIVE_DISPLAY` is (`RESERVED_DISPLAYS`, the same list as in
@@ -299,6 +302,8 @@ as true. Their frame requests arrive 34, 32, and 35 ms after release.
 The outer command exits 143 during cleanup. `down` signals the guard, which then
 terminates the sleep child that `down` uses to wait. With `set -e`, the shell
 exits 143. A shell-and-sleep reproduction and its signal trace confirm this cause.
+Board ab-v16.89 fixes it: after the SIGTERM, the guard takes no new process of
+the driver's tree into the run, so `run.sh` exits with the live run's code (1 here).
 The complete run takes about 265 seconds; the driver takes about 261 seconds
 (an estimate). The guard measures cleanup at 0.1 seconds. The timeout does not
 fire. The guard and a process check confirm that every recorded process stops.
