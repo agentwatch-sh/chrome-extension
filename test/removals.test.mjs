@@ -209,6 +209,50 @@ test("a Page.close whose deadline passes in the queue never goes to Chrome, and 
   assert.ok(methods.includes("Runtime.enable"), "the gate opened");
 });
 
+test("a late beforeunload accept keeps the last window after a receiver close of the same tab fails", async () => {
+  for (const heldAnswer of [false, true]) {
+    const s = await startReceiver({ tabs: [blank(7), blank(9)], targets: [target(7), target(9)] });
+    s.f.trackNewTabs = true;
+    await s.answer({ id: "a", op: "debugger.attach", args: [7] });
+    let answerClose;
+    s.f.impl["debugger.sendCommand"] = async (t, method) => {
+      if (method === "Page.close") {
+        if (heldAnswer) return new Promise((resolve) => (answerClose = resolve));
+        return {};
+      }
+      if (method === "Target.closeTarget") {
+        if (t.tabId === 7) throw new Error("close refused");
+        s.f.closeTab(t.tabId);
+        return { success: true };
+      }
+      if (method === "Page.handleJavaScriptDialog") {
+        s.f.closeTab(t.tabId);
+        answerClose?.({});
+      }
+      return {};
+    };
+    s.f.impl["tabs.remove"] = async () => { throw new Error("fallback refused"); };
+    s.send({ t: "req", id: "pc", op: "debugger.sendCommand", args: [{ tabId: 7 }, "Page.close"], wait: 30000 });
+    await flush();
+    await s.fire(REMOVAL_WAIT_MS);
+    if (heldAnswer) {
+      await s.fire(30000);
+      assert.deepEqual(s.resOf("pc").map((m) => m.error), ["timeout"]);
+    }
+    assert.equal((await s.answer({ id: "r7", op: "tabs.remove", args: [7] })).error, "fallback refused");
+    assert.equal(s.r.removals.isPending(7), true, "the failed receiver close preserves the client's pending close");
+    assert.equal(blanks(s.f).length, 0);
+    assert.equal((await s.answer({ id: "r9", op: "tabs.remove", args: [9] })).ok, true);
+    assert.equal(blanks(s.f).length, 1, "the other tab's close first opens a blank tab");
+    assert.equal((await s.answer({ id: "accept", op: "debugger.sendCommand", args: [{ tabId: 7 }, "Page.handleJavaScriptDialog", { accept: true }] })).ok, true);
+    assert.equal(s.r.removals.isPending(7), false);
+    assert.equal(isOpen(s.f, 7), false);
+    assert.equal(isOpen(s.f, 9), false);
+    assert.equal(s.f.created_.size, 1, "the blank tab keeps the browser open after the late accept");
+    assert.equal(s.resOf("pc").length, 1, "a late answer sends no second response");
+  }
+});
+
 test("a later item closes a tab with a pending close again, by the receiver's close; a pending tab counts as closed for the window rule", async () => {
   const s = await startReceiver({ tabs: [blank(7), blank(9)], targets: [target(7), target(9)] });
   await s.answer({ id: "a", op: "debugger.attach", args: [7] });

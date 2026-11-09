@@ -2114,7 +2114,11 @@ ends).
   no target, sent no command). An answer that
   comes after the item's wait counts as any answer: a late `Page.close` answer with no error leaves
   the close pending, and a late error ends it. The window rule counts each tab with a pending close
-  as closed until then, however long that takes. The reason: a `beforeunload` handler holds a
+  as closed until then, however long that takes. Each close of the same tab has its own pending
+  record. A failed receiver close ends only its own record; the client's pending `Page.close`
+  still counts the tab as closed for the window rule. A bridge deadline ends the request's wait
+  for an answer, not a close that already went to Chrome: that close stays pending until
+  `tabs.onRemoved` or its Chrome error. The reason: a `beforeunload` handler holds a
   client's `Page.close` (and the fallback's `chrome.tabs.remove`) while its dialog is open, and the
   page closes when the client or the operator accepts the dialog, maybe much later (board ab-v16.43:
   an accept after the wait). Without the rule, a later item counts that tab as another tab, removes
