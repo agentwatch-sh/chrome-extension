@@ -17,7 +17,9 @@ move only in an agentwatch tip, so a chrome-extension merge alone never reaches 
 The per-scope allowlists (board task ab-v16.23; the design: agent-browser
 `docs/superpowers/specs/2026-11-04-per-scope-allowlist-design.md`) are the contract in C4, C5, C6,
 C10 and C11 since board task ab-v16.30. This file is the master over that design too: where the two
-differ (for example the session's 403 text, or a count in `refused`), this file holds. Each side
+differ (for example the session's 403 text, or a count in `refused`), this file holds. The C11 part of that
+design has its master in agent-browser `docs/contracts/C11.md` since stage 0 of the self-contained agent browser
+(board task ab-v16.94.1). Each side
 builds the rules in a part of the design's section 12: the receiver in parts 1a to 1d (boards
 ab-v16.31 to ab-v16.34), the relay in part 2 (ab-v16.35, and ab-v16.51 for the peer check, which
 replaces ab-v16.36), agentwatch in part 3 (the daemon lead). Until its
@@ -124,9 +126,10 @@ The sender is the operator package (`operator/`, operator mode). The receiver is
   change of `agent/` reaches the boxes only after agentwatch moves both pins: the commit and the CRX
   SHA-256.
 - The pins of the self-contained agent browser (board ab-v16.94; that design's section 6; the stages here are
-  that design's stages). The native host name stays `sh.agentwatch.browser`. From stage 1, agent-browser, not
-  agentwatch, pins the commit of this repository, the receiver ID and the CRX's SHA-256 for its service: the
-  service checks the committed CRX against the pinned hash and never holds the key. From stage 3, on a box
+  that design's stages). The native host name stays `sh.agentwatch.browser`. From stage 1, agent-browser also
+  pins the commit of this repository, the receiver ID and the CRX's SHA-256 for its service, which is off by
+  default. No box gets that pin before stage 3. The service checks the committed CRX against the pinned hash
+  and never holds the key. From stage 3, on a box
   whose switch is on, the service gives the sender's ID, its version and the sender package (the zip of the
   pinned commit's `operator/` folder) on its control door (agent-browser `docs/contracts/C12.md`, `sender`):
   the gateway's `Origin` check (C9) uses that ID, and the Browser pane offers that zip. There a change of
@@ -190,10 +193,10 @@ One JSON object per native message. On the daemon's socket each message is one N
 
 **From stage 3 (the self-contained agent browser, board ab-v16.94).** On a box whose switch is on, the party
 on the native host's far side is agent-browser's service, not the daemon: the host is the service's host
-shim (`agent-browser host`), and the socket is the service's link socket. Each rule of C4 that names the
-daemon then names the service: `set_scopes` after each link up and its 10 s wait, the ended scopes, the
-restart gate, and the rollout. The service builds `set_scopes` from the sessions that the daemon gives it
-(agent-browser `docs/contracts/C12.md`, `set_sessions`). The receiver does not change: the host name, the
+shim (`agent-browser host`), and the socket is the service's link socket. From stage 3, there, each rule of C4
+that names the daemon names the service: `set_scopes` after each link up and its 10 s wait, the ended scopes,
+the restart gate, and the rollout. From stage 3, there, the service builds `set_scopes` from the sessions that
+the daemon gives it (agent-browser `docs/contracts/C12.md`, `set_sessions`). The receiver does not change: the host name, the
 frames, the channels, the parts and the messages stay, and the shim sends the same `link` message. Until
 stage 3, and on a box whose switch is off, the daemon is the party, as below.
 
@@ -1134,12 +1137,13 @@ vectors: `test/vectors/bridge.json`.
 
 **From stage 3 (the self-contained agent browser, board ab-v16.94).** On a box whose switch is on, the relay's
 model and the daemon's carrier are one process, agent-browser's service. The bridge ops, their checks, the
-events, the waits and the result parts stay. "The path of a message" changes: the relay's lines on its
-standard input and output and the daemon's carrier go, and the service sends the requests on the native link
-itself, with the carrier's rules (one main-channel request at a time, a bridge channel that never waits
+events, the waits and the result parts stay. From stage 3, there, "The path of a message" changes: the relay's
+lines on its standard input and output and the daemon's carrier go, and the service sends the requests on the
+native link itself, with the carrier's rules (one main-channel request at a time, a bridge channel that never waits
 behind an import, parts of at most `PART_BYTES`, the joins of result parts, `MAX_BYTES_IN_FLIGHT`, the waits
-and the deadline answers). "The daemon's own ops" (`daemon.pointerAt`, `daemon.movePointer`,
-`daemon.blocked`) leave the wire: they become calls inside the service, with the same checks. C10 then binds
+and the deadline answers). From stage 3, there, "The daemon's own ops" (`daemon.pointerAt`,
+`daemon.movePointer`, `daemon.blocked`) leave the wire: they become calls inside the service, with the same
+checks. C10 then binds
 two repositories, this one and agent-browser. The design notes that C10 can then join C4 as C4's bridge
 channel, one contract for the native link; this file does not make that change. Until stage 3, and on a box
 whose switch is off, the relay and the daemon are the parties, as below.
@@ -2325,14 +2329,14 @@ ends).
   no scope.
 - The shared vectors: `windowRule` in `test/vectors/bridge.json`, and its request of `tabs.remove`.
 
-### C11. The endpoint (agent-browser's relay, and from stage 1 its service)
+### C11. The endpoint (agent-browser's relay; from stage 3 also the service)
 
 The master of C11 is agent-browser `docs/contracts/C11.md` since board task ab-v16.94.1, stage 0 of the
 self-contained agent browser. Its text moved there from this file (main `66078cd`) with no change of a rule,
-and its tests moved with it. C11 binds agent-browser (the relay, and from stage 1 the service) and agentwatch
-(the daemon). This repository builds no part of C11: the receiver's own rules stay in C4, C5 and C10, which
+and its tests moved with it. C11 binds agent-browser (the relay, and the service, which stage 1 builds and
+which serves from stage 3) and agentwatch (the daemon). This repository builds no part of C11: the receiver's own rules stay in C4, C5 and C10, which
 name C11 where the relay or the endpoint is the other side. C4 and C11 share the scope pattern
 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, so a change of it changes both files; from stage 5 it gains an optional
 `<box>/` part for a session of another box (the self-contained design, section 9), with a small change of
-`agent/scopes.js`. C11's vectors moved too: agent-browser's `test/vectors/endpoint.json` is their master. This
-repository's `test/vectors/endpoint.json` is the copy at the move, and no test here reads it.
+`agent/scopes.js`. C11's vectors moved too: agent-browser's `test/vectors/endpoint.json` is their master, and
+this repository holds no copy of them.

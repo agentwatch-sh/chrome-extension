@@ -9,7 +9,7 @@
 // ab-v16.94.1; this file checks the short C11 that names them.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { CHANNELS, MAX_TO_DAEMON, PART_BYTES, ChannelJoiner, splitParts } from "../agent/wire.js";
 import { NEW_TAB_WAIT_MS, RETRY_AFTER_MS, RETRY_START_MS, RULE_QUIET_MS } from "../agent/popups.js";
 import { normalizeEntry } from "../shared/domains.js";
@@ -1637,8 +1637,9 @@ test("daemon.blocked vectors check args before a prompt and keep older carriers 
 const C1 = section("C1");
 const intro = protocol.slice(0, protocol.indexOf("\n### C1. "));
 
-test("the intro names the masters: C1, C4, C5 and C10 here, C11 in agent-browser", () => {
+test("the intro names the masters: C1, C4, C5 and C10 here, C11 in agent-browser, also for the C11 part of the per-scope design", () => {
   for (const s of [
+    "The C11 part of that design has its master in agent-browser `docs/contracts/C11.md` since stage 0 of the self-contained agent browser (board task ab-v16.94.1).",
     "C1, C4, C5 and C10 are the exceptions: this file is the master for them. For C4 and C10, this holds since the two-modes design (agent-browser `docs/superpowers/specs/2026-11-03-two-modes-playwright-design.md`, sections 4, 8, 11 and 13).",
     "C10 is only here. It binds three repositories: this one (the receiver), agent-browser (its relay) and agentwatch (the daemon).",
     "The master of C11 is agent-browser `docs/contracts/C11.md` since board task ab-v16.94.1 (C11, below).",
@@ -1655,10 +1656,11 @@ test("the intro states the self-contained agent browser: stage 0 changes no rule
   ]) assert.ok(says(intro, s), `the intro says: ${s}`);
 });
 
-test("C1 states the pins of the self-contained agent browser: agent-browser's from stage 1, the service's sender from stage 3, agentwatch's until stage 6", () => {
+test("C1 states the pins of the self-contained agent browser: agent-browser's too from stage 1 (no box before stage 3), the service's sender from stage 3, agentwatch's until stage 6", () => {
   for (const s of [
     "- The pins of the self-contained agent browser (board ab-v16.94; that design's section 6; the stages here are that design's stages). The native host name stays `sh.agentwatch.browser`.",
-    "From stage 1, agent-browser, not agentwatch, pins the commit of this repository, the receiver ID and the CRX's SHA-256 for its service: the service checks the committed CRX against the pinned hash and never holds the key.",
+    "From stage 1, agent-browser also pins the commit of this repository, the receiver ID and the CRX's SHA-256 for its service, which is off by default. No box gets that pin before stage 3.",
+    "The service checks the committed CRX against the pinned hash and never holds the key.",
     "From stage 3, on a box whose switch is on, the service gives the sender's ID, its version and the sender package (the zip of the pinned commit's `operator/` folder) on its control door (agent-browser `docs/contracts/C12.md`, `sender`): the gateway's `Origin` check (C9) uses that ID, and the Browser pane offers that zip.",
     "There a change of `agent/` reaches the box only after agent-browser moves its pins and agentwatch moves its pin of agent-browser.",
     "Until stage 3, and on a box whose switch is off, agentwatch's pins and the rules above stay as they are. agentwatch drops its pins of this repository only at stage 6, when its daemon path goes.",
@@ -1672,8 +1674,8 @@ test("C4 names the service as the native link's far side only from stage 3, on a
   const p3 = part(C4, "From stage 3 (the self-contained agent browser, board ab-v16.94).");
   for (const s of [
     "On a box whose switch is on, the party on the native host's far side is agent-browser's service, not the daemon: the host is the service's host shim (`agent-browser host`), and the socket is the service's link socket.",
-    "Each rule of C4 that names the daemon then names the service: `set_scopes` after each link up and its 10 s wait, the ended scopes, the restart gate, and the rollout.",
-    "The service builds `set_scopes` from the sessions that the daemon gives it (agent-browser `docs/contracts/C12.md`, `set_sessions`).",
+    "From stage 3, there, each rule of C4 that names the daemon names the service: `set_scopes` after each link up and its 10 s wait, the ended scopes, the restart gate, and the rollout.",
+    "From stage 3, there, the service builds `set_scopes` from the sessions that the daemon gives it (agent-browser `docs/contracts/C12.md`, `set_sessions`).",
     "The receiver does not change: the host name, the frames, the channels, the parts and the messages stay, and the shim sends the same `link` message.",
     "Until stage 3, and on a box whose switch is off, the daemon is the party, as below.",
   ]) assert.ok(says(p3, s), `C4 says: ${s}`);
@@ -1684,8 +1686,8 @@ test("C10 states the service's one process only from stage 3: the bridge stays, 
   const p3 = part(C10, "From stage 3 (the self-contained agent browser, board ab-v16.94).");
   for (const s of [
     "On a box whose switch is on, the relay's model and the daemon's carrier are one process, agent-browser's service. The bridge ops, their checks, the events, the waits and the result parts stay.",
-    "\"The path of a message\" changes: the relay's lines on its standard input and output and the daemon's carrier go, and the service sends the requests on the native link itself, with the carrier's rules (one main-channel request at a time, a bridge channel that never waits behind an import, parts of at most `PART_BYTES`, the joins of result parts, `MAX_BYTES_IN_FLIGHT`, the waits and the deadline answers).",
-    "\"The daemon's own ops\" (`daemon.pointerAt`, `daemon.movePointer`, `daemon.blocked`) leave the wire: they become calls inside the service, with the same checks.",
+    "From stage 3, there, \"The path of a message\" changes: the relay's lines on its standard input and output and the daemon's carrier go, and the service sends the requests on the native link itself, with the carrier's rules (one main-channel request at a time, a bridge channel that never waits behind an import, parts of at most `PART_BYTES`, the joins of result parts, `MAX_BYTES_IN_FLIGHT`, the waits and the deadline answers).",
+    "From stage 3, there, \"The daemon's own ops\" (`daemon.pointerAt`, `daemon.movePointer`, `daemon.blocked`) leave the wire: they become calls inside the service, with the same checks.",
     "C10 then binds two repositories, this one and agent-browser.",
     "The design notes that C10 can then join C4 as C4's bridge channel, one contract for the native link; this file does not make that change.",
     "Until stage 3, and on a box whose switch is off, the relay and the daemon are the parties, as below.",
@@ -1696,15 +1698,16 @@ test("C10 states the service's one process only from stage 3: the bridge stays, 
 });
 
 test("C11 here is short: it names agent-browser's master file, the parties, the shared scope pattern and the copy of the vectors", () => {
-  assert.ok(protocol.includes("\n### C11. The endpoint (agent-browser's relay, and from stage 1 its service)\n"), "the heading");
+  assert.ok(protocol.includes("\n### C11. The endpoint (agent-browser's relay; from stage 3 also the service)\n"), "the heading: the service serves only from stage 3");
   for (const s of [
     "The master of C11 is agent-browser `docs/contracts/C11.md` since board task ab-v16.94.1, stage 0 of the self-contained agent browser.",
     "Its text moved there from this file (main `66078cd`) with no change of a rule, and its tests moved with it.",
-    "C11 binds agent-browser (the relay, and from stage 1 the service) and agentwatch (the daemon).",
+    "C11 binds agent-browser (the relay, and the service, which stage 1 builds and which serves from stage 3) and agentwatch (the daemon).",
     "This repository builds no part of C11: the receiver's own rules stay in C4, C5 and C10, which name C11 where the relay or the endpoint is the other side.",
     "C4 and C11 share the scope pattern `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, so a change of it changes both files; from stage 5 it gains an optional `<box>/` part for a session of another box (the self-contained design, section 9), with a small change of `agent/scopes.js`.",
-    "C11's vectors moved too: agent-browser's `test/vectors/endpoint.json` is their master. This repository's `test/vectors/endpoint.json` is the copy at the move, and no test here reads it.",
+    "C11's vectors moved too: agent-browser's `test/vectors/endpoint.json` is their master, and this repository holds no copy of them.",
   ]) assert.ok(says(C11, s), `C11 says: ${s}`);
+  assert.ok(!existsSync(new URL("../test/vectors/endpoint.json", import.meta.url)), "no copy of C11's vectors here");
   assert.ok(C11.length < 2000, "C11 here is a short pointer, not the master text");
   assert.ok(C11.includes("`" + scopesV.pattern + "`"), "the shared pattern is the vectors' pattern");
 });
@@ -1726,10 +1729,26 @@ test("docs/protocol.md no longer holds C11's text or the old master statements (
     "| Method | On the root or a browser session | On a page session |",
     "The shared vector: `upgradeChecks` in `test/vectors/endpoint.json`.",
     "The pointer at an activation (board ab-v16.70; the relay builds it in board ab-v16.71).",
+    "is the copy at the move",
+    "no test here reads it",
+    "### C11. The endpoint (agent-browser's relay, and from stage 1 its service)",
+    "agent-browser, not agentwatch, pins",
   ]) assert.ok(!protocol.includes(s) && !says(protocol, s), `docs/protocol.md: no ${s}`);
-  // No text of stage 0 names the service as a party of today: each paragraph that names agent-browser's service names its stage.
-  const service = /\b(the|its) service\b(?! workers?\b)|agent-browser's service/;
-  const named = protocol.split(/\n\s*\n/).filter((x) => service.test(x));
-  assert.ok(named.length >= 5, "the intro, C1, C4, C10 and C11 name the service");
-  for (const x of named) assert.ok(/\bstage [0-9]\b/.test(x), `a paragraph that names the service names its stage: ${flat(x).slice(0, 160)}`);
+  // No text names the service as a party before stage 3 (review-95 B1): each sentence that names agent-browser's service
+  // names stage 3 or later, or is one of these exceptions, which name no party of today.
+  const service = /\b([Tt]he|[Ii]ts) service\b(?! workers?\b)|agent-browser's service/;
+  const EXCEPTIONS = [
+    "The self-contained agent browser (board ab-v16.94; the design: agent-browser `docs/superpowers/specs/2026-11-09-self-contained-agent-browser-design.md`, decided by the operator's answers of 2026-11-10, its section 19) moves the daemon's browser parts into one agent-browser process, the service, in stages.",
+    "The receiver does not change for the move: the host name, the frames, the channels, the parts and the messages stay, so the receiver cannot tell the service from the daemon, and the move needs no extension release.",
+    // The stage-1 exceptions: agent-browser builds the service from stage 1, off by default, and no box gets it before stage 3.
+    "From stage 1, agent-browser also pins the commit of this repository, the receiver ID and the CRX's SHA-256 for its service, which is off by default.",
+    "The service checks the committed CRX against the pinned hash and never holds the key.",
+  ];
+  const named = sentences(protocol).filter((x) => service.test(x));
+  assert.ok(named.length >= 10, "the intro, C1, C4, C10 and C11 name the service");
+  for (const x of named) {
+    assert.ok(/\bstage [3-6]\b/.test(x) || EXCEPTIONS.includes(x), `a sentence that names the service names stage 3 or later: ${x.slice(0, 200)}`);
+    assert.ok(!(/\bstage [12]\b/.test(x) && /in place of the daemon|not agentwatch|not the daemon|instead of the daemon/.test(x)), `no sentence puts the service in place of the daemon before stage 3: ${x.slice(0, 200)}`);
+  }
+  for (const x of EXCEPTIONS) assert.ok(named.includes(x), `the exception is a sentence of the text: ${x.slice(0, 80)}`);
 });
