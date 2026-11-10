@@ -1736,7 +1736,7 @@ test("docs/protocol.md no longer holds C11's text or the old master statements (
   ]) assert.ok(!protocol.includes(s) && !says(protocol, s), `docs/protocol.md: no ${s}`);
   // No text names the service as a party before stage 3 (review-95 B1): each sentence that names agent-browser's service
   // names stage 3 or later, or is one of these exceptions, which name no party of today.
-  const service = /\b([Tt]he|[Ii]ts) service\b(?! workers?\b)|agent-browser's service/;
+  const service = /\b([Tt]he|[Ii]ts|[Tt]he new|[Tt]he agent-browser) service\b(?! workers?\b)|agent-browser's service/;
   const EXCEPTIONS = [
     "The self-contained agent browser (board ab-v16.94; the design: agent-browser `docs/superpowers/specs/2026-11-09-self-contained-agent-browser-design.md`, decided by the operator's answers of 2026-11-10, its section 19) moves the daemon's browser parts into one agent-browser process, the service, in stages.",
     "The receiver does not change for the move: the host name, the frames, the channels, the parts and the messages stay, so the receiver cannot tell the service from the daemon, and the move needs no extension release.",
