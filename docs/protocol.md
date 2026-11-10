@@ -2161,8 +2161,9 @@ ends).
   as closed until then, however long that takes. Each close of the same tab has its own pending
   record. A failed receiver close ends only its own record; the client's pending `Page.close`
   still counts the tab as closed for the window rule. A bridge deadline ends the request's wait
-  for an answer, not a close that already went to Chrome: that close stays pending until
-  `tabs.onRemoved` or its Chrome error. The reason: a `beforeunload` handler holds a
+  for an answer, not a close that already went to Chrome: a client's `Page.close` stays pending
+  until `tabs.onRemoved` or its Chrome error, and a receiver close until `tabs.onRemoved` or until
+  it fails (above). The reason: a `beforeunload` handler holds a
   client's `Page.close` (and the fallback's `chrome.tabs.remove`) while its dialog is open, and the
   page closes when the client or the operator accepts the dialog, maybe much later (board ab-v16.43:
   an accept after the wait). Without the rule, a later item counts that tab as another tab, removes
@@ -2213,6 +2214,24 @@ ends).
     client that attached then got no answer to `Page.enable` in 15 s, and
     `Page.handleJavaScriptDialog` answered `No dialog is showing` (review-17 check N1).
   - `Page.close` of such a page answered in 1 ms, and the tab closed only after the accept.
+  - A client's `Page.close` (board ab-v16.90; taylor, Chromium 156.0.8078.79; a page with a
+    `beforeunload` handler, after a click; 36 commands through `chrome.debugger` as the receiver
+    sends them, and 23 through a plain CDP connection): Chrome answered `{}` in 0.4 to 1.8 ms (CDP:
+    0.2 to 0.5 ms), before the dialog opened (1.2 to 2.8 ms after the command; CDP: 0.8 to 1.2 ms),
+    and it sent no second answer; only a `Page.close` after a detach got an error (below). After
+    an accept the tab closed (`tabs.onRemoved` 10 to 22 ms after the accept); after a dismiss
+    the tab stayed. A detach 1 s after the dialog opened (`chrome.debugger.detach`, as at a link
+    change, or `Target.detachFromTarget`) brought no answer to that `Page.close`, and the dialog
+    stayed open: a new client's `Page.enable` answered only after the dialog closed, its
+    `Page.handleJavaScriptDialog` answered `No dialog is showing`, and a key press in the window
+    accepted the dialog. A second `Page.close` while the dialog was open, or after a dismiss,
+    also answered `{}` at once (after a dismiss the dialog opened again). A `Page.close` and a
+    detach in the same task: in that order, `{}`, and the close started (10 of 10, and 10 of 10
+    through CDP); in the other order, `Debugger is not attached to the tab with id: <id>.`, and
+    no close started (4 of 4). A page with no handler, or with a crashed renderer: `{}` in 0.4
+    to 1.3 ms, and `tabs.onRemoved` 9 to 14 ms after the command. No `Page.close` answered
+    `Detached while handling command.`. So a client's `Page.close` ends its pending close at an
+    error only when Chrome did not start that close (in each measured case).
   - The receiver's close (`Target.closeTarget` through `chrome.debugger`, with an attach for the
     close) closed such a page in 1 to 3 ms with no dialog (review-17 check T2). It also closed such
     a page whose close was already held: by the dialog of a client's `Page.close` (the client saw

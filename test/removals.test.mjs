@@ -253,6 +253,46 @@ test("a late beforeunload accept keeps the last window after a receiver close of
   }
 });
 
+// Board ab-v16.90 (review-81 note 1): pageClose ends the record of a client's Page.close at any Chrome error. Measured
+// on taylor (Chromium 156.0.8078.79, a page with a beforeunload handler; C10, "Measured"): Chrome answers Page.close
+// with {} in 0.2 to 1.8 ms, before its dialog opens, also through chrome.debugger as the receiver sends it, and sends no
+// second answer at the accept, at a dismiss, or at a detach while the dialog is open (the dialog stays open). A
+// Page.close and a detach in the same task, in that order, answered {} and the close started (20 of 20); in the other
+// order, "Debugger is not attached to the tab with id: <id>." and no close started (4 of 4). No Page.close answered
+// "Detached while handling command.". So the record ends at an error only when Chrome did not start the close, and
+// pageClose needs no change. This test keeps the measured order: the answer first, then a link change while the dialog
+// is open.
+test("a client's Page.close answers before its dialog opens (measured, board ab-v16.90): a link change while the dialog is open ends no close record, and the late accept keeps the last window", async () => {
+  const s = await startReceiver({ tabs: [blank(7), blank(9)], targets: [target(7), target(9)] });
+  s.f.trackNewTabs = true;
+  s.f.trackAttachments = true;
+  s.f.trackDebuggerCommands = true; // a detach fails the commands that have not answered
+  await s.answer({ id: "a", op: "debugger.attach", args: [7] });
+  s.f.impl["debugger.sendCommand"] = async (t, method) => (method === "Target.closeTarget" ? (s.f.closeTab(t.tabId), { success: true }) : {});
+  // Chrome answers at once; the dialog holds the tab.
+  assert.deepEqual((await s.answer({ id: "pc", op: "debugger.sendCommand", args: [{ tabId: 7 }, "Page.close"] })).data, {});
+  await s.fire(REMOVAL_WAIT_MS); // the item's wait ends; the dialog still holds the tab
+  assert.equal(s.r.removals.isPending(7), true);
+  // A link change while the dialog is open: the receiver detaches the bridge tab, and the dialog stays.
+  const mark = s.f.calls.length;
+  s.port().fireMessage({ t: "link", up: true });
+  await flush();
+  assert.deepEqual(callsSince(s.f, mark).filter(([p]) => p === "debugger.detach").map(([, a]) => a[0].tabId), [7]);
+  assert.equal(s.r.removals.isPending(7), true, "the link change ends no close record");
+  // The new link closes the only other tab: the window rule counts tab 7 as closed.
+  assert.equal(blanks(s.f).length, 0);
+  assert.equal((await s.answer({ id: "r9", op: "tabs.remove", args: [9] })).ok, true);
+  assert.equal(blanks(s.f).length, 1, "the other tab's close first opens a blank tab");
+  // Someone accepts the dialog in the window (measured: a new client's Page.handleJavaScriptDialog answers No dialog is
+  // showing, and a key press in the window accepts it): tab 7 closes.
+  s.f.closeTab(7);
+  await flush();
+  assert.equal(s.r.removals.isPending(7), false);
+  assert.equal(isOpen(s.f, 9), false);
+  assert.equal(s.f.created_.size, 1, "the blank tab keeps the browser open after the late accept");
+  assert.equal(s.resOf("pc").length, 1, "one answer");
+});
+
 test("a later item closes a tab with a pending close again, by the receiver's close; a pending tab counts as closed for the window rule", async () => {
   const s = await startReceiver({ tabs: [blank(7), blank(9)], targets: [target(7), target(9)] });
   await s.answer({ id: "a", op: "debugger.attach", args: [7] });

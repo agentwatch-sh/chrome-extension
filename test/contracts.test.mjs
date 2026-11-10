@@ -866,6 +866,23 @@ test("the window rule: each vector follows C10's rule, also for a pending close 
   assert.ok(says(C11, "while Chrome's own `Target.closeTarget` does not"), "C11: today's relay's Target.closeTarget runs beforeunload");
 });
 
+// review-81 note 3: after a bridge deadline each kind of close keeps its own end. Board ab-v16.90: the probe of a client's
+// Page.close (it answers before its dialog opens, and an error comes only when Chrome did not start the close).
+test("C10: after a bridge deadline a client's Page.close stays pending until tabs.onRemoved or its Chrome error, a receiver close until it fails; the measured Page.close (board ab-v16.90)", () => {
+  assert.ok(says(C10, "A bridge deadline ends the request's wait for an answer, not a close that already went to Chrome: a client's `Page.close` stays pending until `tabs.onRemoved` or its Chrome error, and a receiver close until `tabs.onRemoved` or until it fails (above)."),
+    "C10: each kind of close keeps its own end after a bridge deadline (review-81 note 3)");
+  assert.ok(!says(C10, "that close stays pending until `tabs.onRemoved` or its Chrome error"), "C10: the old sentence, which fits only a client's Page.close, is gone");
+  for (const s of [
+    "Chrome answered `{}` in 0.4 to 1.8 ms (CDP: 0.2 to 0.5 ms), before the dialog opened",
+    "brought no answer to that `Page.close`, and the dialog stayed open",
+    "in that order, `{}`, and the close started (10 of 10, and 10 of 10 through CDP); in the other order, `Debugger is not attached to the tab with id: <id>.`, and no close started (4 of 4)",
+    "No `Page.close` answered `Detached while handling command.`",
+    "So a client's `Page.close` ends its pending close at an error only when Chrome did not start that close (in each measured case)",
+  ]) {
+    assert.ok(says(C10, s), `C10 says: ${s}`);
+  }
+});
+
 // C5's sweep: at an applied set_scopes (scopes and lists are objects), every tab of the map whose scope has no list,
 // and every tab of the orphan set, whatever its old scope; never another tab of no scope.
 function sweepOf(msg, map, orphans = []) {
