@@ -715,3 +715,18 @@ test("point 2: no scope rule names an act popup before its join of the act's rul
   assert.ok(joined >= 0, "the popup joined");
   assert.ok(first > joined, `no scope rule names the popup before its join (join ${joined}, scope ${first})`);
 });
+
+test("N1: the worker's start ends a left act itself, also when no link comes up (the native host does not answer)", async () => {
+  const f = makeFakeChrome();
+  f.setTabs([{ ...REGULAR }, { id: ACT_TAB, windowId: WIN.id, incognito: true, url: "https://staging.example.com/login" }]);
+  f.targets_ = f.tabs_.map((t) => ({ id: "T" + t.id, tabId: t.id, type: "page", attached: false }));
+  f.storage_.session = { "act:30": true };
+  f.sessionRules_ = structuredClone(V.rules);
+  const { receiver: receiverOf } = await import("../agent/receiver.js");
+  const r = receiverOf(f.chrome);
+  await r.startup();
+  await flush(16);
+  assert.ok(!f.tabs_.some((t) => t.id === ACT_TAB), "the left act tab closed");
+  assert.deepEqual(f.sessionRules_.filter(isActRule), [], "then the act's rules went");
+  assert.deepEqual(f.storage_.session, {});
+});

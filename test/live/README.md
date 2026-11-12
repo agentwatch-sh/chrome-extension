@@ -176,6 +176,8 @@ it. The case checks:
   context of the site a fetch to the tracker (rule C in every tab) reach no server; a fetch and a WebSocket
   (`ws:`) to the site's own origin (rule E) and a top-level GET to the tracker reach the server; a form's POST to
   the tracker (rule B) does not;
+- the act's popups join rules A, B, D and E (review-ce44): a form's POST into a popup (rule B) and a popup's own
+  fetch after its top-level GET to the tracker (rule A) reach no server, and the popup's GET does;
 - no `blocked` notice names the act tab;
 - `act_cookies` gives the act store's cookie of the site (a made-up value that the act tab's page wrote), not
   the default context's;
@@ -184,6 +186,11 @@ it. The case checks:
 
 The driver prints cookie names only, never a value. Before `act_rules` the case fires the same requests once
 more as a control: each of them must reach the server, so a request that the rules stop is stopped by the rules.
+
+Run of 2026-11-12 after review-ce44's fix round (the same setup, `run.sh test <run> link act`): **15 checks, 15
+passed**. The control: 11 of 11 requests, and 3 of 3 of the popup rows (a POST into a popup, a popup's GET to the
+tracker and its fetch there), reached the server. With the rules: 3 of 11, and 1 of 3 of the popup rows (the
+popup's GET) reached it. `act_end` closed 7 tabs (the act tab and six popups), and no incognito tab was left.
 
 Run of 2026-11-12 on taylor (Chromium 156.0.8078.79, the unpacked receiver 0.3.6 of the branch
 `ab-v16.97.3-act-window`, `LIVE_DISPLAY=171`, displays 171 and 172, `run.sh up`, then `run.sh test <run> link act`,
