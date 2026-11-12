@@ -395,7 +395,8 @@ test("scope in blocked is the tab's scope when the notice goes: null for a tab o
   nav(s, "onBeforeNavigate", 3, "https://c.example/");
   nav(s, "onBeforeNavigate", 6, "https://c.example/");
   await flush();
-  assert.deepEqual(s.notices(), [notice(3, "c.example", null), notice(6, "c.example", "v-lead")]);
+  // Tab 3 is a tab that the map does not know: its notice comes after a read of the tab (review-ce44b R2).
+  assert.deepEqual(s.notices().sort((a, b) => a.tab - b.tab), [notice(3, "c.example", null), notice(6, "c.example", "v-lead")]);
 });
 
 test("the notices of a tab keep a bounded record: many blocked navigations each send one notice", async () => {

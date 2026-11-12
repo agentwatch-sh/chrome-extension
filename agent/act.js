@@ -39,6 +39,7 @@ const DEFAULT_STORE = "0";
 export const ANOTHER_PRIVATE = "another private window is open";
 export const NO_INCOGNITO = "not allowed in incognito";
 export const NOT_AGENT_WINDOW = "not an agent window";
+export const NOT_AGENT_DOWNLOAD = "not an agent download";
 // The error texts of the act's requests on channel main (C4).
 export const BAD_REQUEST = "bad request";
 export const NOT_ACT_TAB = "not an act tab";
@@ -88,6 +89,9 @@ export class Act {
   #chain = Promise.resolve();
   #windows = new Set(); // the act windows
   #tabs = new Set(); // the act popups and replaced act tabs with a key acttab:<id> (and those of the copy at the start)
+  // From a start with an act's rules (or an act in the copy) to the end that
+  // removes them: every incognito tab is a tab of the act (the daemon lead's P1).
+  #sweepAll = false;
 
   constructor(receiver) {
     this.#r = receiver;
@@ -246,6 +250,20 @@ export class Act {
     return this.#run(() => this.#end());
   }
 
+  // The worker's start, when the act's rules are (or may be) in force or the
+  // copy names an act: every incognito tab that is open closes first, in the
+  // one removal item, and only then do the rules go. While an act runs, every
+  // incognito tab belongs to it (no act window opens while another private
+  // window is open), so an operator's private window that was opened during
+  // an act's seconds closes too. This holds also when the read of the copy
+  // failed or came late. A tab that does not close keeps the rules (fail
+  // closed), and the next link change or act window tries again, with the
+  // same rule (the daemon lead's P1).
+  endAtStart() {
+    this.#sweepAll = true;
+    return this.end();
+  }
+
   async #end() {
     const r = this.#r;
     const windows = new Set(this.#windows);
@@ -254,10 +272,11 @@ export class Act {
     // acttab:<id>, and an incognito tab whose opener is one of them (a popup
     // whose navigation target has not come yet; review-ce44 N2).
     const known = (id) => r.map.isAct(id) || r.map.wasAct(id) || tabs.has(id);
-    const ofAct = (t) => t && Number.isInteger(t.id) && (r.map.isAct(t.id) || (t.incognito === true &&
-      (windows.has(t.windowId) || tabs.has(t.id) || (Number.isInteger(t.openerTabId) && known(t.openerTabId)))));
+    const sweepAll = this.#sweepAll;
+    const ofAct = (t) => t && Number.isInteger(t.id) && (r.map.isAct(t.id) || (t.incognito === true && (sweepAll ||
+      windows.has(t.windowId) || tabs.has(t.id) || (Number.isInteger(t.openerTabId) && known(t.openerTabId)))));
     let closed = 0;
-    if (windows.size > 0 || tabs.size > 0 || r.map.acts().length > 0) {
+    if (sweepAll || windows.size > 0 || tabs.size > 0 || r.map.acts().length > 0) {
       const item = await r.removals.closeOwn({ select: (tabs) => tabs.filter(ofAct).map((t) => t.id) });
       closed = item.closed.length;
       if (item.error) throw new Error(ACT_NOT_CLOSED);
@@ -277,6 +296,7 @@ export class Act {
         throw new Error(RULES_NOT_REMOVED);
       }
     }
+    this.#sweepAll = false;
     if (windows.size > 0 || tabs.size > 0) {
       for (const id of windows) this.#windows.delete(id);
       for (const id of tabs) this.#tabs.delete(id);

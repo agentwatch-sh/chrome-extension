@@ -107,7 +107,7 @@ export class Receiver {
     // this one until the act's end has closed the act windows and act tabs
     // of the copy; that end then removes them (C10, the act window).
     return this.map.restore(() => this.rules.start()).then(() => {
-      if (this.act.open) void this.act.end().catch(() => {});
+      if (this.act.open) void this.act.endAtStart().catch(() => {});
     });
   }
 

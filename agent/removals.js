@@ -161,10 +161,13 @@ export class Removals {
   // item's tabs, or select(tabs) picks them from the query. start(tabId)
   // starts one close and gives its Close. Gives {closes, error}: error when
   // the query or the window rule failed (then no close started).
-  async #item({ ids = null, select = null, start }) {
+  async #item({ ids = null, select = null, start, refuse = null }) {
     const q = await this.#limit(() => this.#chrome.tabs.query({}));
     if (!q.ok) return { closes: [], error: q.error };
     const tabs = (Array.isArray(q.value) ? q.value : []).filter((t) => t && Number.isInteger(t.id));
+    // refuse(tabs): a text that refuses the item, from its own read (no close starts).
+    const no = refuse ? refuse(tabs) : null;
+    if (no) return { closes: [], error: new Error(no) };
     const mine = ids ?? select(tabs);
     if (mine.length === 0) return { closes: [], error: null };
     const byId = new Map(tabs.map((t) => [t.id, t]));
@@ -350,7 +353,10 @@ export class Removals {
       if (op.expired) return answer.reject(new Error("timeout"));
       // The orphan set's check (and the restore tab's and the mark's) when the item starts.
       if (this.#map.isOrphan(tabId) || this.#map.isMarked(tabId) || this.#att.isRestoreTab(tabId) || this.#map.isIncognito(tabId)) return answer.reject(new Error(NOT_AGENT_TAB));
-      const r = await this.#item({ ids: [tabId], start: (id) => this.#receiverClose(id) });
+      // The item's own read refuses an incognito tab too: also one that the
+      // map does not know (a start whose read failed; review-ce44b R2).
+      const refuse = (tabs) => (tabs.some((t) => t.id === tabId && t.incognito === true) ? NOT_AGENT_TAB : null);
+      const r = await this.#item({ ids: [tabId], start: (id) => this.#receiverClose(id), refuse });
       if (r.error) return answer.reject(r.error);
       const c = r.closes[0];
       void c.ended.then(() => (c.closed ? answer.resolve(null) : answer.reject(c.error ?? new Error("close failed"))));

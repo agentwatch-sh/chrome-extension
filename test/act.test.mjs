@@ -34,12 +34,12 @@ function incognitoWindows(f, win = WIN) {
   };
 }
 
-async function setup({ tabs = [REGULAR], copy = null, beforeStart = () => {} } = {}) {
+async function setup({ tabs = [REGULAR], copy = null, beforeStart = () => {}, scopes = V.setScopes } = {}) {
   const s = await startReceiver({
     tabs,
     copy,
     targets: tabs.map((t) => ({ id: "T" + t.id, tabId: t.id, type: "page", attached: false })),
-    scopes: V.setScopes,
+    scopes,
     beforeStart: (f) => {
       incognitoWindows(f);
       return beforeStart(f);
@@ -729,4 +729,132 @@ test("N1: the worker's start ends a left act itself, also when no link comes up 
   assert.ok(!f.tabs_.some((t) => t.id === ACT_TAB), "the left act tab closed");
   assert.deepEqual(f.sessionRules_.filter(isActRule), [], "then the act's rules went");
   assert.deepEqual(f.storage_.session, {});
+});
+
+// ---- review-ce44b and the daemon lead's P1 ----
+
+// A start of the receiver with the act's rules of a worker before it (ids 10 to 77) in Chrome. Each close of
+// Target.closeTarget and each removal of the act's rules goes into order. closable(tabId): the close works.
+async function leftActStart({ tabs, copy = null, closable = () => true, beforeStart = () => {}, scopes = V.setScopes }) {
+  const order = [];
+  const s = await setup({
+    tabs: [REGULAR, ...tabs],
+    copy,
+    scopes,
+    beforeStart: (f) => {
+      f.sessionRules_ = structuredClone(V.rules);
+      f.impl["declarativeNetRequest.updateSessionRules"] = async (d) => {
+        if ((d.removeRuleIds ?? []).includes(10)) order.push("act rules go");
+        const kept = f.sessionRules_.filter((r) => !(d.removeRuleIds ?? []).includes(r.id));
+        f.sessionRules_ = [...kept, ...structuredClone(d.addRules ?? [])];
+      };
+      f.impl["debugger.sendCommand"] = async (target, method, params) => {
+        if (method !== "Target.closeTarget") return {};
+        const t = f.targets_.find((x) => x.id === params.targetId);
+        if (t && closable(t.tabId)) {
+          order.push("close " + t.tabId);
+          f.closeTab(t.tabId);
+        }
+        return { success: true };
+      };
+      f.impl["tabs.remove"] = async (id) => {
+        if (!closable(id)) throw new Error("No tab with id: " + id);
+        order.push("close " + id);
+        f.closeTab(id);
+      };
+      return beforeStart(f);
+    },
+  });
+  return { s, order };
+}
+
+test("P1: at a start with the act's rules present, every incognito tab closes first (also a left act tab whose key never reached the copy), then the rules go", async () => {
+  const left = { id: ACT_TAB, windowId: WIN.id, incognito: true, url: "https://staging.example.com/login" };
+  const nokey = { id: 35, windowId: 36, incognito: true, url: "https://staging.example.com/help" };
+  const { s, order } = await leftActStart({ tabs: [left, nokey], copy: { "act:30": true } });
+  await flush(16);
+  assert.ok(!s.f.tabs_.some((t) => t.incognito), "no incognito tab is open");
+  assert.deepEqual(order.slice().sort(), ["act rules go", "close 31", "close 35"]);
+  assert.equal(order.at(-1), "act rules go", "the rules go after every incognito tab closed");
+  assert.ok(s.f.tabs_.some((t) => t.id === 7), "a tab of the default context stays");
+  assert.deepEqual(s.f.storage_.session, {});
+});
+
+test("P1: a start whose read of the copy fails still closes every incognito tab before the act's rules go", async () => {
+  const left = { id: ACT_TAB, windowId: WIN.id, incognito: true, url: "https://staging.example.com/login" };
+  const { s, order } = await leftActStart({
+    tabs: [left],
+    copy: { "act:30": true },
+    beforeStart: (f) => {
+      f.impl["storage.session.get"] = async () => {
+        throw new Error("read failed (test)");
+      };
+    },
+  });
+  await flush(16);
+  assert.ok(!s.f.tabs_.some((t) => t.id === ACT_TAB), "the left act tab closed");
+  assert.deepEqual(order, ["close 31", "act rules go"]);
+});
+
+test("P1: when an incognito tab does not close at the start, the act's rules stay (fail closed); the next link change tries again", async () => {
+  const left = { id: ACT_TAB, windowId: WIN.id, incognito: true, url: "https://staging.example.com/login" };
+  let closable = false;
+  // No set_scopes at the start: it would wait in the removal queue behind the start's close, whose timers this test fires.
+  const { s, order } = await leftActStart({ tabs: [left], closable: () => closable, scopes: null });
+  await flush(16);
+  for (let i = 0; i < 6; i++) await s.fire(2000);
+  assert.ok(s.f.tabs_.some((t) => t.id === ACT_TAB), "the tab stays");
+  assert.equal(s.f.sessionRules_.filter(isActRule).length, V.rules.length, "the rules stay");
+  assert.ok(!order.includes("act rules go"));
+  closable = true;
+  s.port().fireMessage({ t: "link", up: true });
+  await flush(16);
+  for (let i = 0; i < 3; i++) await s.fire(2000);
+  assert.ok(!s.f.tabs_.some((t) => t.id === ACT_TAB), "the next link change closed it");
+  assert.equal(order.at(-1), "act rules go");
+  assert.deepEqual(s.f.sessionRules_.filter(isActRule), []);
+});
+
+test("R2: the guard reads a tab that it does not know before it acts: an incognito tab whose navigation came before its tabs.onCreated gets no about:blank and no blocked", async () => {
+  const s = await setup();
+  s.f.tabs_.push({ id: 48, windowId: 49, incognito: true, url: "https://private.localhost/a" });
+  s.f.chrome.webNavigation.onBeforeNavigate.fire({ tabId: 48, frameId: 0, url: "https://private.localhost/a" });
+  s.f.chrome.webNavigation.onErrorOccurred.fire({ tabId: 48, frameId: 0, url: "https://private.localhost/a", error: "net::ERR_BLOCKED_BY_CLIENT" });
+  await flush(12);
+  assert.deepEqual(s.notices(), [], "no blocked");
+  assert.ok(!s.f.callsTo("tabs.update").some(([id]) => id === 48), "no about:blank");
+  assert.equal(s.r.map.isIncognito(48), true, "the read told the map");
+  // A tab of the default context that the guard reads is still sent away, with its notice.
+  s.f.tabs_.push({ id: 50, windowId: 1, url: "about:blank" });
+  s.f.chrome.webNavigation.onBeforeNavigate.fire({ tabId: 50, frameId: 0, url: "https://private.localhost/b" });
+  await flush(12);
+  assert.deepEqual(s.notices().map((n) => n.tab), [50]);
+  assert.ok(s.f.callsTo("tabs.update").some(([id, p]) => id === 50 && p.url === "about:blank"));
+});
+
+test("R2: an incognito tab that the map does not know (a start whose read failed): tabs.remove (its item's own read) and tabs.update (a read of the tab) refuse it, with no attach and no close", async () => {
+  const s = await setup();
+  s.f.tabs_.push({ id: 48, windowId: 49, incognito: true, url: "https://private.localhost/a" });
+  s.f.targets_.push({ id: "T48", tabId: 48, type: "page", attached: false });
+  assert.equal(s.r.map.isIncognito(48), false);
+  assert.equal((await s.answer({ id: "rm48", op: "tabs.remove", args: [48] })).error, "not an agent tab");
+  assert.equal((await s.answer({ id: "up48", op: "tabs.update", args: [48, { active: true }] })).error, "not an agent tab");
+  assert.ok(s.f.tabs_.some((t) => t.id === 48), "the tab stays");
+  assert.equal(s.f.callsTo("debugger.attach").length, 0, "no attach for a close");
+  assert.ok(!s.f.callsTo("tabs.update").some(([id]) => id === 48));
+  assert.ok(!s.f.callsTo("debugger.sendCommand").some(([, m]) => m === "Target.closeTarget"));
+  // A tab of the default context is still closed and selected.
+  s.f.targets_.push({ id: "T7", tabId: 7, type: "page", attached: false });
+  assert.equal((await s.answer({ id: "up7", op: "tabs.update", args: [7, { active: true }] })).ok, true);
+});
+
+test("R2: downloads.search leaves an incognito download out, and downloads.cancel of one gets not an agent download", async () => {
+  const s = await setup();
+  const items = [{ id: 3, incognito: false, state: "in_progress" }, { id: 4, incognito: true, state: "in_progress" }];
+  s.f.impl["downloads.search"] = async (q) => structuredClone(items.filter((d) => q.id === undefined || d.id === q.id));
+  assert.deepEqual((await s.answer({ id: "ds", op: "downloads.search", args: [{}] })).data, [items[0]]);
+  assert.equal((await s.answer({ id: "dc4", op: "downloads.cancel", args: [4] })).error, "not an agent download");
+  assert.deepEqual(s.f.callsTo("downloads.cancel"), [], "no cancel goes to Chrome");
+  assert.equal((await s.answer({ id: "dc3", op: "downloads.cancel", args: [3] })).ok, true);
+  assert.deepEqual(s.f.callsTo("downloads.cancel"), [[3]]);
 });

@@ -14,7 +14,7 @@
 //
 // No side logs the args, the results or the event params: they can hold page
 // content and sign-in values.
-import { ACT_MARK, NOT_AGENT_WINDOW } from "./act.js";
+import { ACT_MARK, NOT_AGENT_DOWNLOAD, NOT_AGENT_WINDOW } from "./act.js";
 import { call } from "./attach.js";
 import { covers, normalizeEntry } from "./lib/domains.js";
 import { receiver } from "./receiver.js";
@@ -197,7 +197,12 @@ export const OPS = Object.freeze({
     c.r.createTab(scope, () => c.r.newTab(props), (tab) => tab && tab.id), { tab: newTabWindow }),
   "tabs.get": op(["id"], 1, (c, [tabId]) => c.chrome.tabs.get(tabId)),
   "tabs.query": op(["object"], 1, (c, [info]) => c.chrome.tabs.query(info)),
-  "tabs.update": op(["id", "tabUpdate"], 2, (c, [tabId, props]) => c.chrome.tabs.update(tabId, props), { tab: agentTab }),
+  // A read of the tab first: an incognito tab that the map does not know (a start whose read failed) is
+  // refused too. A read that fails goes on: Chrome's tabs.update then gives its own error.
+  "tabs.update": op(["id", "tabUpdate"], 2, (c, [tabId, props]) => call(() => c.chrome.tabs.get(tabId)).then((t) => t, () => null).then((t) => {
+    if (t && t.incognito === true) throw new Error(NOT_AGENT_TAB);
+    return c.chrome.tabs.update(tabId, props);
+  }), { tab: agentTab }),
   // The receiver's close, in the removal queue, with the window rule.
   "tabs.remove": op(["id"], 1, (c, [tabId], o) => c.r.removals.removeTab(tabId, o), { tab: agentTab, nullResult: true }),
   // Also of an act window: the service reads its place before the act's first key.
@@ -213,8 +218,13 @@ export const OPS = Object.freeze({
     if (w && w.incognito === true) throw new Error(NOT_AGENT_WINDOW);
     return c.chrome.windows.update(windowId, info);
   }), { tab: agentWindow }),
-  "downloads.search": op(["object"], 1, (c, [query]) => c.chrome.downloads.search(query)),
-  "downloads.cancel": op(["id"], 1, (c, [id]) => c.chrome.downloads.cancel(id), { nullResult: true }),
+  // No op sees or cancels a download of an incognito tab (the operator's, or the act's; review-ce44b).
+  "downloads.search": op(["object"], 1, (c, [query]) => call(() => c.chrome.downloads.search(query))
+    .then((items) => (Array.isArray(items) ? items.filter((d) => !(d && d.incognito === true)) : items))),
+  "downloads.cancel": op(["id"], 1, (c, [id]) => call(() => c.chrome.downloads.search({ id })).then((items) => {
+    if ((Array.isArray(items) ? items : []).some((d) => d && d.incognito === true)) throw new Error(NOT_AGENT_DOWNLOAD);
+    return c.chrome.downloads.cancel(id);
+  }), { nullResult: true }),
   "contentSettings.set": op(["contentType", "contentDetails"], 2,
     (c, [type, details]) => c.chrome.contentSettings[type].set(details), { nullResult: true }),
   "contentSettings.clear": op(["contentType"], 1, (c, [type]) => c.chrome.contentSettings[type].clear({}), { nullResult: true }),
