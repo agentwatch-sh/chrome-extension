@@ -77,6 +77,16 @@ whose switch is off, the daemon stays the party, and every rule of this file hol
 does not change for the move: the host name, the frames, the channels, the parts and the messages stay, so
 the receiver cannot tell the service from the daemon, and the move needs no extension release.
 
+The act of the stored sign-ins (board ab-v16.97.3; the design: agent-browser
+`docs/superpowers/specs/2026-11-10-stored-sign-in-credentials-design.md`, decided by the operator's answers of
+2026-11-10, board item ab-8w8; its sections 7.3, 7.6, 7.8 and 10) is the receiver's part of agent-browser's
+sign-in act (agent-browser `docs/contracts/C11.md`, the sign-in act; board ab-v16.97.4). It is in C4 (`act_rules`,
+`act_cookies`, `act_end` and the hello's feature `act`), C5 (the act's rules A to E), C6 (the import leaves the
+act's context out) and C10 (the act window). The act's caller is the far side of the native link: from stage 3,
+on a box whose switch is on, agent-browser's service, and before that only agent-browser's own tests of the act;
+no session uses it before stage 3, and the daemon never sends its requests. A receiver without it answers them
+`unknown op` (channel `main`) and `bad args` (the mark of `windows.create`).
+
 - Sender extension ID: `bpfkgknpndlpkcffmaaelkfcbpackiip`
 - Receiver extension ID: `ifhfjdmdbgbnmllffiadajepajbcdnai`
 
@@ -201,8 +211,8 @@ frames, the channels, the parts and the messages stay, and the shim sends the sa
 stage 3, and on a box whose switch is off, the daemon is the party, as below.
 
 - receiver -> daemon:
-  `{"t":"hello","v":2,"version":"<manifest version>","channels":["main","bridge"],"features":["scopes"]}`
-  (`features`: the allowlists, below);
+  `{"t":"hello","v":2,"version":"<manifest version>","channels":["main","bridge"],"features":["scopes","act"]}`
+  (`features`: the allowlists, below, and the act of the stored sign-ins, below);
   `{"t":"res","id":"<id>","ok":true,"data":{...}}` or `{"t":"res","id":"<id>","ok":false,"error":"<text>"}`
   (a res on the bridge channel also has `"ch":"bridge"`, and its `data` can also be a list or `null`:
   C10);
@@ -229,8 +239,11 @@ stage 3, and on a box whose switch is off, the daemon is the party, as below.
   -> `{"rules":<scope rules in force>,"closed":<tabs closed>,"refused":<entries, list names and scopes refused>}`
   (the allowlists, below);
   `{"t":"req","id":"<id>","op":"import","state":<C2 payload>}` ->
-  `{"cookies_removed":0,"cookies_set":0,"tabs_closed":0,"local":0,"session":0,"idb_databases":0,"idb_records":0,"cache_entries":0,"errors":["<store or cookie name>: <reason>"]}`.
-- Ids are strings. The daemon waits 10 s for `ping` and `set_scopes`, 120 s for `import`.
+  `{"cookies_removed":0,"cookies_set":0,"tabs_closed":0,"local":0,"session":0,"idb_databases":0,"idb_records":0,"cache_entries":0,"errors":["<store or cookie name>: <reason>"]}`;
+  and the three requests of the act of the stored sign-ins (below): `act_rules`, `act_cookies` and
+  `act_end`.
+- Ids are strings. The daemon waits 10 s for `ping` and `set_scopes`, 120 s for `import`. The act's caller
+  waits 10 s for `act_rules`, `act_cookies` and `act_end`.
 - A message from the receiver to the daemon is at most `MAX_TO_DAEMON = 8388608` bytes (8 MiB) of
   UTF-8 JSON: one line on the daemon's socket, without its newline. The daemon drops the link at a
   longer line, and that would fail a running import. So the receiver never sends a longer message. A
@@ -496,6 +509,55 @@ m1c19e2a; the daemon lead chose the file of rule 2, mail me680165):
    open again as tabs of no scope: they fail closed, and the sweep never closes them (C5). If that
    limit ever matters, it is an operator decision.
 
+**The act of the stored sign-ins (board ab-v16.97.3).** agent-browser's sign-in act signs in to a site with a
+credential that the operator stored (agent-browser `docs/contracts/C11.md`, the sign-in act; the stored sign-ins
+design, sections 7.3, 7.6 and 7.8). The act runs in an act window: an incognito window that the receiver opens
+for it (C10, the act window). Three requests of channel `main` serve it. Only the act's caller sends them: from
+stage 3, on a box whose switch is on, agent-browser's service (its stage 1e part 2, board ab-v16.97.4), and
+before that only agent-browser's own tests of the act. The daemon never sends them.
+
+- The hello's `features` holds `"act"` when the receiver has the act window and these three requests. The
+  act's caller starts an act only with such a receiver. A reader that knows only `"scopes"` ignores it.
+- `act_rules`:
+  `{"t":"req","id":"<id>","op":"act_rules","tab":<act tab>,"origin":"<origin>","send_to":["<origin>"]}` ->
+  `{"rules":[<rule id>]}`. `tab` is an act tab (C10, the act window), `origin` is the credential's origin, and
+  `send_to` holds the origins that may receive the password: 1 to `MAX_SEND_TO = 32` origins, each once, with
+  `origin` among them. Each origin is an `http:` or `https:` origin exactly as the URL parser gives it
+  (lowercase, punycode, no default port, no path). The receiver checks the fields (else `bad request`), then the
+  tab (else `not an act tab`). Then it replaces the act's rules (C5) in one `updateSessionRules` call and reads
+  the session rules back (`getSessionRules`). It answers the ids of the rules of the call only when the read
+  holds each of them: that answer is the confirmation, and the act types no key before it. A call that
+  fails, or a rule that the read does not hold, answers `rules not held`. The rules from before the call then
+  stay, because one call is all or nothing.
+- `act_cookies`: `{"t":"req","id":"<id>","op":"act_cookies","tab":<act tab>,"domain":"<host>"}` ->
+  `{"cookies":[<C2 cookie>]}`. `domain` is the credential's host, as the URL parser gives it (no port). The
+  receiver checks the fields (else `bad request`) and the tab (else `not an act tab`). It finds the cookie store
+  whose `tabIds` hold the tab (`cookies.getAllCookieStores`; else `no cookie store`), and it reads
+  `cookies.getAll({domain, storeId})` and `cookies.getAll({domain, storeId, partitionKey: {}})`: the cookies of
+  the host and its subdomains (Chrome's domain filter), partitioned or not, each cookie once. It answers each
+  cookie in C2's form, as the sender builds it. A Chrome call that fails answers `cookies failed`. The receiver
+  reads no store of the default context for the act: a tab that is no act tab gets `not an act tab`. A cookie
+  of a parent domain of the host is not in the answer (the design's limit). The values go only in this answer,
+  as an import's values go only in its request, and no log line holds one. The act's caller checks the move's
+  payload and sends it as an `import` (C6): the move is one more caller of `import`.
+- `act_end`: `{"t":"req","id":"<id>","op":"act_end"}` -> `{"closed":<tabs closed>}`. The receiver closes each
+  tab of the act: each tab of an act window and each act tab in another window (a popup), in one item of the
+  removal queue (C10, removals and the last window: the receiver's close, no `beforeunload`). Then it reads the
+  tabs again. While a tab of the act is open, the act's rules stay, and the answer is `act not closed`. Else the
+  act's rules go (C5; a call that fails answers `rules not removed`, and they stay), and the keys of the act
+  windows leave the copy (C10). `closed` counts the tabs that closed in the item. With no act, the answer is
+  `{"closed":0}`.
+- The order of `act_end` is decided here (board ab-v16.97.3): first the tabs, then the rules. The design's step
+  4 says "removes the block's rules, and closes the act window". But a page of the act can keep the password in
+  a variable of its script and send it after the rules go. With the tabs closed first, no page of the act is
+  left when the rules go.
+- Channel `main` runs one request at a time (above), so an act's request waits behind an import that runs (at
+  most 115 s). The act's caller waits 10 s for each request from its send.
+- A link change and the worker's start end the act too (C10, the act window): the bridge's detaches end the
+  act's own session on the act tab, so no act goes on over a link change.
+- No log line of the receiver holds a field of these requests or of their answers.
+- The shared vector: `test/vectors/act.json` (with C5's rules and C10's act window).
+
 ### C5. The allowlist and the block
 
 - File `CONFIG_DIR/browser/allowlist.json` = `{"allow": ["example.com", ...]}` (agent-browser's
@@ -517,6 +579,9 @@ m1c19e2a; the daemon lead chose the file of rule 2, mail me680165):
   scope's list. A marked tab (C10, the operator mark of choice 3) has no scope; its
   list is its `operator` value: `"*"` (any site), a list, or none (`null`: the tab fails closed, as
   a tab with no list). Any other tab of no scope, and a tab whose scope has no list, has no list.
+  An act tab of the stored sign-ins (C10, the act window) is a tab of its caller's scope: its list is
+  its scope's list. Any other incognito tab has no scope and no mark (C10, the act window), so it has
+  no list, and no rule allows it.
 - The DNR rules. The per-scope design's probe measured them (Chromium 156, 2026-11-04), unless a
   rule names another measure.
   - Static rule 1: the receiver's static ruleset `block_main_frame` (`rules/block-main-frame.json`,
@@ -579,6 +644,58 @@ m1c19e2a; the daemon lead chose the file of rule 2, mail me680165):
     ["main_frame", "sub_frame", "object"]`, `tabIds` = the marked tabs, no host condition. No rule 8
     while no tab is marked (DNR refuses an empty `tabIds`). With `"operator":"<list>"`, the marked
     tabs join the `tabIds` of that list's two scope rules. With `null`, they have no rule.
+  - The act's rules (the stored sign-ins' block; board ab-v16.97.3; the design's section 7.6, rules A
+    to E): session rules that `act_rules` (C4) writes for the act tab T of the request, the
+    credential's host H (the host of `origin`) and the hosts S of `send_to` (each host once). They hold
+    from their add, before the act's first key, to the act's end. They block each request of the act
+    tab, of its popups and of the site's workers to a host outside `send_to`, every resource type, the
+    WebSocket included, except a top-level GET:
+    - A: id 10, priority 4, `{"type":"block"}`, `tabIds` [T], `excludedResourceTypes`
+      `["main_frame"]`, `excludedRequestDomains` S: each request of the act tab except a main frame, to
+      a host outside S (subresources, beacons, WebSockets, WebTransport and the requests of the tab's
+      dedicated workers).
+    - B: id 11, priority 4, `{"type":"block"}`, `tabIds` [T], `resourceTypes` `["main_frame"]`,
+      `excludedRequestMethods` `["get"]`, `excludedRequestDomains` S: a top-level request of the act
+      tab by another method than GET (a form or a script that posts to another site after the form
+      check).
+    - C: id 12, priority 4, `{"type":"block"}`, no `tabIds` (every tab, also each tab of the default
+      context), `initiatorDomains` [H], `excludedResourceTypes` `["main_frame"]`,
+      `excludedRequestDomains` S: the requests of the act's popups (an `about:blank` popup has its
+      opener's origin) and of the site's service workers and shared workers, which no tab rule matches.
+    - D: id 13, priority 4, `{"type":"block"}`, `tabIds` [T], `excludedResourceTypes`
+      `["main_frame"]`, `requestDomains` S: a subdomain, another scheme or another port of a host of S
+      (DNR matches hosts, not origins).
+    - E: ids 14 and up, two for each origin O of `send_to` in its order, priority 5,
+      `{"type":"allow"}`, `tabIds` [T], `excludedResourceTypes` `["main_frame"]`, `urlFilter` `|O/`
+      and `|<ws>//<the host and port of O>/`, where `<ws>` is `wss:` for an `https:` origin and `ws:`
+      for an `http:` origin: the act tab's requests to the exact origins of `send_to`.
+    - The ids are 10 to 77 (`MAX_SEND_TO` is 32 origins, C4), below the scope rules' 100. The
+      priorities are above the scope rules' (2), the import's rules' (2), rule 8's (2) and rule 5's (3).
+      No rule but B matches a main frame, so rule 5 still sets the act's own navigations as typed ones,
+      and a top-level GET to another host stays open in every tab: a sign-in often ends with a
+      redirect to another host of the site, whose initiator is H, and the scope's list (the scope
+      rules and the guard, below) and the act's own guard (agent-browser C11) still judge it.
+    - Decided here (board ab-v16.97.3), where the design's table names no value: C matches no main
+      frame, as A does; E's WebSocket for an `http:` origin (a test site on a loopback host) is `ws:`;
+      E is one `urlFilter` rule for each URL prefix, not one `regexFilter`, because Chrome refuses a
+      `regexFilter` above its compiled size limit (2 KB); a `urlFilter` that starts with `|` and ends
+      with the `/` after the host matches only that scheme, that host and that port.
+    - `act_rules` replaces them all in one call and confirms them by a read (C4). They go at `act_end`
+      after each tab of the act closed, at each link change (C10, the act window), and at the worker's
+      start (every session rule goes there). A full replace of the scope rules after a start whose
+      removal failed keeps them while an act of this worker holds them (as it keeps the import's rules
+      6 and 7), and removes the ids 10 to 77 otherwise. The remove-only call of a failed scope update
+      never removes them.
+    - They count in the 5000 session rules: at most 4 + 2 x 32 = 68 rules.
+    - What they do not stop, stated plainly (the design's section 7.6): a send to an origin of
+      `send_to` (any path, a hash, an encryption, a compression, a part of the value, a WebSocket); a
+      service worker's WebSocket to a subdomain or another port of a host of S (C is by host); a
+      top-level or popup request to a host that the scope's list covers (no tab rule names a popup,
+      and C matches no main frame, so a popup's top-level request by another method than GET passes
+      too); DNS prefetch and preconnect; and WebRTC.
+    - The design's round 1 measured rules A, B and C with Chromium 156 and a probe extension that
+      played the receiver. Rules D and E, and the five rules through this receiver, are designed, not
+      measured: the act task's live check (board ab-v16.97.4) proves them.
   - Each change is one `updateSessionRules` call, and the changes run one after the other, each from
     the map when it runs. A `set_scopes` replaces every scope rule and rule 8. A tab that gets or
     loses a scope replaces only the two rules of its list (of both lists when it changes lists). A
@@ -864,7 +981,8 @@ m1c19e2a; the daemon lead chose the file of rule 2, mail me680165):
   for a tab of no scope, the union of the lists counts (so an unmarked operator's tab and the page
   of a finished import stay while a list covers them); a tab of the orphan set (the sweep, below)
   has no list, so its `http:`/`https:` page closes. It never closes the restore tab of a running
-  import. The lists are those of the last applied `set_scopes` (the sweep, below): at a `set_scopes`
+  import, and never an incognito tab that is no act tab (C10, the act window); an act tab is a tab of
+  its scope here. The lists are those of the last applied `set_scopes` (the sweep, below): at a `set_scopes`
   that is not applied, the closing rule judges each tab by the last applied one, and with no applied
   one since the worker's start it closes no tab (review-20 Q2). A window closes with its last tab, except the browser's last window: there the receiver
   first opens `about:blank`, so that Chrome does not end. (With one window per page, agent-browser
@@ -882,7 +1000,9 @@ m1c19e2a; the daemon lead chose the file of rule 2, mail me680165):
   the rule update fails. With `default` `null` that is every tab of a session that ended, also of
   one that ended while the link was down or while no relay ran. A tab of no scope never closes by
   the sweep (C10, each tab's scope: the operator's tabs, an import's restore tab, the `about:blank`
-  tab of the window rule, a tab whose entry was lost), except a tab of the orphan set (below). The
+  tab of the window rule, a tab whose entry was lost, an incognito tab that is no act tab), except a
+  tab of the orphan set (below). An act tab is a tab of its scope: the sweep closes it when its scope
+  has no list. The
   sweep closes a tab with a pending close again, by the receiver's close (C10): a `beforeunload`
   dialog of a client's `Page.close` cannot keep a tab of an ended session in its scope.
   - A tab that the sweep's item does not close leaves its scope at the end of that item. There are
@@ -1016,6 +1136,10 @@ m1c19e2a; the daemon lead chose the file of rule 2, mail me680165):
   block), and each block of the guard, send `blocked` (C4) with the host (never the path or the
   query), the tab's scope and `from`. The receiver builds it from part 1c (board ab-v16.33, version
   0.3.3):
+  - An act tab of the stored sign-ins sends no `blocked`, and neither does one that closed or was
+    replaced in the last `TOMBSTONE_MS` (C10, the act window; board ab-v16.97.3): a host that its page
+    chooses can carry the password, so no notice names it (agent-browser C11 counts such blocks with
+    the requests that the act's block stopped). The guard still sends such a tab to `about:blank`.
   - `scope` is the tab's scope (C10) when the notice goes: `null` for a tab of no scope (a marked
     tab, a tab of the orphan set, the restore tab, any other tab of no scope). The viewer names the
     repo whose list lacks the host.
@@ -1050,14 +1174,17 @@ m1c19e2a; the daemon lead chose the file of rule 2, mail me680165):
 
 ### C6. The restore page (the receiver's import)
 
-1. Close every tab whose origin equals `origin` (a `blob:` page by its inner origin, as in C5's
-   closing rule; they hold the state being replaced, and a page of the origin could write a cookie
-   during the swap; C5's rule for the browser's last window applies;
+1. Close every tab of the default context whose origin equals `origin` (a `blob:` page by its inner
+   origin, as in C5's closing rule; they hold the state being replaced, and a page of the origin could
+   write a cookie during the swap; an incognito tab, for example the act tab of the stored sign-ins,
+   holds none of that state and stays: board ab-v16.97.3; C5's rule for the browser's last window
+   applies;
    in the per-scope build these closes, and the closes of the restore tab in step 5, run in the
    removal queue of C10, by the receiver's close and with its window rule). A close that has not
    ended within its item's wait (a page that a dialog holds), or a window rule that fails, fails the
    step ("close tabs"); after the item the step reads the tabs again (`tabs.query`) and fails too
-   while a tab of the origin is open (a close that ended with an error can leave it open): no cookie
+   while a tab of the default context of the origin is open (a close that ended with an error can
+   leave it open): no cookie
    is swapped while a page of the origin can be open (review-20 note 5, review-20b). Then (measured: a
    partitioned cookie of an http secure-context test site, `*.localhost`, does not move with this
    URL rule; https sites are not affected) remove every cookie of `domain` and its subdomains
@@ -1065,7 +1192,11 @@ m1c19e2a; the daemon lead chose the file of rule 2, mail me680165):
    cookie (C2 -> set details: `url` = `https://` if secure else `http://`, the domain without a
    leading dot, the path; `domain` only when not `hostOnly`; `expirationDate` only when not
    `session`; `sameSite` and `partitionKey` as sent).
-2. `tabs.create({url: "about:blank", active: true})`, the import's rules (below),
+2. `tabs.create({url: "about:blank", active: true})`, and while an incognito tab is open (in step 1's
+   second read) also `windowId`: the window of the last tab of the default context in that read (else
+   Chrome can open the tab in the incognito window when that window has the focus; board
+   ab-v16.97.3). A restore tab that Chrome opens in an incognito window would write the page storage
+   into that context: it fails the step ("open tab"), and it closes. Then the import's rules (below),
    `debugger.attach({tabId}, "1.3")`, `Network.enable`, `Network.setBypassServiceWorker({bypass:
    true})` (measured: the bypass needs the Network domain on), `Fetch.enable({patterns: [{urlPattern:
    R, requestStage: "Request"}]})` with `R = origin + "/__agentwatch_restore_" + <16 hex chars> +
@@ -1185,7 +1316,8 @@ first document request of a new tab (below).
   ops, below.
 - The receiver checks a request in this order. A request that fails a check never reaches Chrome.
   1. The op: else `unknown op`.
-  2. The args: their count, then the kind of each arg; else `bad args`.
+  2. The args: their count, then the kind of each arg, then the pair rule of `windows.create`
+     (below); else `bad args`.
   3. The wait: else `bad wait`.
   4. The tab: first `not an agent tab`, then `not attached` (below). So a `debugger.sendCommand`
      of a tab of the orphan set that is not a bridge tab gets `not an agent tab` (vector b42). In
@@ -1214,8 +1346,11 @@ first document request of a new tab (below).
     `index` (ids). `url` is `about:blank`.
   - `tabUpdate` (`tabs.update`): exactly `{"active":<boolean>}`. A navigation is `Page.navigate`.
   - `newWindow` (`windows.create`): an object with `url` (`about:blank`, one string), and at most
-    `focused` (a boolean), `left`, `top`, `width`, `height` (integers) and `state`. It has no
-    `tabId`: no op moves a tab to another window.
+    `focused` (a boolean), `left`, `top`, `width`, `height` (integers), `state` and `incognito`
+    (`true`). It has no `tabId`: no op moves a tab to another window.
+  - `mark` (`windows.create`): the string `act`, the mark of an act window (the act window, below;
+    board ab-v16.97.3). The pair rule of `windows.create`: `incognito` comes only with the mark `act`,
+    and the mark `act` only with `incognito` `true`; else `bad args`.
   - `windowUpdate` (`windows.update`): an object with at least one of `left`, `top`, `width`,
     `height`, `state` and `focused`, and no other key.
   - `contentDetails` (`contentSettings.set`): exactly `primaryPattern` and `setting`. `setting` is
@@ -1275,6 +1410,10 @@ first document request of a new tab (below).
       tab 13 with `"perScope": true` (`debugger.detach`, `tabs.get` and `bridge.release`: allowed).
   - `not attached`: `debugger.sendCommand` for a tab that is not a bridge tab. So a command never
     goes through the import's attachment.
+  - The act window (below; board ab-v16.97.3): `debugger.attach` of an incognito tab that is no act
+    tab gets `not an agent tab` (its check reads the tab, as the own-origin check does); `windows.update`
+    of an act window, and `tabs.create` with the `windowId` of an act window, get `not an agent
+    window`, with no chrome call.
 
 **Answers.** `{"t":"res","ch":"bridge","id":"<id>","ok":true,"data":<result>}` or
 `{"t":"res","ch":"bridge","id":"<id>","ok":false,"error":"<text>"}`.
@@ -1286,8 +1425,9 @@ first document request of a new tab (below).
   daemon's own ops, below); no other error `res` has `data`.
 - The receiver's error texts: `unknown op`, `bad args`, `bad wait`, `not an agent tab`,
   `not attached`, `no list for this scope` (`tabs.create`, `windows.create`: each tab's scope,
-  below), `timeout`, `too large` (a res above `MAX_RESULT`), and the text of a `chrome.*` error as
-  Chrome gives it (for example `No tab with id: 7.`).
+  below), `not an agent window`, `not allowed in incognito` and `another private window is open`
+  (the act window, below), `timeout`, `too large` (a res above `MAX_RESULT`), and the text of a
+  `chrome.*` error as Chrome gives it (for example `No tab with id: 7.`).
 - The relay gets exactly one res for each request: the receiver's, or one from the daemon. A `daemon.` op
   gets the daemon's own answer (the daemon's own ops, below), or none when the relay ends or the daemon
   stops. The daemon's answers have the same shape,
@@ -1325,14 +1465,14 @@ the receiver has no part (the daemon's own ops, below).
 | `debugger.detach` | `[tabId]` | `null` | `WAIT_DEFAULT_MS` | Releases a hold of the tab, then `chrome.debugger.detach({tabId})`. A tab that is not a bridge tab also answers `null`. |
 | `debugger.sendCommand` | `[target, method, params?]` | the CDP result | `WAIT_MAX_MS` | `chrome.debugger.sendCommand(target, method, params)`; a missing `params` goes as `{}`. In the per-scope build a `Page.close` on the tab's own session runs in the removal queue (removals and the last window, below). |
 | `debugger.getTargets` | `[]` | `[TargetInfo]` | `WAIT_DEFAULT_MS` | `chrome.debugger.getTargets()`. |
-| `tabs.create` | `[createProperties, scope]` | `Tab` | `WAIT_DEFAULT_MS` | `chrome.tabs.create(createProperties)`. The new tab gets the scope; the op answers when the tab's scope rule is in force and its key is in the copy (each tab's scope, below). In the per-scope build a scope that the last applied `set_scopes` gives no list gets `no list for this scope`, and no tab. |
+| `tabs.create` | `[createProperties, scope]` | `Tab` | `WAIT_DEFAULT_MS` | `chrome.tabs.create(createProperties)`. The new tab gets the scope; the op answers when the tab's scope rule is in force and its key is in the copy (each tab's scope, below). In the per-scope build a scope that the last applied `set_scopes` gives no list gets `no list for this scope`, and no tab. The `windowId` of an act window gets `not an agent window`, and so does a tab that Chrome opens in an incognito window (it closes; the act window, below). |
 | `tabs.get` | `[tabId]` | `Tab` | `WAIT_DEFAULT_MS` | `chrome.tabs.get`. |
 | `tabs.query` | `[queryInfo]` | `[Tab]` | `WAIT_DEFAULT_MS` | `chrome.tabs.query`. |
 | `tabs.update` | `[tabId, updateProperties]` | `Tab` | `WAIT_DEFAULT_MS` | `chrome.tabs.update`. |
 | `tabs.remove` | `[tabId]` | `null` | `WAIT_DEFAULT_MS` | `chrome.tabs.remove`. In the per-scope build: the receiver's close (`Target.closeTarget` through `chrome.debugger`, no `beforeunload`), in the removal queue, with the window rule (removals and the last window, below). |
-| `windows.get` | `[windowId, queryOptions?]` | `Window` | `WAIT_DEFAULT_MS` | `chrome.windows.get`. |
-| `windows.create` | `[createData, scope]` | `Window` | `WAIT_DEFAULT_MS` | `chrome.windows.create(createData)`. The window's tab gets the scope, as for `tabs.create`, also its error `no list for this scope`. |
-| `windows.update` | `[windowId, updateInfo]` | `Window` | `WAIT_DEFAULT_MS` | `chrome.windows.update`. |
+| `windows.get` | `[windowId, queryOptions?]` | `Window` | `WAIT_DEFAULT_MS` | `chrome.windows.get`. Also of an act window (the act window, below). |
+| `windows.create` | `[createData, scope, mark?]` | `Window` | `WAIT_DEFAULT_MS` | `chrome.windows.create(createData)`. The window's tab gets the scope, as for `tabs.create`, also its errors. With the mark `act` and `incognito` `true` (the pair rule): the act window (below). |
+| `windows.update` | `[windowId, updateInfo]` | `Window` | `WAIT_DEFAULT_MS` | `chrome.windows.update`. An act window gets `not an agent window` (the act window, below). |
 | `downloads.search` | `[query]` | `[DownloadItem]` | `WAIT_DEFAULT_MS` | `chrome.downloads.search`. |
 | `downloads.cancel` | `[downloadId]` | `null` | `WAIT_DEFAULT_MS` | `chrome.downloads.cancel`. |
 | `contentSettings.set` | `[type, details]` | `null` | `WAIT_DEFAULT_MS` | `chrome.contentSettings[type].set(details)`. |
@@ -1346,7 +1486,7 @@ the receiver has no part (the daemon's own ops, below).
 | `daemon.blocked` | `[block]` | `{}` | `BLOCKED_WAIT_MS` | Nothing: the daemon answers it itself and never forwards it (the daemon's own ops, below). A receiver that gets one answers `unknown op`. |
 
 - `bridge.tabScopes` answers one item for each tab that has a scope in the map, in no set order: a
-  tab of no scope and a marked tab are not in it. The receiver sends its events in Chrome's order,
+  tab of no scope, a marked tab and an act tab (the act window, below) are not in it. The receiver sends its events in Chrome's order,
   so an event that came before the answer is already in it, and each later event applies on top of
   it. The relay calls it at each link up (the daemon and the relay, below). Its key in
   `MAX_IN_FLIGHT_PER_TAB` is the shared key. The vector: its request in `test/vectors/bridge.json`.
@@ -1357,7 +1497,8 @@ the receiver has no part (the daemon's own ops, below).
 - No op changes a list or the entries of a DNR rule, runs the import, or reads or writes page
   storage. `tabs.create` and `windows.create` only put the new tab under its scope's rules (C5).
 - No op reads, sets or removes cookies: agent mode gives programs no cookie access (board ab-8mf,
-  C11). The import's cookie work stays on channel `main` (C4, C6). A later cookie grant, for a use
+  C11). The import's cookie work stays on channel `main` (C4, C6), and so does the act's read of its
+  own store (C4, `act_cookies`). A later cookie grant, for a use
   that needs cookie access, can add `cookies.*` ops here.
 
 **Events.** `{"t":"ev","ch":"bridge","ev":"<event>",...}` with the fields below, and no other field.
@@ -1374,7 +1515,7 @@ the receiver has no part (the daemon's own ops, below).
 | `webNavigation.onErrorOccurred` | `"details"` (only `tabId`, `frameId`, `url`, `error`) | For the main frame only. |
 | `downloads.onCreated` | `"item"` | For each download. |
 | `downloads.onChanged` | `"delta"` | For each change. |
-| `bridge.tabScope` | `"tabId"`, `"scope"` | When the receiver gives a tab a scope itself: a popup (its opener's), a replaced tab (its old one). Before the popup's `tabs.onCreated`, and before the replaced tab's `tabs.onReplaced` (each tab's scope, below). |
+| `bridge.tabScope` | `"tabId"`, `"scope"` | When the receiver gives a tab a scope itself: a popup (its opener's), a replaced tab (its old one). Before the popup's `tabs.onCreated`, and before the replaced tab's `tabs.onReplaced` (each tab's scope, below). Never for an act tab (the act window, below). |
 | `bridge.tooLarge` | `"of"` (the event), `"tabId"`, and for `debugger.onEvent` `"method"`, `"sessionId"` (of a child session) and `"requestId"` (of a `Fetch` event) | In place of an event above `MAX_TO_DAEMON`. |
 
 - A bridge event never waits, like a res. The receiver sends it at once while the link is up, and
@@ -1464,6 +1605,9 @@ that tab still reach Chrome in the relay's order.
      daemon connection it keeps the map, the scope rules, the marks, the last `operator` value and
      rule 8 (board ab-v16.41): a link drop or a daemon restart does not take a live session's tabs
      out of their scopes.
+  5. ends the act of the stored sign-ins (the act window, below; board ab-v16.97.3): it closes each
+     tab of the act and removes the act's rules, as `act_end` does (C4). At the worker's start it
+     closes the tabs of each act window of the copy.
   So no domain state (Fetch, emulation, interception) stays behind, and a long `Runtime.evaluate`
   ends.
 - The daemon, at a link drop, answers every bridge request that waits or runs with `disconnected`.
@@ -1534,7 +1678,8 @@ hold it; the last bullet gives the numbers and what the relay does about it.
   receiver skips the restore tab (`"attached":false`) and attaches the others.
 - The receiver also skips a tab of its own origin. Tabs that the operator opens in the live view
   (agentwatch design §5.15) get the operator mark (choice 3; each tab's scope,
-  below), and the receiver skips a marked tab too.
+  below), and the receiver skips a marked tab too. It skips every incognito tab (the act window,
+  below): only the act's own `debugger.attach` attaches the act tab.
 - The relay sends `bridge.release` when the client sends `Runtime.runIfWaitingForDebugger` on that
   tab (it does not wait for the answer: while the hold keeps a tab's first request, Chrome answers
   no command of that tab, and waiting held every popup for 5 s; measured), or before it detaches a
@@ -1865,7 +2010,8 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
     above). Without that build, the operator's tabs fail closed. The receiver builds it from
     version 0.3.2 (part 1d, board ab-v16.34):
     - The receiver gives the mark in its `tabs.onCreated` listener, before any `await` and before
-      the eager attach of the tab, which then skips it (the hold, above): the tab's `pendingUrl`,
+      the eager attach of the tab, which then skips it (the hold, above). An incognito tab gets no
+      mark (the act window, below). The rule: the tab's `pendingUrl`,
       else its `url`, is exactly `chrome://newtab/`, no `webNavigation.onCreatedNavigationTarget` of
       the tab came before, and the tab is not in the map. Measured (Chromium 156, part 1d's live
       test): Ctrl+T and Ctrl+N (a new window) give `url` `""` and `pendingUrl` `chrome://newtab/`;
@@ -1956,8 +2102,9 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
     starts with an empty map and connects anyway: the tabs of the copy are then tabs of no scope (a
     limit). The removal of every session rule before the read has `RESTORE_MAX_MS` too: one that
     fails or has not ended by then fails closed, and the receiver logs it; its next full replace
-    removes every rule of the scheme (the scope rules and rule 8, and rules 6 and 7 when no import
-    runs) before it adds the new ones (review-20 notes 3 and 4). The late part of such a removal
+    removes every rule of the scheme (the scope rules and rule 8, rules 6 and 7 when no import
+    runs, and the act's rules 10 to 77 when no act holds them: C5, the act's rules) before it adds
+    the new ones (review-20 notes 3 and 4). The late part of such a removal
     removes nothing more, so it never takes the rules of that full replace (review-20b). The kept tabs fail closed until the next `set_scopes`, which comes soon: a worker's
     start is a link change, and the daemon sends `set_scopes` after each link up (C4).
   - A new entry after the sweep (board ab-v16.41). The receiver checks each new entry against its
@@ -2102,6 +2249,66 @@ blocked by its own list (C5; the per-scope design, sections 4 and 5).
   real document is still to come, and does not see Chrome's error page as the popup's page through
   CDP (the error page still shows in the window for 60 to 100 ms).
 
+**The act window (board ab-v16.97.3).** agent-browser's sign-in act signs in with a stored credential in an
+act window of its own (agent-browser `docs/contracts/C11.md`, the sign-in act; the stored sign-ins design,
+section 7.3). Its caller is the far side of the native link (C4, the act of the stored sign-ins): from stage
+3, on a box whose switch is on, agent-browser's service. An incognito window has an off-the-record browser context of its own. That context shares no cookie,
+storage, Cache Storage, service worker, `BroadcastChannel`, HTTP cache or history with the agent's tabs, and
+Chrome drops it when its last incognito window closes.
+
+- The receiver's manifest has `"incognito": "spanning"`, Chrome's default for an extension, written out: one
+  worker for both contexts, so the session rules, the map and the bridge reach the act window. An extension
+  reaches an incognito window only when Chrome allows it in incognito. The act's caller writes the allow into
+  the profile's `Preferences` before each Chrome start (`extensions.settings.<receiver ID>.incognito: true`;
+  the design, section 7.3).
+- `windows.create` with `[createData, scope, "act"]`, where `createData` has `url` `about:blank` and
+  `incognito` `true` (the pair rule, above). The receiver:
+  1. checks the scope: `no list for this scope`, as for any new window;
+  2. asks Chrome whether it allows the receiver in incognito (`chrome.extension.isAllowedIncognitoAccess`,
+     its first chrome call): else `not allowed in incognito`, and no window opens;
+  3. ends a left act, as `act_end` does (C4): each tab of an act window that is left (after a stop of the
+     act's caller, or an act that did not end) and each act tab close, and the act's rules go. When a tab of
+     it stays open: `another private window is open`;
+  4. reads every tab (`tabs.query` with `{}`): while any incognito tab is open (for example one that the
+     operator opened in the live view; all incognito windows of a profile share one context), `another
+     private window is open`, and no window opens;
+  5. calls `chrome.windows.create(createData)`. A result that is no incognito window with a tab (Chrome gives
+     an extension that it does not allow in incognito no window) gets `not allowed in incognito`;
+  6. keeps the window as an act window, with the key `act:<windowId>` in the copy (each tab's scope, above:
+     the copy), gives the window's tab (the act tab) its caller's scope in the map, and answers the `Window`
+     when the tab's scope rule is in force and the key is in the copy. When the rule update or the key's write
+     fails, the act ends and the op answers the error. When a link change comes during the op, the act ends
+     too.
+- The act tab is in its caller's scope for the list rules only (C5: the scope rules, the guard, the closing
+  rule and the sweep). No connection sees it: `bridge.tabScopes` leaves it out, no `bridge.tabScope` names it,
+  and the copy holds no key `tab:<id>` for it, so a worker that starts again gives it no scope. The act's
+  caller hides it and its window from every client (agent-browser C11). A popup of an act tab, and the added tab of
+  its `tabs.onReplaced`, is an act tab too, with its scope and no `bridge.tabScope`; so is a popup of an act
+  tab that closed or was replaced in the last `TOMBSTONE_MS`. An act tab sends no `blocked` (C5).
+- The act's own session on the act tab is a bridge attach (`debugger.attach`, `debugger.sendCommand`). The
+  eager attach skips every incognito tab (the hold, above), so only the act's caller attaches the act tab.
+- `windows.get` of an act window answers as for any window. The act's caller reads the window's place after
+  its move at the X level, and the act types no key before the window is outside the screen (the design,
+  section 7.3).
+- No op moves, resizes or fills an act window: `windows.update` of it, and a `tabs.create` with its
+  `windowId`, get `not an agent window`, with no chrome call.
+- Every other incognito tab is no agent tab. It gets no scope and no operator mark, so it fails closed (no
+  rule allows it, C5). The eager attach skips it, `debugger.attach` of it gets `not an agent tab`, and C5's
+  closing rule and sweep never close it. A tab of `tabs.create` or `windows.create` that Chrome opens in an
+  incognito window (a `tabs.create` with no `windowId` while an incognito window has the focus) is no agent
+  tab either: it closes (in the removal queue, by the receiver's close), and the op answers `not an agent
+  window`. So the act's caller opens the act window with `focused` `false`.
+- The act's end: `act_end` (C4) closes each tab of the act, then removes the act's rules (C5). The receiver
+  also ends the act itself at each disconnect and each new daemon connection ("What stops a handler", above):
+  the bridge's detaches end the act's own session on the act tab, so no act goes on over a link change. At
+  the worker's start it closes the tabs of each act window of the copy. While no act window, act tab or act
+  rule is there, a link change makes no chrome call for the act.
+- The limits, stated plainly. After a worker start the receiver knows only the act windows of the copy: an
+  act tab in another window (a popup) then stays open, in no scope and closed to every site, and the next act
+  window gets `another private window is open` until someone closes it. A program of the user with the
+  display's X authority can still reach the act window (the design's same-uid limit).
+- The vector: `test/vectors/act.json`, with C4's `act_rules`, `act_cookies` and `act_end` and C5's rules.
+
 **Removals and the last window (board ab-v16.41).** In the per-scope build the receiver keeps the
 browser's last window for every close that it makes or that the relay asks for (the orphan-tabs
 design, section 7). Before part 2, today's relay keeps it with today's ops (C11, when a connection
@@ -2190,7 +2397,11 @@ ends).
 - The **window rule**. Before an item closes its tabs, the receiver reads every tab (`tabs.query`
   with `{}`). When no tab stays open other than the tabs of the item and the tabs with a pending
   close (below), it first opens an `about:blank` tab, not active and in no scope, in the window of
-  the item's last tab, as C5's closing rule does. The query and that tab each have a limit of
+  the item's last tab, as C5's closing rule does. An incognito tab never counts as a tab that stays
+  (the act window closes at the act's end), and the `about:blank` tab never goes into an incognito
+  window: it goes into the window of the item's last tab that is not incognito, else into a new
+  window of the default context (`windows.create` with `{"url":"about:blank","focused":false}`;
+  board ab-v16.97.3). The query and that tab each have a limit of
   `REMOVAL_WAIT_MS`. When either fails or comes later, the receiver closes no tab of the item, and
   the item ends: `tabs.remove` and `Page.close` answer the error, and the closing rule and the sweep
   count no tab in `closed`. A tab of the closing rule stays, and the next `set_scopes` tries again;

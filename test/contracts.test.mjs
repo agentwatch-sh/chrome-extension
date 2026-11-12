@@ -20,6 +20,7 @@ const bridge = JSON.parse(read("test/vectors/bridge.json"));
 const scopesV = JSON.parse(read("test/vectors/scopes.json"));
 const helloV = JSON.parse(read("test/vectors/hello.json"));
 const blockedV = JSON.parse(read("test/vectors/blocked.json"));
+const actV = JSON.parse(read("test/vectors/act.json"));
 
 // The text of one contract: from its "### Cn." heading to the next "### ".
 function section(name) {
@@ -137,7 +138,8 @@ test("C4 states the set_scopes request and answer, and the receiver's hello with
   assert.ok(C4.includes('`{"rules":<scope rules in force>,"closed":<tabs closed>,"refused":<entries, list names and scopes refused>}`'));
   assert.ok(C4.includes("The daemon waits 10 s for `ping` and `set_scopes`"));
   assert.ok(C4.includes("`" + JSON.stringify({ ...helloV.hello, version: "<manifest version>" }) + "`"), "C4 shows the hello");
-  assert.deepEqual(helloV.hello.features, ["scopes"]);
+  // The feature act: the act of the stored sign-ins (board ab-v16.97.3).
+  assert.deepEqual(helloV.hello.features, ["scopes", "act"]);
   assert.deepEqual(helloV.hello.channels, CHANNELS);
   assert.ok(C4.includes("`test/vectors/hello.json`") && C4.includes("`test/vectors/scopes.json`"), "C4 names the vectors");
 });
@@ -221,7 +223,7 @@ test("each guard vector follows C5's guard: the host that it judges and the cove
   // The lead's decisions on PR #23: Q1 from in C4, Q2 the closing rule and the import judge a blob: page by its inner origin, Q3 the fact.
   assert.ok(says(C4, "`from` is the host of the tab's last main-frame commit that C5's guard let stay, so a host that the guard sent away never becomes `from`"), "C4: from");
   assert.ok(says(C5, "closes every tab whose `http:`/`https:` host its list does not cover (a `blob:` page counts by its inner origin's host, as for the guard below"), "C5: the closing rule and blob:");
-  assert.ok(says(section("C6"), "Close every tab whose origin equals `origin` (a `blob:` page by its inner origin"), "C6: the import's close and blob:");
+  assert.ok(says(section("C6"), "Close every tab of the default context whose origin equals `origin` (a `blob:` page by its inner origin"), "C6: the import's close and blob:");
   assert.ok(says(C5, "So in the own-page form the worker's page commits and runs its scripts before layer 3 sends it away (80 of 80)"), "C5: the fact of Q3");
   // The operator's decision on ab-7wg (2026-11-06): service workers stay on; C5 states it and its residues, and waits on no answer.
   assert.ok(says(C5, "The operator chose to keep service workers on (board item ab-7wg, 2026-11-06, the recommended option)"), "C5: the decision of ab-7wg");
@@ -524,9 +526,12 @@ function kindFits(kind, a) {
         ["windowId", "index"].every((k) => !Object.hasOwn(a, k) || (int(a[k]) && a[k] >= 0));
     case "tabUpdate": return isObj(a) && onlyKeys(a, ["active"]) && typeof a.active === "boolean";
     case "newWindow":
-      return isObj(a) && onlyKeys(a, ["url", "focused", "left", "top", "width", "height", "state"]) && newUrl(a.url) &&
+      return isObj(a) && onlyKeys(a, ["url", "focused", "left", "top", "width", "height", "state", "incognito"]) && newUrl(a.url) &&
         (!Object.hasOwn(a, "focused") || typeof a.focused === "boolean") &&
-        ["left", "top", "width", "height"].every((k) => !Object.hasOwn(a, k) || int(a[k]));
+        ["left", "top", "width", "height"].every((k) => !Object.hasOwn(a, k) || int(a[k])) &&
+        (!Object.hasOwn(a, "incognito") || a.incognito === true);
+    // The mark of an act window (board ab-v16.97.3).
+    case "mark": return a === "act";
     case "windowUpdate":
       return isObj(a) && Object.keys(a).length > 0 && onlyKeys(a, ["left", "top", "width", "height", "state", "focused"]) &&
         (!Object.hasOwn(a, "focused") || typeof a.focused === "boolean") &&
@@ -536,9 +541,12 @@ function kindFits(kind, a) {
     default: return false;
   }
 }
+// The pair rule of windows.create (C10, board ab-v16.97.3): incognito only with the mark act, and the
+// mark act only with incognito true.
+const pairFits = (o, args) => o.op !== "windows.create" || (args[2] === "act") === Object.hasOwn(args[0], "incognito");
 function argsFit(o, args) {
   if (!Array.isArray(args) || args.length < o.required || args.length > o.args.length) return false;
-  return args.every((a, i) => kindFits(o.kinds[i], a));
+  return args.every((a, i) => kindFits(o.kinds[i], a)) && pairFits(o, args);
 }
 
 const waitFits = (req) => !Object.hasOwn(req, "wait") || (int(req.wait) && req.wait >= 1 && req.wait <= K.WAIT_MAX_MS);
@@ -681,8 +689,10 @@ test("tabs.create and windows.create take the scope arg, and a new tab opens at 
   const SCOPED = ["tabs.create", "windows.create"];
   for (const name of SCOPED) {
     const o = opByName.get(name);
-    assert.deepEqual([o.kinds.at(-1), o.required, o.args.length], ["scope", 2, 2], `${name}: the scope arg is required`);
+    assert.deepEqual([o.kinds[1], o.required], ["scope", 2], `${name}: the scope arg is required`);
   }
+  // windows.create's optional third arg: the mark of an act window (board ab-v16.97.3).
+  assert.deepEqual([opByName.get("tabs.create").args.length, opByName.get("windows.create").args, opByName.get("windows.create").kinds.at(-1)], [2, ["createData", "scope", "mark?"], "mark"]);
   assert.ok(SCOPE.test(bridge.scope));
   for (const v of bridge.requests.filter((x) => SCOPED.includes(x.req.op))) {
     assert.equal(v.req.args[1], bridge.scope, v.req.id);
@@ -693,7 +703,8 @@ test("tabs.create and windows.create take the scope arg, and a new tab opens at 
   assert.ok(bad.some((v) => v.req.args.length === 2 && /^https?:/.test(v.req.args[0].url ?? "")), "a site's URL");
   assert.ok(bad.some((v) => v.req.args.length === 2 && !kindFits("scope", v.req.args[1])), "a bad scope");
   assert.ok(bad.some((v) => v.req.op === "windows.create" && Object.hasOwn(v.req.args[0], "tabId")), "no op moves a tab");
-  assert.ok(C10.includes("`[createProperties, scope]`") && C10.includes("`[createData, scope]`"));
+  assert.ok(C10.includes("`[createProperties, scope]`") && C10.includes("`[createData, scope]`") && C10.includes("`[createData, scope, mark?]`"));
+  assert.ok(bad.filter((v) => v.req.op === "windows.create" && !pairFits(opByName.get("windows.create"), v.req.args)).length >= 3, "the pair rule's vectors");
 });
 
 test("bridge.tabScope: its vectors name a tab and a scope, and C10 gives its order", () => {
@@ -1471,9 +1482,9 @@ test("review-20's decisions are the contract: the closing rule at a set_scopes t
     // Q3, note 2, notes 3 and 4: C10.
     [C10, "A write of its key in the copy that fails is handled as a failed rule update of that tab: the new tab leaves the map, joins the orphan set and closes, and the op answers with the error"],
     [C10, "The late part of such a removal removes nothing more, so it never takes the rules of that full replace"],
-    [C6, "after the item the step reads the tabs again (`tabs.query`) and fails too while a tab of the origin is open (a close that ended with an error can leave it open): no cookie is swapped while a page of the origin can be open"],
+    [C6, "after the item the step reads the tabs again (`tabs.query`) and fails too while a tab of the default context of the origin is open (a close that ended with an error can leave it open): no cookie is swapped while a page of the origin can be open"],
     [C10, "the fallback then calls `chrome.tabs.remove` at once and ends its own attach only after the command answered, because a detach makes a running command fail"],
-    [C10, "The removal of every session rule before the read has `RESTORE_MAX_MS` too: one that fails or has not ended by then fails closed, and the receiver logs it; its next full replace removes every rule of the scheme (the scope rules and rule 8, and rules 6 and 7 when no import runs)"],
+    [C10, "The removal of every session rule before the read has `RESTORE_MAX_MS` too: one that fails or has not ended by then fails closed, and the receiver logs it; its next full replace removes every rule of the scheme (the scope rules and rule 8, rules 6 and 7 when no import runs, and the act's rules 10 to 77 when no act holds them: C5, the act's rules)"],
   ];
   for (const [text, s] of checks) assert.ok(says(text, s), s);
   // The old wordings are gone.
@@ -1751,4 +1762,189 @@ test("docs/protocol.md no longer holds C11's text or the old master statements (
     assert.ok(!(/\bstage [12]\b/.test(x) && /in place of the daemon|not agentwatch|not the daemon|instead of the daemon/.test(x)), `no sentence puts the service in place of the daemon before stage 3: ${x.slice(0, 200)}`);
   }
   for (const x of EXCEPTIONS) assert.ok(named.includes(x), `the exception is a sentence of the text: ${x.slice(0, 80)}`);
+});
+
+// ---- the act of the stored sign-ins (board ab-v16.97.3): C4, C5, C6 and C10 ----
+
+const C6 = section("C6");
+// C4's checks of act_rules: an http: or https: origin exactly as the URL parser gives it; send_to holds 1 to
+// MAX_SEND_TO origins, each once, with origin among them.
+const isOrigin = (o) => {
+  try {
+    const u = new URL(o);
+    return (u.protocol === "http:" || u.protocol === "https:") && u.origin === o;
+  } catch {
+    return false;
+  }
+};
+const MAX_SEND_TO = 32;
+const rulesFit = (r) => int(r.tab) && r.tab >= 0 && isOrigin(r.origin) && Array.isArray(r.send_to) && r.send_to.length >= 1 &&
+  r.send_to.length <= MAX_SEND_TO && r.send_to.every(isOrigin) && new Set(r.send_to).size === r.send_to.length && r.send_to.includes(r.origin);
+const isHost = (h) => {
+  try {
+    return typeof h === "string" && h !== "" && new URL("http://" + h + "/").hostname === h;
+  } catch {
+    return false;
+  }
+};
+// C5's rules A to E, as its text states them, for an act_rules request.
+function actRulesOf(req) {
+  const T = req.tab;
+  const H = new URL(req.origin).hostname;
+  const S = [...new Set(req.send_to.map((o) => new URL(o).hostname))];
+  const notMain = ["main_frame"];
+  const rules = [
+    { id: 10, priority: 4, action: { type: "block" }, condition: { tabIds: [T], excludedResourceTypes: notMain, excludedRequestDomains: S } },
+    { id: 11, priority: 4, action: { type: "block" }, condition: { tabIds: [T], resourceTypes: ["main_frame"], excludedRequestMethods: ["get"], excludedRequestDomains: S } },
+    { id: 12, priority: 4, action: { type: "block" }, condition: { initiatorDomains: [H], excludedResourceTypes: notMain, excludedRequestDomains: S } },
+    { id: 13, priority: 4, action: { type: "block" }, condition: { tabIds: [T], excludedResourceTypes: notMain, requestDomains: S } },
+  ];
+  let id = 14;
+  for (const o of req.send_to) {
+    const u = new URL(o);
+    for (const prefix of [u.origin, (u.protocol === "https:" ? "wss:" : "ws:") + "//" + u.host]) {
+      rules.push({ id, priority: 5, action: { type: "allow" }, condition: { tabIds: [T], excludedResourceTypes: notMain, urlFilter: "|" + prefix + "/" } });
+      id += 1;
+    }
+  }
+  return rules;
+}
+
+test("the intro states the act of the stored sign-ins: its design, its parts in C4, C5, C6 and C10, its caller from stage 3, and an old receiver's answers", () => {
+  for (const s of [
+    "The act of the stored sign-ins (board ab-v16.97.3; the design: agent-browser `docs/superpowers/specs/2026-11-10-stored-sign-in-credentials-design.md`",
+    "It is in C4 (`act_rules`, `act_cookies`, `act_end` and the hello's feature `act`), C5 (the act's rules A to E), C6 (the import leaves the act's context out) and C10 (the act window).",
+    "The act's caller is the far side of the native link: from stage 3, on a box whose switch is on, agent-browser's service, and before that only agent-browser's own tests of the act; no session uses it before stage 3, and the daemon never sends its requests.",
+    "A receiver without it answers them `unknown op` (channel `main`) and `bad args` (the mark of `windows.create`).",
+  ]) assert.ok(says(protocol, s), s);
+});
+
+test("C4 states the act's three requests with their shapes, their checks in order, their errors, act_end's order and the waits", () => {
+  const act = C4.slice(C4.indexOf("**The act of the stored sign-ins (board ab-v16.97.3).**"));
+  for (const s of [
+    '`{"t":"req","id":"<id>","op":"act_rules","tab":<act tab>,"origin":"<origin>","send_to":["<origin>"]}` -> `{"rules":[<rule id>]}`',
+    '`{"t":"req","id":"<id>","op":"act_cookies","tab":<act tab>,"domain":"<host>"}` -> `{"cookies":[<C2 cookie>]}`',
+    '`{"t":"req","id":"<id>","op":"act_end"}` -> `{"closed":<tabs closed>}`',
+    "`send_to` holds the origins that may receive the password: 1 to `MAX_SEND_TO = 32` origins, each once, with `origin` among them.",
+    "Each origin is an `http:` or `https:` origin exactly as the URL parser gives it (lowercase, punycode, no default port, no path).",
+    "The receiver checks the fields (else `bad request`), then the tab (else `not an act tab`).",
+    "Then it replaces the act's rules (C5) in one `updateSessionRules` call and reads the session rules back (`getSessionRules`).",
+    "It answers the ids of the rules of the call only when the read holds each of them: that answer is the confirmation, and the act types no key before it.",
+    "A call that fails, or a rule that the read does not hold, answers `rules not held`.",
+    "It finds the cookie store whose `tabIds` hold the tab (`cookies.getAllCookieStores`; else `no cookie store`), and it reads `cookies.getAll({domain, storeId})` and `cookies.getAll({domain, storeId, partitionKey: {}})`",
+    "The receiver reads no store of the default context for the act: a tab that is no act tab gets `not an act tab`.",
+    "While a tab of the act is open, the act's rules stay, and the answer is `act not closed`.",
+    "Else the act's rules go (C5; a call that fails answers `rules not removed`, and they stay), and the keys of the act windows leave the copy (C10).",
+    "The order of `act_end` is decided here (board ab-v16.97.3): first the tabs, then the rules.",
+    "The act's caller waits 10 s for each request from its send.",
+    "The shared vector: `test/vectors/act.json`",
+  ]) assert.ok(says(act, s), `C4 says: ${s}`);
+  assert.ok(says(C4, "The act's caller waits 10 s for `act_rules`, `act_cookies` and `act_end`."));
+  assert.ok(says(C4, "(`features`: the allowlists, below, and the act of the stored sign-ins, below)"));
+  for (const e of actV.errors.main) assert.ok(act.includes("`" + e + "`"), `C4 names the error ${e}`);
+  assert.deepEqual(actV.features, helloV.hello.features);
+});
+
+test("each act_rules vector follows C4's checks, and its rules are C5's rules A to E", () => {
+  assert.ok(rulesFit(actV.rulesReq));
+  assert.deepEqual(actRulesOf(actV.rulesReq), actV.rules);
+  assert.deepEqual(actV.rulesRes.data.rules, actV.rules.map((r) => r.id));
+  assert.equal(actV.rulesRes.id, actV.rulesReq.id);
+  for (const v of actV.badRules) {
+    assert.ok(says(section("C4"), "`" + v.error + "`"), v.req.id);
+    if (v.error === "bad request") assert.ok(!rulesFit(v.req), `${v.req.id}: a field breaks C4's check`);
+    else assert.ok(rulesFit(v.req) && v.req.tab !== actV.rulesReq.tab, `${v.req.id}: only the tab fails`);
+  }
+  const most = actRulesOf({ tab: 1, origin: "https://a.example", send_to: Array.from({ length: MAX_SEND_TO }, (_, i) => (i === 0 ? "https://a.example" : `https://s${i}.example`)) });
+  assert.deepEqual([most.length, Math.min(...most.map((r) => r.id)), Math.max(...most.map((r) => r.id))], [68, 10, 77], "C5: ids 10 to 77, at most 68 rules");
+});
+
+test("C5 states the act's rules A to E with their conditions, ids, priorities, decisions, life and limits", () => {
+  for (const s of [
+    "- A: id 10, priority 4, `{\"type\":\"block\"}`, `tabIds` [T], `excludedResourceTypes` `[\"main_frame\"]`, `excludedRequestDomains` S",
+    "- B: id 11, priority 4, `{\"type\":\"block\"}`, `tabIds` [T], `resourceTypes` `[\"main_frame\"]`, `excludedRequestMethods` `[\"get\"]`, `excludedRequestDomains` S",
+    "- C: id 12, priority 4, `{\"type\":\"block\"}`, no `tabIds` (every tab, also each tab of the default context), `initiatorDomains` [H], `excludedResourceTypes` `[\"main_frame\"]`, `excludedRequestDomains` S",
+    "- D: id 13, priority 4, `{\"type\":\"block\"}`, `tabIds` [T], `excludedResourceTypes` `[\"main_frame\"]`, `requestDomains` S",
+    "- E: ids 14 and up, two for each origin O of `send_to` in its order, priority 5, `{\"type\":\"allow\"}`, `tabIds` [T], `excludedResourceTypes` `[\"main_frame\"]`, `urlFilter` `|O/` and `|<ws>//<the host and port of O>/`, where `<ws>` is `wss:` for an `https:` origin and `ws:` for an `http:` origin",
+    "The ids are 10 to 77 (`MAX_SEND_TO` is 32 origins, C4), below the scope rules' 100.",
+    "No rule but B matches a main frame, so rule 5 still sets the act's own navigations as typed ones, and a top-level GET to another host stays open in every tab",
+    "Decided here (board ab-v16.97.3), where the design's table names no value: C matches no main frame, as A does; E's WebSocket for an `http:` origin (a test site on a loopback host) is `ws:`; E is one `urlFilter` rule for each URL prefix, not one `regexFilter`",
+    "They go at `act_end` after each tab of the act closed, at each link change (C10, the act window), and at the worker's start (every session rule goes there).",
+    "A full replace of the scope rules after a start whose removal failed keeps them while an act of this worker holds them (as it keeps the import's rules 6 and 7), and removes the ids 10 to 77 otherwise.",
+    "The remove-only call of a failed scope update never removes them.",
+    "They count in the 5000 session rules: at most 4 + 2 x 32 = 68 rules.",
+    "What they do not stop, stated plainly (the design's section 7.6)",
+    "Rules D and E, and the five rules through this receiver, are designed, not measured: the act task's live check (board ab-v16.97.4) proves them.",
+    "An act tab of the stored sign-ins (C10, the act window) is a tab of its caller's scope: its list is its scope's list.",
+    "Any other incognito tab has no scope and no mark (C10, the act window), so it has no list, and no rule allows it.",
+    "It never closes the restore tab of a running import, and never an incognito tab that is no act tab (C10, the act window); an act tab is a tab of its scope here.",
+    "An act tab is a tab of its scope: the sweep closes it when its scope has no list.",
+    "An act tab of the stored sign-ins sends no `blocked`, and neither does one that closed or was replaced in the last `TOMBSTONE_MS` (C10, the act window; board ab-v16.97.3)",
+  ]) assert.ok(says(C5, s), `C5 says: ${s}`);
+});
+
+test("C6 states that the import leaves the act's context out: step 1 closes tabs of the default context only, and step 2's restore tab never goes into an incognito window", () => {
+  for (const s of [
+    "an incognito tab, for example the act tab of the stored sign-ins, holds none of that state and stays: board ab-v16.97.3",
+    "`tabs.create({url: \"about:blank\", active: true})`, and while an incognito tab is open (in step 1's second read) also `windowId`: the window of the last tab of the default context in that read",
+    "A restore tab that Chrome opens in an incognito window would write the page storage into that context: it fails the step (\"open tab\"), and it closes.",
+  ]) assert.ok(says(C6, s), `C6 says: ${s}`);
+});
+
+test("C10 states the act window: the mark and the pair rule, the steps of windows.create, the act tab's scope, the exclusions, windows.get, the end and the limits", () => {
+  const part = C10.slice(C10.indexOf("**The act window (board ab-v16.97.3).**"), C10.indexOf("**Removals and the last window (board ab-v16.41).**"));
+  assert.ok(part.length > 1000, "C10 has the part");
+  for (const s of [
+    "The receiver's manifest has `\"incognito\": \"spanning\"`, Chrome's default for an extension, written out",
+    "asks Chrome whether it allows the receiver in incognito (`chrome.extension.isAllowedIncognitoAccess`, its first chrome call): else `not allowed in incognito`, and no window opens",
+    "ends a left act, as `act_end` does (C4)",
+    "while any incognito tab is open (for example one that the operator opened in the live view; all incognito windows of a profile share one context), `another private window is open`, and no window opens",
+    "keeps the window as an act window, with the key `act:<windowId>` in the copy",
+    "No connection sees it: `bridge.tabScopes` leaves it out, no `bridge.tabScope` names it, and the copy holds no key `tab:<id>` for it, so a worker that starts again gives it no scope.",
+    "A popup of an act tab, and the added tab of its `tabs.onReplaced`, is an act tab too, with its scope and no `bridge.tabScope`",
+    "The eager attach skips every incognito tab (the hold, above), so only the act's caller attaches the act tab.",
+    "`windows.get` of an act window answers as for any window.",
+    "No op moves, resizes or fills an act window: `windows.update` of it, and a `tabs.create` with its `windowId`, get `not an agent window`, with no chrome call.",
+    "It gets no scope and no operator mark, so it fails closed (no rule allows it, C5).",
+    "it closes (in the removal queue, by the receiver's close), and the op answers `not an agent window`.",
+    "The receiver also ends the act itself at each disconnect and each new daemon connection",
+    "At the worker's start it closes the tabs of each act window of the copy.",
+    "While no act window, act tab or act rule is there, a link change makes no chrome call for the act.",
+    "The limits, stated plainly.",
+  ]) assert.ok(says(part, s), `C10 says: ${s}`);
+  for (const s of [
+    "`mark` (`windows.create`): the string `act`, the mark of an act window",
+    "The pair rule of `windows.create`: `incognito` comes only with the mark `act`, and the mark `act` only with `incognito` `true`; else `bad args`.",
+    "2. The args: their count, then the kind of each arg, then the pair rule of `windows.create` (below); else `bad args`.",
+    "`debugger.attach` of an incognito tab that is no act tab gets `not an agent tab`",
+    "a tab of no scope, a marked tab and an act tab (the act window, below) are not in it.",
+    "It skips every incognito tab (the act window, below): only the act's own `debugger.attach` attaches the act tab.",
+    "An incognito tab gets no mark (the act window, below).",
+    "5. ends the act of the stored sign-ins (the act window, below; board ab-v16.97.3)",
+    "An incognito tab never counts as a tab that stays (the act window closes at the act's end), and the `about:blank` tab never goes into an incognito window",
+    "and so does the act's read of its own store (C4, `act_cookies`).",
+  ]) assert.ok(says(C10, s), `C10 says: ${s}`);
+  for (const e of actV.errors.bridge) assert.ok(says(C10, "`" + e + "`") && says(C10, "The receiver's error texts:") && C10.includes(e), `C10 names ${e}`);
+  assert.ok(says(C10, "`not an agent window`, `not allowed in incognito` and `another private window is open` (the act window, below)"), "the error list");
+});
+
+test("each act window vector has C10's shape: its request fits the args, its error is a C10 text, and its window is incognito with one tab", () => {
+  const o = opByName.get("windows.create");
+  assert.ok(argsFit(o, actV.actWindow.req.args));
+  assert.deepEqual(actV.actWindow.chrome, ["windows.create", [actV.actWindow.req.args[0]]], "the scope and the mark stay in the receiver");
+  const win = actV.actWindow.res.data;
+  assert.equal(win.incognito, true);
+  assert.equal(win.tabs.length, 1);
+  assert.equal(win.tabs[0].incognito, true);
+  assert.deepEqual(actV.actWindow.copy, { ["act:" + win.id]: true });
+  assert.deepEqual(actV.windowGet.req.args, [win.id]);
+  for (const v of actV.windowErrors) {
+    assert.ok(says(C10, "`" + v.error + "`"), `${v.req.id}: C10 names ${v.error}`);
+    const op = opByName.get(v.req.op);
+    if (v.error === "bad args") assert.ok(!argsFit(op, v.req.args), `${v.req.id}: breaks an arg rule`);
+    else assert.ok(argsFit(op, v.req.args), `${v.req.id}: only a later check fails`);
+  }
+  for (const v of actV.badCookies) assert.ok(v.error === "bad request" ? !isHost(v.req.domain) : isHost(v.req.domain), v.req.id);
+  assert.ok(isHost(actV.cookiesReq.domain));
+  for (const c of actV.cookiesRes.data.cookies) assert.ok(String(c.value).startsWith("test-"), "a made-up test value");
 });
