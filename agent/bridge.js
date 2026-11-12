@@ -14,6 +14,7 @@
 //
 // No side logs the args, the results or the event params: they can hold page
 // content and sign-in values.
+import { ACT_MARK, NOT_AGENT_WINDOW } from "./act.js";
 import { call } from "./attach.js";
 import { covers, normalizeEntry } from "./lib/domains.js";
 import { receiver } from "./receiver.js";
@@ -78,9 +79,13 @@ const KINDS = {
     isObj(a) && onlyKeys(a, ["url", "active", "windowId", "index"]) && isNewUrl(a.url) &&
     optional(a, "active", isBool) && optional(a, "windowId", isId) && optional(a, "index", isId),
   tabUpdate: (a) => isObj(a) && onlyKeys(a, ["active"]) && isBool(a.active),
+  // An act window's createData has incognito true (the pair rule of windows.create).
   newWindow: (a) =>
-    isObj(a) && onlyKeys(a, ["url", "focused", "left", "top", "width", "height", "state"]) && isNewUrl(a.url) &&
-    optional(a, "focused", isBool) && ["left", "top", "width", "height"].every((k) => optional(a, k, Number.isInteger)),
+    isObj(a) && onlyKeys(a, ["url", "focused", "left", "top", "width", "height", "state", "incognito"]) && isNewUrl(a.url) &&
+    optional(a, "focused", isBool) && ["left", "top", "width", "height"].every((k) => optional(a, k, Number.isInteger)) &&
+    optional(a, "incognito", (x) => x === true),
+  // The mark of an act window (C10, the act window).
+  mark: (a) => a === ACT_MARK,
   windowUpdate: (a) =>
     isObj(a) && Object.keys(a).length > 0 && onlyKeys(a, ["left", "top", "width", "height", "state", "focused"]) &&
     optional(a, "focused", isBool) && ["left", "top", "width", "height"].every((k) => optional(a, k, Number.isInteger)),
@@ -106,6 +111,13 @@ const agentTab = (c, [tabId]) => (c.att.isRestoreTab(tabId) || noSession(c, tabI
 // its check is one more layer).
 const commandTab = (c, [target]) =>
   noSession(c, target.tabId) ? NOT_AGENT_TAB : c.att.isBridgeTab(target.tabId) ? null : "not attached";
+// No client tab goes into an act window, and no op moves or resizes one (the
+// service moves it outside the screen at the X level).
+const newTabWindow = (c, [props]) => (Object.hasOwn(props, "windowId") && c.r.act.isWindow(props.windowId) ? NOT_AGENT_WINDOW : null);
+const agentWindow = (c, [windowId]) => (c.r.act.isWindow(windowId) ? NOT_AGENT_WINDOW : null);
+// An incognito tab is no agent tab, except an act tab: all incognito tabs
+// share the act's context.
+const incognitoTab = (c, tabId, tab) => tab && tab.incognito === true && !c.r.map.isAct(tabId);
 
 // A client's Fetch.enable or Fetch.disable on a tab's own session changes
 // the hold of the tab (C10): the hold counts it as it goes to Chrome.
@@ -134,12 +146,13 @@ function ownOrigin(c, tab) {
 }
 
 // ---- the ops ----
-// kinds: the kind of each arg; required: how many must be there; wait: the
-// default wait; nullResult: the op answers null; tab: the tab check; run: the
-// chrome call (c is {chrome, att, r, navigator}; op is the request's state:
-// stale() after a link change, expired after its deadline).
+// kinds: the kind of each arg; required: how many must be there; pair: a rule
+// over the args together (else bad args); wait: the default wait; nullResult:
+// the op answers null; tab: the tab check; run: the chrome call (c is
+// {chrome, att, r, navigator}; op is the request's state: stale() after a
+// link change, expired after its deadline).
 
-const op = (kinds, required, run, more = {}) => ({ kinds, required, run, wait: WAIT_DEFAULT_MS, nullResult: false, tab: null, ...more });
+const op = (kinds, required, run, more = {}) => ({ kinds, required, run, wait: WAIT_DEFAULT_MS, nullResult: false, tab: null, pair: null, ...more });
 
 async function bridgeInfo(c) {
   let fullVersion = "";
@@ -167,24 +180,28 @@ export const OPS = Object.freeze({
   // the orphan set's and the mark's check runs again right before Chrome's attach.
   "debugger.attach": op(["id"], 1, (c, [tabId]) => c.att.attach(tabId, () =>
     call(() => c.chrome.tabs.get(tabId)).then((tab) => {
-      if (ownOrigin(c, tab) || c.att.isRestoreTab(tabId)) throw new Error(NOT_AGENT_TAB);
+      if (ownOrigin(c, tab) || c.att.isRestoreTab(tabId) || incognitoTab(c, tabId, tab)) throw new Error(NOT_AGENT_TAB);
     }), () => (noSession(c, tabId) ? NOT_AGENT_TAB : null)), { tab: agentTab }),
   "debugger.detach": op(["id"], 1, (c, [tabId]) => c.att.detach(tabId), { tab: restoreTab, nullResult: true }),
   "debugger.sendCommand": op(["target", "method", "object"], 2,
     (c, [target, method, params], o) => sendCommand(c, o, target, method, params), { tab: commandTab, wait: WAIT_MAX_MS }),
   "debugger.getTargets": op([], 0, (c) => c.chrome.debugger.getTargets()),
   "tabs.create": op(["newTab", "scope"], 2, (c, [props, scope]) =>
-    c.r.createTab(scope, () => c.chrome.tabs.create(props), (tab) => tab && tab.id)),
+    c.r.createTab(scope, () => c.chrome.tabs.create(props), (tab) => tab && tab.id), { tab: newTabWindow }),
   "tabs.get": op(["id"], 1, (c, [tabId]) => c.chrome.tabs.get(tabId)),
   "tabs.query": op(["object"], 1, (c, [info]) => c.chrome.tabs.query(info)),
   "tabs.update": op(["id", "tabUpdate"], 2, (c, [tabId, props]) => c.chrome.tabs.update(tabId, props), { tab: agentTab }),
   // The receiver's close, in the removal queue, with the window rule.
   "tabs.remove": op(["id"], 1, (c, [tabId], o) => c.r.removals.removeTab(tabId, o), { tab: agentTab, nullResult: true }),
+  // Also of an act window: the service reads its place before the act's first key.
   "windows.get": op(["id", "object"], 1, (c, args) => c.chrome.windows.get(...args)),
-  // The window's tab gets the scope, as for tabs.create.
-  "windows.create": op(["newWindow", "scope"], 2, (c, [data, scope]) =>
-    c.r.createTab(scope, () => c.chrome.windows.create(data), (win) => (win && Array.isArray(win.tabs) && win.tabs[0] ? win.tabs[0].id : null))),
-  "windows.update": op(["id", "windowUpdate"], 2, (c, [windowId, info]) => c.chrome.windows.update(windowId, info)),
+  // The window's tab gets the scope, as for tabs.create. With the mark "act"
+  // (and incognito true, the pair rule): the act window (act.js).
+  "windows.create": op(["newWindow", "scope", "mark"], 2, (c, [data, scope, mark], o) =>
+    (mark === ACT_MARK ? c.r.createAct(scope, data, o)
+      : c.r.createTab(scope, () => c.chrome.windows.create(data), (win) => (win && Array.isArray(win.tabs) && win.tabs[0] ? win.tabs[0].id : null))),
+  { pair: ([data, , mark]) => (mark === ACT_MARK) === Object.hasOwn(data, "incognito") }),
+  "windows.update": op(["id", "windowUpdate"], 2, (c, [windowId, info]) => c.chrome.windows.update(windowId, info), { tab: agentWindow }),
   "downloads.search": op(["object"], 1, (c, [query]) => c.chrome.downloads.search(query)),
   "downloads.cancel": op(["id"], 1, (c, [id]) => c.chrome.downloads.cancel(id), { nullResult: true }),
   "contentSettings.set": op(["contentType", "contentDetails"], 2,
@@ -256,7 +273,7 @@ export class Bridge {
     if (!spec) return Promise.reject(new Error("unknown op"));
     const args = Object.hasOwn(req, "args") ? req.args : [];
     const reference = this.#r.map.reference;
-    if (!argsFit(spec, args, reference ? reference.union() : [])) return Promise.reject(new Error("bad args"));
+    if (!argsFit(spec, args, reference ? reference.union() : []) || (spec.pair && !spec.pair(args))) return Promise.reject(new Error("bad args"));
     const wait = Object.hasOwn(req, "wait") ? req.wait : spec.wait;
     if (!Number.isInteger(wait) || wait < 1 || wait > WAIT_MAX_MS) return Promise.reject(new Error("bad wait"));
     const refused = spec.tab ? spec.tab(this.#ctx, args) : null;
@@ -275,7 +292,11 @@ export class Bridge {
     this.#epoch += 1;
     this.#r.removals.dropBridge();
     this.#r.popups.reset();
-    return this.#att.reset();
+    const detached = this.#att.reset();
+    // The act ends at a link change: the service's session on the act tab
+    // ended with the detaches (act.js; no chrome call when no act is open).
+    void this.#r.act.linkChanged();
+    return detached;
   }
 
   // "timeout" when the op runs wait ms; a later result or error is dropped.
@@ -332,7 +353,10 @@ export class Bridge {
         return;
       }
       const own = ownOrigin(this.#ctx, tab);
-      void att.attachNewTab(tab.id, () => own || this.#r.map.isMarked(tab.id)).then((fields) => this.#r.popups.attached(tab, fields, at));
+      // An incognito tab is never attached eagerly: the act tab is the
+      // service's own, and any other is no agent tab.
+      const incognito = tab.incognito === true;
+      void att.attachNewTab(tab.id, () => own || incognito || this.#r.map.isMarked(tab.id)).then((fields) => this.#r.popups.attached(tab, fields, at));
     });
     c.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       if (!isObj(changeInfo) || !["url", "title", "status"].some((k) => Object.hasOwn(changeInfo, k))) return;

@@ -9,7 +9,11 @@
 //   the tabs with a pending close, the item first opens an about:blank tab
 //   (not active, in no scope) in the window of its last tab, so Chrome never
 //   ends. The query and that tab each have REMOVAL_WAIT_MS; when either
-//   fails or comes later, the item closes no tab.
+//   fails or comes later, the item closes no tab. An incognito tab never
+//   counts as a tab that stays (an act window closes at the act's end), and
+//   the about:blank tab never goes into an incognito window: it goes into the
+//   window of the item's last tab that is not incognito, else into a new
+//   window (windows.create, not focused) of the default context.
 // - The receiver's close (every close but a client's Page.close):
 //   Target.closeTarget through chrome.debugger on the tab, one op of the
 //   tab's chain of attaches (attach.js). No beforeunload handler runs. Its
@@ -165,10 +169,13 @@ export class Removals {
     if (mine.length === 0) return { closes: [], error: null };
     const byId = new Map(tabs.map((t) => [t.id, t]));
     const open = mine.filter((id) => byId.has(id));
-    const stays = tabs.some((t) => !mine.includes(t.id) && !this.isPending(t.id));
+    const regular = (t) => t.incognito !== true;
+    const stays = tabs.some((t) => !mine.includes(t.id) && !this.isPending(t.id) && regular(t));
     if (open.length > 0 && !stays) {
-      const last = byId.get(open.at(-1));
-      const blank = await this.#limit(() => this.#chrome.tabs.create({ windowId: last.windowId, url: "about:blank", active: false }));
+      const last = open.map((id) => byId.get(id)).filter(regular).at(-1);
+      const blank = last
+        ? await this.#limit(() => this.#chrome.tabs.create({ windowId: last.windowId, url: "about:blank", active: false }))
+        : await this.#limit(() => this.#chrome.windows.create({ url: "about:blank", focused: false }));
       if (!blank.ok) return { closes: [], error: blank.error };
     }
     const closes = mine.map((id) => start(id));

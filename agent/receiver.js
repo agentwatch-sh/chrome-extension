@@ -15,6 +15,11 @@
 // open (C5: rule 8 with "*", the named list's rules with a name, no rule
 // with null). The bridge never attaches, selects or closes it, and no
 // connection sees it.
+//
+// The act of the stored sign-ins (act.js): an incognito tab gets no mark and
+// no scope, except an act tab, which has its caller's scope for the list
+// rules (C10, the act window).
+import { Act, NOT_AGENT_WINDOW } from "./act.js";
 import { attachments } from "./attach.js";
 import { SessionRules } from "./dnr.js";
 import { Guard } from "./guard.js";
@@ -62,8 +67,13 @@ export class Receiver {
     this.popups = new Popups(this);
     this.guard = new Guard(this);
     this.workers = new Workers(this);
-    // The start's one read of the copy gives the record of workers.js back too.
-    this.map.onCopy = (data) => this.workers.restored(data);
+    this.act = new Act(this);
+    // The start's one read of the copy gives the record of workers.js back
+    // too, and the act windows of a worker before this one (they close).
+    this.map.onCopy = (data) => {
+      this.workers.restored(data);
+      this.act.restored(data);
+    };
     this.att.holds.onKept = (tabId) => this.popups.paused(tabId);
     this.#listen();
   }
@@ -163,6 +173,11 @@ export class Receiver {
     const got = this.map.adopt(tabId, from);
     if (got && got.orphan) {
       this.orphanClose(tabId);
+    } else if (got && got.act) {
+      // A tab of an act tab is an act tab: its list's rules, and no
+      // bridge.tabScope and no key in the copy (no connection sees it).
+      got.ruled = this.rules.replaceLists([this.listName(got.scope)]);
+      got.ruled.catch(() => {});
     } else if (got && got.mark) {
       got.ruled = this.rules.replaceLists([this.markList()]);
       got.ruled.catch(() => {});
@@ -176,15 +191,26 @@ export class Receiver {
     return got;
   }
 
+  // windows.create with the mark "act" (C10, the act window): act.js.
+  createAct(scope, data, op) {
+    return this.act.create(scope, data, op, NO_LIST);
+  }
+
   // tabs.create and windows.create (C10, each tab's scope): the scope of the
   // last applied set_scopes has a list, else no list for this scope and no
   // tab. create() calls Chrome at once (no await before it). The new tab
   // gets the scope; the op answers when the tab's scope rule is in force and
-  // its key is in the copy.
+  // its key is in the copy. A tab or window that Chrome put into an incognito
+  // window (a tabs.create with no windowId while one has the focus) is no
+  // agent tab: it closes, and the op answers not an agent window.
   createTab(scope, create, tabOf) {
     if (!this.map.hasList(scope)) return Promise.reject(new Error(NO_LIST));
     return new Promise((resolve) => resolve(create())).then(async (result) => {
       const tabId = tabOf(result);
+      if (result && result.incognito === true) {
+        if (Number.isInteger(tabId)) this.orphanClose(tabId);
+        throw new Error(NOT_AGENT_WINDOW);
+      }
       if (Number.isInteger(tabId)) await this.#assign(tabId, scope);
       return result;
     });
@@ -225,8 +251,9 @@ export class Receiver {
     // event, skips it. A tab whose navigation target came first is a page's
     // popup. The mark needs no restore of the map (no copy holds it); its
     // rule update runs in the rules' chain, after the start's removal.
+    // An incognito tab gets no mark: all incognito tabs share the act's context.
     c.tabs.onCreated.addListener((tab) => {
-      if (!tab || !Number.isInteger(tab.id) || !startsAtNewTab(tab)) return;
+      if (!tab || !Number.isInteger(tab.id) || tab.incognito === true || !startsAtNewTab(tab)) return;
       const id = tab.id;
       if (this.popups.has(id) || this.map.has(id) || this.map.isOrphan(id) || this.map.isGone(id) || this.att.isRestoreTab(id)) return;
       this.map.mark(id);

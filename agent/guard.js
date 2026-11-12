@@ -24,7 +24,7 @@
 // DNR's net::ERR_BLOCKED_BY_CLIENT and the retry's decision (popups.js) can
 // each see it.
 //
-// No log line holds a URL or a host.
+// No log line holds a URL or a host, and no notice comes from an act tab.
 import { call } from "./attach.js";
 import { covers } from "./lib/domains.js";
 import { BLOCKED } from "./popups.js";
@@ -149,8 +149,11 @@ export class Guard {
     this.send(this.notice(tabId, host, nav));
   }
 
-  // Sends blocked (C4), at most once per navigation of the tab.
+  // Sends blocked (C4), at most once per navigation of the tab. An act tab
+  // of the sign-in act (and one that closed a moment before) sends none: a
+  // host that its page chooses can carry the password (C5; act.js).
   send(n) {
+    if (this.#r.map.wasAct(n.tab)) return;
     let sent = this.#sent.get(n.tab);
     if (!sent) {
       sent = new Set();

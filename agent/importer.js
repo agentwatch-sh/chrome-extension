@@ -219,18 +219,29 @@ async function runImport(chrome, state, opts) {
     // Tabs of the origin hold the state being replaced (an open IndexedDB
     // connection blocks its deletion). They close before the cookie swap, so
     // no page of the origin can write a cookie between the swap and the close.
+    // Only tabs of the default context: an incognito tab (the act window of
+    // the stored sign-ins) holds none of its state (C6).
     const ofOrigin = (tabs) => tabs.filter((t) => {
       const u = tabUrl(t);
-      return u !== null && u.origin === state.origin;
+      return u !== null && u.origin === state.origin && t.incognito !== true;
     });
+    // The window of the restore tab: with an incognito tab open, the window
+    // of the last tab of the default context (else Chrome can open the tab in
+    // the incognito window when it has the focus); else Chrome's choice.
+    let restoreWindow = null;
     const tabsClosed = await step("close tabs", async () => {
       const done = await r.removals.closeOwn({ select: (tabs) => ofOrigin(tabs).map((t) => t.id) });
       // A close that has not ended in the item's wait (a page that a dialog
       // holds) fails the step, and so does a tab of the origin that is still
       // open after the item (a close that ended with an error can leave it).
       if (done.error || done.pending.length > 0) throw new Error("close tabs");
-      const again = await chrome.tabs.query({});
-      if (ofOrigin(Array.isArray(again) ? again : []).length > 0) throw new Error("close tabs");
+      const got = await chrome.tabs.query({});
+      const again = Array.isArray(got) ? got : [];
+      if (ofOrigin(again).length > 0) throw new Error("close tabs");
+      if (again.some((t) => t && t.incognito === true)) {
+        const last = again.filter((t) => t && t.incognito !== true && Number.isInteger(t.windowId)).at(-1);
+        restoreWindow = last ? last.windowId : null;
+      }
       return done.closed.length;
     });
 
@@ -239,10 +250,14 @@ async function runImport(chrome, state, opts) {
     const tabId = await step("open tab", async (signal) => {
       ctx.known = att.openingRestore();
       try {
-        ctx.tabPending = chrome.tabs.create({ url: "about:blank", active: true });
+        const props = restoreWindow === null ? { url: "about:blank", active: true } : { url: "about:blank", active: true, windowId: restoreWindow };
+        ctx.tabPending = chrome.tabs.create(props);
         const tab = await ctx.tabPending;
         if (!tab || typeof tab.id !== "number") throw new Error("no tab");
         ctx.tabId = tab.id;
+        // A restore tab in an incognito window would write the page storage
+        // into the act's context: the step fails, and the tab closes.
+        if (tab.incognito === true) throw new Error("incognito");
         // A tab that came after the deadline is closed, and the import has ended.
         if (!signal.aborted) att.markRestore(tab.id, state.domain);
         return tab.id;

@@ -49,6 +49,10 @@ export function mainOps(chrome) {
       throw new Error(SET_ALLOWLIST_GONE);
     },
     import: (req) => importState(chrome, req.state),
+    // The act of the stored sign-ins (C4, C5; act.js).
+    act_rules: (req) => receiver(chrome).act.rules(req),
+    act_cookies: (req) => receiver(chrome).act.cookies(req),
+    act_end: () => receiver(chrome).act.end(),
   };
 }
 
@@ -64,7 +68,8 @@ export function setScopes(chrome, msg) {
 }
 
 // The closing rule and the sweep: does the item close tab t? swept collects
-// the tabs of the sweep. The closing rule judges each tab by the last applied
+// the tabs of the sweep. They leave every incognito tab out, except an act
+// tab of the sign-in act (C5, C10). The closing rule judges each tab by the last applied
 // set_scopes: at one that is not applied (its scopes or lists is not an
 // object) the receiver sweeps nothing, and one bad message closes no live
 // session's page; with no applied one since the worker's start it closes
@@ -73,6 +78,8 @@ export function setScopes(chrome, msg) {
 function picks(r, next, t, swept) {
   const id = t.id;
   if (r.att.isRestoreTab(id)) return false; // never the restore tab of a running import
+  // Never an incognito tab, except an act tab: it has its scope's list rules.
+  if (t.incognito === true && !r.map.isAct(id)) return false;
   const orphan = r.map.isOrphan(id);
   const scope = r.map.scopeOf(id);
   if (next.applied && (orphan || (scope !== undefined && next.listOf(scope) === null))) {
