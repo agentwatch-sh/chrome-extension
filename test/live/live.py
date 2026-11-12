@@ -912,14 +912,44 @@ class Live:
             time.sleep(1.0)
             return requests_of(m0, tag)
 
+        def back() -> None:
+            m9 = self.ctl.mark()
+            self.cdp(act_tab, "Page.navigate", {"url": origin + "/p/act-login"})
+            self.ctl.wait(m9, 10, kind="page", page_kind="page-load", page="/p/act-login")
+
+        def pop_requests(tag: str) -> list[str]:
+            # review-ce44's popup rows: a popup that a form posts into (rule B, the popup in T), and a popup
+            # that goes by GET to another host on the list and then fetches (rule A, the popup in T).
+            m0 = self.ctl.mark()
+            self.cdp(act_tab, "Runtime.evaluate", {"expression": "window.__p1 = window.open('', 'awpop1'); 1", "userGesture": True})
+            time.sleep(1.5)
+            self.cdp(act_tab, "Runtime.evaluate", {"expression": ("(() => { const f = document.createElement('form'); f.method = 'post';"
+                     " f.target = 'awpop1'; f.action = %s + '/%s/pop-post'; document.body.append(f); f.submit(); return 1; })()")
+                     % (json.dumps(tracker), tag), "userGesture": True})
+            time.sleep(2.0)
+            self.cdp(act_tab, "Runtime.evaluate", {"expression": "window.__p2 = window.open('', 'awpop2'); 1", "userGesture": True})
+            time.sleep(1.5)
+            self.cdp(act_tab, "Runtime.evaluate", {"expression": "window.__p2.location.href = %s + '/%s/pop-get'; 1" % (json.dumps(tracker), tag)})
+            self.ctl.wait(m0, 10, kind="req", path="/%s/pop-get" % tag)
+            time.sleep(1.0)
+            tabs = self.bridge("tabs.query", {}).get("data") or []
+            p2 = next((t.get("id") for t in tabs if t.get("incognito") and str(t.get("url", "")).endswith("/%s/pop-get" % tag)), None)
+            if p2 is not None:
+                self.bridge("debugger.attach", p2)
+                self.cdp(p2, "Runtime.evaluate", {"expression": "fetch(location.origin + '/%s/pop-fetch', {mode: 'no-cors'}).catch(() => {}); 1" % tag})
+            time.sleep(2.0)
+            return requests_of(m0, tag)
+
         # The control: before act_rules every request reaches the server (no rule of the act holds yet).
         before = run_requests("pre")
-        m1 = self.ctl.mark()
-        self.cdp(act_tab, "Page.navigate", {"url": origin + "/p/act-login"})
-        self.ctl.wait(m1, 10, kind="page", page_kind="page-load", page="/p/act-login")
+        back()
+        before_pop = pop_requests("pre")
+        back()
         everything = sorted(["a-beacon", "a-fetch", "a-img", "a-ws", "b-post", "c-default", "c-popup", "d-fetch", "e-fetch", "e-ws", "get-top"])
         self.r.add("the control: before act_rules each request of the act tab, its popup and the default context's tab reaches the server",
                    before == everything, "server request log", reached=before)
+        self.r.add("the control: before act_rules a form's POST into a popup, and a popup's GET to the tracker and its fetch there, reach the server",
+                   before_pop == ["pop-fetch", "pop-get", "pop-post"], "server request log", reached=before_pop)
         rr = self.ctl(op="act", call="act_rules", fields={"tab": act_tab, "origin": origin, "send_to": [origin]})
         self.r.add("act_rules writes rules A to E for the act tab and confirms them", rr.get("ok") is True
                    and (rr.get("data") or {}).get("rules") == [10, 11, 12, 13, 14, 15], "stub daemon's main request",
@@ -927,6 +957,10 @@ class Live:
         reached = run_requests("act")
         self.r.add("rules A to E: only the site's own origin (fetch and ws:) and a top-level GET reach the server; A, B, C (the popup and a tab of the default context) and D block the rest",
                    reached == ["e-fetch", "e-ws", "get-top"], "server request log", reached=reached)
+        back()
+        reached_pop = pop_requests("act")
+        self.r.add("the act's popups join rules A, B, D and E: a form's POST into a popup (B) and a popup's fetch after its GET to the tracker (A) are blocked; the GET reaches the server",
+                   reached_pop == ["pop-get"], "server request log", reached=reached_pop)
         notices = [e for e in self.ctl.events(m) if e["kind"] == "blocked" and e.get("tab") == act_tab]
         self.r.add("no blocked notice comes from the act tab", not notices, "stub daemon's notices", notices=len(notices))
         ck = self.ctl(op="act", call="act_cookies", fields={"tab": act_tab, "domain": "www.signin.localhost"})

@@ -320,6 +320,113 @@
     ]
    },
    "error": "not an agent tab"
+  },
+  {
+   "note": "No op selects or closes an act tab: the act's caller closes it only through act_end (review-ce44 B1).",
+   "setup": "act window 30",
+   "req": {
+    "t": "req",
+    "id": "a13",
+    "op": "tabs.update",
+    "args": [
+     31,
+     {
+      "active": true
+     }
+    ]
+   },
+   "error": "not an agent tab"
+  },
+  {
+   "note": "No tabs.remove of an act tab (no attach for a close).",
+   "setup": "act window 30",
+   "req": {
+    "t": "req",
+    "id": "a14",
+    "op": "tabs.remove",
+    "args": [
+     31
+    ]
+   },
+   "error": "not an agent tab"
+  },
+  {
+   "note": "No client's Page.close of an act tab on its own session.",
+   "setup": "act window 30 attached",
+   "req": {
+    "t": "req",
+    "id": "a15",
+    "op": "debugger.sendCommand",
+    "args": [
+     {
+      "tabId": 31
+     },
+     "Page.close"
+    ]
+   },
+   "error": "not an agent tab"
+  },
+  {
+   "note": "No op selects the operator's incognito tab.",
+   "setup": "another incognito tab",
+   "req": {
+    "t": "req",
+    "id": "a16",
+    "op": "tabs.update",
+    "args": [
+     40,
+     {
+      "active": true
+     }
+    ]
+   },
+   "error": "not an agent tab"
+  },
+  {
+   "note": "No op closes the operator's incognito tab (no attach for a close).",
+   "setup": "another incognito tab",
+   "req": {
+    "t": "req",
+    "id": "a17",
+    "op": "tabs.remove",
+    "args": [
+     40
+    ]
+   },
+   "error": "not an agent tab"
+  },
+  {
+   "note": "No op moves the operator's incognito window (the receiver reads the window with windows.get first).",
+   "setup": "another incognito tab",
+   "req": {
+    "t": "req",
+    "id": "a18",
+    "op": "windows.update",
+    "args": [
+     41,
+     {
+      "left": 0
+     }
+    ]
+   },
+   "error": "not an agent window"
+  },
+  {
+   "note": "No client tab goes into the operator's incognito window, or into the window of an act popup (the receiver reads the window with windows.get first).",
+   "setup": "another incognito tab",
+   "req": {
+    "t": "req",
+    "id": "a19",
+    "op": "tabs.create",
+    "args": [
+     {
+      "url": "about:blank",
+      "windowId": 41
+     },
+     "my-repo"
+    ]
+   },
+   "error": "not an agent window"
   }
  ],
  "incognitoTab": {
@@ -389,7 +496,8 @@
    },
    "condition": {
     "initiatorDomains": [
-     "staging.example.com"
+     "staging.example.com",
+     "auth.example.com"
     ],
     "excludedResourceTypes": [
      "main_frame"
@@ -860,5 +968,6 @@
    "no cookie store",
    "cookies failed"
   ]
- }
+ },
+ "rulesNote": "Rules A to E for the act tab 31 (and each act popup or replaced act tab that joins: its id goes into the tabIds of A, B, D and E). Rule C has no tabIds, and its initiatorDomains are the hosts of send_to (review-ce44)."
 }

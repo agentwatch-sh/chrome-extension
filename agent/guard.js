@@ -24,7 +24,8 @@
 // DNR's net::ERR_BLOCKED_BY_CLIENT and the retry's decision (popups.js) can
 // each see it.
 //
-// No log line holds a URL or a host, and no notice comes from an act tab.
+// No log line holds a URL or a host, and no notice comes from an act tab or
+// from another incognito tab; the guard never acts on the latter.
 import { call } from "./attach.js";
 import { covers } from "./lib/domains.js";
 import { BLOCKED } from "./popups.js";
@@ -145,6 +146,10 @@ export class Guard {
   }
 
   #block(tabId, host, nav) {
+    // The operator's own incognito tab (no act tab): the guard never acts on
+    // it, and no host of it leaves the receiver; static rule 1 still blocks
+    // its main frames (C5; review-ce44 B1).
+    if (this.#r.map.isOtherIncognito(tabId)) return;
     void call(() => this.#r.chrome.tabs.update(tabId, { url: "about:blank" })).catch(() => {});
     this.send(this.notice(tabId, host, nav));
   }
@@ -153,7 +158,7 @@ export class Guard {
   // of the sign-in act (and one that closed a moment before) sends none: a
   // host that its page chooses can carry the password (C5; act.js).
   send(n) {
-    if (this.#r.map.wasAct(n.tab)) return;
+    if (this.#r.map.wasAct(n.tab) || this.#r.map.isOtherIncognito(n.tab)) return;
     let sent = this.#sent.get(n.tab);
     if (!sent) {
       sent = new Set();

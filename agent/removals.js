@@ -349,7 +349,7 @@ export class Removals {
       if (op.stale()) return answer.reject(stale());
       if (op.expired) return answer.reject(new Error("timeout"));
       // The orphan set's check (and the restore tab's and the mark's) when the item starts.
-      if (this.#map.isOrphan(tabId) || this.#map.isMarked(tabId) || this.#att.isRestoreTab(tabId)) return answer.reject(new Error(NOT_AGENT_TAB));
+      if (this.#map.isOrphan(tabId) || this.#map.isMarked(tabId) || this.#att.isRestoreTab(tabId) || this.#map.isIncognito(tabId)) return answer.reject(new Error(NOT_AGENT_TAB));
       const r = await this.#item({ ids: [tabId], start: (id) => this.#receiverClose(id) });
       if (r.error) return answer.reject(r.error);
       const c = r.closes[0];

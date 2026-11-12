@@ -25,12 +25,16 @@
 //
 // No log line holds a cookie, a URL, a host or a value of the page.
 import { call } from "./attach.js";
-import { MAX_SEND_TO, actRules } from "./dnr.js";
+import { MAX_SEND_TO } from "./dnr.js";
 import { dedupe } from "./lib/cookies.js";
 
 export const ACT_MARK = "act";
 export const ACT_KEY = "act:";
+export const ACT_TAB_KEY = "acttab:";
 const KEY = /^act:(0|[1-9][0-9]{0,15})$/;
+const TAB_KEY = /^acttab:(0|[1-9][0-9]{0,15})$/;
+// The cookie store of the default context: act_cookies never reads it.
+const DEFAULT_STORE = "0";
 // The bridge's error texts of the act window (C10).
 export const ANOTHER_PRIVATE = "another private window is open";
 export const NO_INCOGNITO = "not allowed in incognito";
@@ -83,6 +87,7 @@ export class Act {
   #r; // the Receiver: chrome, map, rules, removals, listName
   #chain = Promise.resolve();
   #windows = new Set(); // the act windows
+  #tabs = new Set(); // the act popups and replaced act tabs with a key acttab:<id> (and those of the copy at the start)
 
   constructor(receiver) {
     this.#r = receiver;
@@ -99,7 +104,15 @@ export class Act {
 
   // An act window, an act tab or the act's rules are (or may be) there.
   get open() {
-    return this.#windows.size > 0 || this.#r.map.acts().length > 0 || this.#r.rules.acting;
+    return this.#windows.size > 0 || this.#tabs.size > 0 || this.#r.map.acts().length > 0 || this.#r.rules.acting;
+  }
+
+  // An act popup or a replaced act tab: its key acttab:<id> goes into the
+  // copy, so a worker that starts again closes it (best effort: act_end
+  // closes it by its id anyway).
+  keepTab(tabId) {
+    this.#tabs.add(tabId);
+    void call(() => this.#chrome.storage.session.set({ [ACT_TAB_KEY + tabId]: true })).catch(() => {});
   }
 
   // The act's work runs one at a time: the window, the rules, the cookies, the end.
@@ -123,11 +136,13 @@ export class Act {
     return this.#run(async () => {
       if (!(await allowed)) throw new Error(NO_INCOGNITO);
       if (op.stale()) throw new Error("detached");
-      // A left act: its windows, its popups and its rules go first.
+      // A left act: its windows, its popups and its rules go first. A tab of
+      // it that stays open is another private window; rules that do not go
+      // answer their own text (review-ce44 N6).
       try {
         await this.#end();
-      } catch {
-        throw new Error(ANOTHER_PRIVATE);
+      } catch (e) {
+        throw new Error(e && e.message === RULES_NOT_REMOVED ? RULES_NOT_REMOVED : ANOTHER_PRIVATE);
       }
       // All incognito windows share one context: no other may be open.
       const tabs = await call(() => this.#chrome.tabs.query({}));
@@ -188,9 +203,11 @@ export class Act {
         new Set(sendTo).size === sendTo.length && sendTo.includes(origin);
       if (!fits) throw new Error(BAD_REQUEST);
       if (!this.#r.map.isAct(tab)) throw new Error(NOT_ACT_TAB);
-      const rules = actRules({ tabId: tab, host: new URL(origin).hostname, sendTo });
+      // The act tab of the request, then every other act tab (its popups and
+      // replaced tabs that came before the rules).
+      const tabIds = [tab, ...this.#r.map.acts().filter((id) => id !== tab)];
       try {
-        return { rules: await this.#r.rules.setAct(rules) };
+        return { rules: await this.#r.rules.setAct({ tabIds, sendTo }) };
       } catch {
         throw new Error(RULES_NOT_HELD);
       }
@@ -211,7 +228,8 @@ export class Act {
         throw new Error(COOKIES_FAILED);
       }
       const store = (Array.isArray(stores) ? stores : []).find((s) => s && typeof s.id === "string" && Array.isArray(s.tabIds) && s.tabIds.includes(tab));
-      if (!store) throw new Error(NO_STORE);
+      // Never the store of the default context (review-ce44 N10).
+      if (!store || store.id === DEFAULT_STORE) throw new Error(NO_STORE);
       try {
         const plain = await this.#chrome.cookies.getAll({ domain, storeId: store.id });
         const parted = await this.#chrome.cookies.getAll({ domain, storeId: store.id, partitionKey: {} });
@@ -231,9 +249,15 @@ export class Act {
   async #end() {
     const r = this.#r;
     const windows = new Set(this.#windows);
-    const ofAct = (t) => t && Number.isInteger(t.id) && (r.map.isAct(t.id) || (t.incognito === true && windows.has(t.windowId)));
+    const tabs = new Set(this.#tabs);
+    // A tab of the act: an act tab, a tab of an act window, a tab of a key
+    // acttab:<id>, and an incognito tab whose opener is one of them (a popup
+    // whose navigation target has not come yet; review-ce44 N2).
+    const known = (id) => r.map.isAct(id) || r.map.wasAct(id) || tabs.has(id);
+    const ofAct = (t) => t && Number.isInteger(t.id) && (r.map.isAct(t.id) || (t.incognito === true &&
+      (windows.has(t.windowId) || tabs.has(t.id) || (Number.isInteger(t.openerTabId) && known(t.openerTabId)))));
     let closed = 0;
-    if (windows.size > 0 || r.map.acts().length > 0) {
+    if (windows.size > 0 || tabs.size > 0 || r.map.acts().length > 0) {
       const item = await r.removals.closeOwn({ select: (tabs) => tabs.filter(ofAct).map((t) => t.id) });
       closed = item.closed.length;
       if (item.error) throw new Error(ACT_NOT_CLOSED);
@@ -253,10 +277,12 @@ export class Act {
         throw new Error(RULES_NOT_REMOVED);
       }
     }
-    if (windows.size > 0) {
+    if (windows.size > 0 || tabs.size > 0) {
       for (const id of windows) this.#windows.delete(id);
-      // A key that stays closes nothing at the next start: its window is gone.
-      await call(() => this.#chrome.storage.session.remove([...windows].map((id) => ACT_KEY + id))).catch(() => {});
+      for (const id of tabs) this.#tabs.delete(id);
+      // A key that stays closes nothing at the next start: its window and its tabs are gone.
+      const keys = [...[...windows].map((id) => ACT_KEY + id), ...[...tabs].map((id) => ACT_TAB_KEY + id)];
+      await call(() => this.#chrome.storage.session.remove(keys)).catch(() => {});
     }
     return { closed };
   }
@@ -269,13 +295,16 @@ export class Act {
     return this.end().catch(() => {});
   }
 
-  // The copy at the worker's start (tabmap.js, its one read): each act
-  // window of a worker before this one closes.
+  // The copy at the worker's start (tabmap.js, its one read): the act
+  // windows and act tabs of a worker before this one. The start's end
+  // (receiver.js startup) closes them, while the act's rules still hold.
   restored(data) {
-    const ids = Object.keys(data ?? {}).map((k) => KEY.exec(k)).filter(Boolean).map((m) => Number(m[1]));
-    if (ids.length === 0) return;
-    for (const id of ids) this.#windows.add(id);
-    void this.end().catch(() => {});
+    for (const k of Object.keys(data ?? {})) {
+      const w = KEY.exec(k);
+      if (w) this.#windows.add(Number(w[1]));
+      const t = TAB_KEY.exec(k);
+      if (t) this.#tabs.add(Number(t[1]));
+    }
   }
 }
 

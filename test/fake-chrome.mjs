@@ -213,7 +213,13 @@ export function makeFakeChrome() {
       onReplaced: makeEvent(),
     },
     windows: {
-      get: rec("windows.get", async (windowId) => ({ id: windowId })),
+      // A window is incognito when a tab of fake.tabs_ in it is (the act of the stored sign-ins).
+      get: rec("windows.get", async (windowId) => (fake.tabs_.some((t) => t.windowId === windowId && t.incognito === true) ? { id: windowId, incognito: true } : { id: windowId })),
+      getAll: rec("windows.getAll", async () => {
+        const out = new Map();
+        for (const t of fake.tabs_) if (Number.isInteger(t.windowId) && !out.has(t.windowId)) out.set(t.windowId, { id: t.windowId, incognito: t.incognito === true, focused: false, type: "normal" });
+        return [...out.values()];
+      }),
       create: rec("windows.create", async (data) => ({ id: 800 + calls.length, ...data })),
       update: rec("windows.update", async (windowId, info) => ({ id: windowId, ...info })),
     },

@@ -103,14 +103,21 @@ const restoreTab = (c, [tabId]) => (c.att.isRestoreTab(tabId) ? NOT_AGENT_TAB : 
 const noSession = (c, tabId) => c.r.map.isOrphan(tabId) || c.r.map.isMarked(tabId);
 // The ops by which a client acts on a tab (attach, select, close) refuse the
 // restore tab, a tab of the orphan set and a marked tab. debugger.detach,
-// tabs.get and bridge.release stay allowed.
-const agentTab = (c, [tabId]) => (c.att.isRestoreTab(tabId) || noSession(c, tabId) ? NOT_AGENT_TAB : null);
+// tabs.get and bridge.release stay allowed. tabs.update and tabs.remove also
+// refuse every incognito tab: the operator's own, and an act tab, which only
+// act_end closes (review-ce44 B1).
+const agentTab = (c, [tabId]) => (c.att.isRestoreTab(tabId) || noSession(c, tabId) || c.r.map.isIncognito(tabId) ? NOT_AGENT_TAB : null);
+// debugger.attach takes an act tab (the act's own session), never another incognito tab.
+const attachTab = (c, [tabId]) => (c.att.isRestoreTab(tabId) || noSession(c, tabId) || c.r.map.isOtherIncognito(tabId) ? NOT_AGENT_TAB : null);
 // A command never goes to a tab of the orphan set or a marked tab, through
 // the import's attachment, or to a tab that the bridge did not attach: not an
 // agent tab first, then not attached (a marked tab is never a bridge tab, so
 // its check is one more layer).
-const commandTab = (c, [target]) =>
-  noSession(c, target.tabId) ? NOT_AGENT_TAB : c.att.isBridgeTab(target.tabId) ? null : "not attached";
+// A Page.close on the own session of an incognito tab is refused too: only
+// act_end closes an act tab (review-ce44 B1).
+const commandTab = (c, [target, method]) =>
+  noSession(c, target.tabId) || (method === "Page.close" && target.sessionId === undefined && c.r.map.isIncognito(target.tabId))
+    ? NOT_AGENT_TAB : c.att.isBridgeTab(target.tabId) ? null : "not attached";
 // No client tab goes into an act window, and no op moves or resizes one (the
 // service moves it outside the screen at the X level).
 const newTabWindow = (c, [props]) => (Object.hasOwn(props, "windowId") && c.r.act.isWindow(props.windowId) ? NOT_AGENT_WINDOW : null);
@@ -181,13 +188,13 @@ export const OPS = Object.freeze({
   "debugger.attach": op(["id"], 1, (c, [tabId]) => c.att.attach(tabId, () =>
     call(() => c.chrome.tabs.get(tabId)).then((tab) => {
       if (ownOrigin(c, tab) || c.att.isRestoreTab(tabId) || incognitoTab(c, tabId, tab)) throw new Error(NOT_AGENT_TAB);
-    }), () => (noSession(c, tabId) ? NOT_AGENT_TAB : null)), { tab: agentTab }),
+    }), () => (noSession(c, tabId) || c.r.map.isOtherIncognito(tabId) ? NOT_AGENT_TAB : null)), { tab: attachTab }),
   "debugger.detach": op(["id"], 1, (c, [tabId]) => c.att.detach(tabId), { tab: restoreTab, nullResult: true }),
   "debugger.sendCommand": op(["target", "method", "object"], 2,
     (c, [target, method, params], o) => sendCommand(c, o, target, method, params), { tab: commandTab, wait: WAIT_MAX_MS }),
   "debugger.getTargets": op([], 0, (c) => c.chrome.debugger.getTargets()),
   "tabs.create": op(["newTab", "scope"], 2, (c, [props, scope]) =>
-    c.r.createTab(scope, () => c.chrome.tabs.create(props), (tab) => tab && tab.id), { tab: newTabWindow }),
+    c.r.createTab(scope, () => c.r.newTab(props), (tab) => tab && tab.id), { tab: newTabWindow }),
   "tabs.get": op(["id"], 1, (c, [tabId]) => c.chrome.tabs.get(tabId)),
   "tabs.query": op(["object"], 1, (c, [info]) => c.chrome.tabs.query(info)),
   "tabs.update": op(["id", "tabUpdate"], 2, (c, [tabId, props]) => c.chrome.tabs.update(tabId, props), { tab: agentTab }),
@@ -201,7 +208,11 @@ export const OPS = Object.freeze({
     (mark === ACT_MARK ? c.r.createAct(scope, data, o)
       : c.r.createTab(scope, () => c.chrome.windows.create(data), (win) => (win && Array.isArray(win.tabs) && win.tabs[0] ? win.tabs[0].id : null))),
   { pair: ([data, , mark]) => (mark === ACT_MARK) === Object.hasOwn(data, "incognito") }),
-  "windows.update": op(["id", "windowUpdate"], 2, (c, [windowId, info]) => c.chrome.windows.update(windowId, info), { tab: agentWindow }),
+  // An incognito window that is no act window (an act popup's, the operator's) is refused too: the receiver reads it first.
+  "windows.update": op(["id", "windowUpdate"], 2, (c, [windowId, info]) => call(() => c.chrome.windows.get(windowId)).then((w) => {
+    if (w && w.incognito === true) throw new Error(NOT_AGENT_WINDOW);
+    return c.chrome.windows.update(windowId, info);
+  }), { tab: agentWindow }),
   "downloads.search": op(["object"], 1, (c, [query]) => c.chrome.downloads.search(query)),
   "downloads.cancel": op(["id"], 1, (c, [id]) => c.chrome.downloads.cancel(id), { nullResult: true }),
   "contentSettings.set": op(["contentType", "contentDetails"], 2,

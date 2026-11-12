@@ -40,6 +40,7 @@ export class TabMap {
   #marks = new Set(); // the marked tabs: the operator's own
   #keptMarks = new Map(); // tabId -> until: marks of tabs that closed or were replaced
   #acts = new Set(); // the act tabs of the sign-in act (act.js)
+  #incognito = new Set(); // the incognito tabs that the receiver knows (tabs.onCreated, the start's read, tabs.onReplaced)
   #keptActs = new Map(); // tabId -> until: act tabs that closed or were replaced
   #restored = false;
   #restoring = null;
@@ -102,6 +103,7 @@ export class TabMap {
       return;
     }
     const [data, tabs] = got.value;
+    for (const t of Array.isArray(tabs) ? tabs : []) this.noteTab(t);
     const open = new Set((Array.isArray(tabs) ? tabs : []).map((t) => t && t.id));
     const drop = [];
     for (const [k, v] of Object.entries(data ?? {})) {
@@ -241,6 +243,30 @@ export class TabMap {
     return true;
   }
 
+  // ---- the incognito tabs ----
+
+  // A tab of tabs.onCreated or of the start's read: an incognito tab joins the set.
+  noteTab(tab) {
+    if (tab && Number.isInteger(tab.id) && tab.incognito === true) this.#incognito.add(tab.id);
+  }
+
+  // An incognito tab: one that the receiver knows (an act tab is one). A tab
+  // that the start's read missed (it failed) counts as a tab of the default
+  // context.
+  isIncognito(tabId) {
+    return this.#incognito.has(tabId) || this.#acts.has(tabId);
+  }
+
+  // An incognito tab that is no act tab: the operator's own (C5, C10).
+  isOtherIncognito(tabId) {
+    return this.#incognito.has(tabId) && !this.#acts.has(tabId);
+  }
+
+  // Some incognito tab is open.
+  hasIncognito() {
+    return this.#incognito.size > 0 || this.#acts.size > 0;
+  }
+
   // ---- the act tabs ----
 
   // An act tab now (not one that closed).
@@ -275,6 +301,7 @@ export class TabMap {
   // each is kept for TOMBSTONE_MS. Gives the scope that the tab had, or
   // undefined.
   removed(tabId) {
+    this.#incognito.delete(tabId);
     const scope = this.leave(tabId);
     this.#leaveOrphans(tabId);
     this.#leaveMarks(tabId);
@@ -329,6 +356,7 @@ export class TabMap {
   // orphan set and the marks; its added tab takes its place (opener() before,
   // adopt() after).
   release(tabId) {
+    this.#incognito.delete(tabId);
     this.leave(tabId);
     this.#leaveOrphans(tabId);
     this.#leaveMarks(tabId);
