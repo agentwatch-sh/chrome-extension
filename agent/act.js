@@ -136,8 +136,13 @@ export class Act {
       const win = await call(() => this.#chrome.windows.create(data));
       const tab = win && Array.isArray(win.tabs) ? win.tabs[0] : null;
       if (!win || win.incognito !== true || !tab || !Number.isInteger(tab.id) || !Number.isInteger(win.id)) {
-        // Chrome gave no incognito window that the receiver can reach.
+        // Chrome gave no incognito window with a tab that the receiver can reach.
         if (tab && Number.isInteger(tab.id) && tab.incognito !== true) r.orphanClose(tab.id);
+        if (win && win.incognito === true && Number.isInteger(win.id)) {
+          // An incognito window with no tab: it closes as an act window that is left.
+          this.#windows.add(win.id);
+          await this.#end().catch(() => {});
+        }
         throw new Error(NO_INCOGNITO);
       }
       this.#windows.add(win.id);

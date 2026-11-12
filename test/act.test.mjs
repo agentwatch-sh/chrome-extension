@@ -98,6 +98,26 @@ test("the pair rule and the window's own checks: each windowErrors vector gets i
   }
 });
 
+test("Chrome's result must be an incognito window with a tab: a window of the default context closes, and the op answers not allowed in incognito", async () => {
+  const s = await setup();
+  s.f.impl["windows.create"] = async (data) => {
+    s.f.tabs_.push({ id: 38, windowId: 39, url: "about:blank" });
+    s.f.targets_.push({ id: "T38", tabId: 38, type: "page", attached: false });
+    return { ...data, id: 39, incognito: false, tabs: [{ id: 38, windowId: 39, incognito: false }] };
+  };
+  const res = await s.answer({ ...V.actWindow.req, id: "regular" });
+  assert.equal(res.error, "not allowed in incognito");
+  await flush();
+  assert.ok(!s.f.tabs_.some((t) => t.id === 38), "the window's tab closed");
+  assert.equal(s.r.map.has(38), false);
+  assert.equal(s.r.map.isAct(38), false);
+  assert.deepEqual(s.f.storage_.session, {}, "no act key");
+  // An incognito window with no tab: the same text, and no act key stays.
+  s.f.impl["windows.create"] = async (data) => ({ id: 45, ...data, tabs: [] });
+  assert.equal((await s.answer({ ...V.actWindow.req, id: "notab" })).error, "not allowed in incognito");
+  assert.deepEqual(s.f.storage_.session, {});
+});
+
 test("a left act ends before the next act window: its tab closes by the receiver's close, its rules and its key go", async () => {
   const s = await setup();
   await s.openAct();
