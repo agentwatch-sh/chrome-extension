@@ -182,7 +182,20 @@ it. The case checks:
 - `act_end` closes the act window (no incognito tab is left), and then the default context's request to the
   tracker passes again.
 
-The driver prints cookie names only, never a value.
+The driver prints cookie names only, never a value. Before `act_rules` the case fires the same requests once
+more as a control: each of them must reach the server, so a request that the rules stop is stopped by the rules.
+
+Run of 2026-11-12 on taylor (Chromium 156.0.8078.79, the unpacked receiver 0.3.6 of the branch
+`ab-v16.97.3-act-window`, `LIVE_DISPLAY=171`, displays 171 and 172, `run.sh up`, then `run.sh test <run> link act`,
+then `run.sh down`, under the shared heavy-job lock): **13 checks, 13 passed**. The act window was incognito, and
+`bridge.tabScopes` did not list its tab; `windows.get` answered it (bounds 0, 0, 1279, 899: the case does not move
+it); `windows.update` of it got `not an agent window`. The control: 11 of 11 requests reached the server. With
+the rules (ids 10 to 15): 3 of 11 reached it (the site's own fetch and WebSocket, and the top-level GET); no
+`blocked` notice named the act tab; `act_cookies` gave the act store's cookie name only; `act_end` closed 3 tabs
+(the act tab and two popups), no incognito tab was left, and the default context's request reached the server
+again. A run of every case before it (the same branch, `run.sh` in `all` mode): 75 checks, 74 passed; the one
+failure is the accepted partitioned-cookie check (below), and the case `act` stopped at a fault of its own first
+version, which the run above fixed.
 
 ## Run it with Google Chrome 157
 

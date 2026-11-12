@@ -693,9 +693,20 @@ before that only agent-browser's own tests of the act. The daemon never sends th
       top-level or popup request to a host that the scope's list covers (no tab rule names a popup,
       and C matches no main frame, so a popup's top-level request by another method than GET passes
       too); DNS prefetch and preconnect; and WebRTC.
-    - The design's round 1 measured rules A, B and C with Chromium 156 and a probe extension that
-      played the receiver. Rules D and E, and the five rules through this receiver, are designed, not
-      measured: the act task's live check (board ab-v16.97.4) proves them.
+    - Measured (board ab-v16.97.3's live case `act`, `test/live/README.md`: Chromium 156.0.8078.79, the
+      unpacked receiver of the branch with the incognito allow in the profile's `Preferences`, a stub
+      daemon in the place of the act's caller, `*.localhost` hosts only, one origin in `send_to`, a
+      tracker host on the scope's list). Before `act_rules`, each of 11 requests reached the server: from
+      the act tab's page a fetch, an image, a beacon and a WebSocket to the tracker, a fetch to a
+      subdomain of the site, a fetch and a WebSocket to the site's own origin, a form's POST to the
+      tracker and a top-level GET to it; a fetch to the tracker from an `about:blank` popup of the act
+      tab; and one from a tab of the default context on the site. With the rules, only the site's own
+      fetch and WebSocket (rule E) and the top-level GET reached it: rules A, B, C (in the popup and in
+      the tab of the default context) and D stopped the other 7. After `act_end` the default context's
+      request reached it again. The design's round 1 measured rules A, B and C with a probe extension.
+      Not measured: Google Chrome with the receiver's CRX, a site's service worker or shared worker (rule
+      C), WebTransport, more than one origin in `send_to`, and the real act: the act task's live check
+      (board ab-v16.97.4) proves them.
   - Each change is one `updateSessionRules` call, and the changes run one after the other, each from
     the map when it runs. A `set_scopes` replaces every scope rule and rule 8. A tab that gets or
     loses a scope replaces only the two rules of its list (of both lists when it changes lists). A
