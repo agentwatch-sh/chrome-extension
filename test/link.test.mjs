@@ -28,7 +28,7 @@ function setup(handlers = {}, bridge = {}) {
 const sendReq = (port, req, ch) => {
   for (const p of splitParts(req.id, req, PART_BYTES, ch)) port.fireMessage(p);
 };
-const HELLO = { t: "hello", v: 2, version: "0.1.0", channels: ["main", "bridge"], features: ["scopes"] };
+const HELLO = { t: "hello", v: 2, version: "0.1.0", channels: ["main", "bridge"], features: ["scopes", "act"] };
 const resOf = (port) => port.posted.filter((m) => m.t === "res");
 const byId = (list) => list.slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 

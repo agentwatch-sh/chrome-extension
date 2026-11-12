@@ -276,17 +276,37 @@ and no prompt showed.
   tabs before the hold is on (measured; see contract C10). At each link
   change the bridge detaches every tab that it attached.
 
+- **The act of the stored sign-ins (contracts C4, C5 and C10; board
+  ab-v16.97.3):** agent-browser's service signs in to a site with a
+  credential that the operator stored, in an act window of its own: an
+  incognito window that the receiver opens (`windows.create` with the mark
+  `act`), so the act shares no cookie, storage or worker with the agent's
+  tabs. The act tab has its caller's scope for the list rules, but no
+  connection sees it. On the service's request (`act_rules`) the receiver
+  holds the act's rules A to E, which block the act's requests to a host
+  outside the origins that may receive the password, and confirms them
+  before the first key; it reads the act window's cookies for the move
+  (`act_cookies`), and it closes the act window and then removes the rules
+  (`act_end`). A link change ends the act too. Every other incognito tab is
+  no agent tab, and the import never touches the act's context. The
+  manifest keeps `"incognito": "spanning"` (Chrome's default, written out);
+  the service writes the receiver's incognito allow into the profile before
+  each Chrome start.
+
 ### Its permissions, and why
+
+No permission is new for the act of the stored sign-ins: it uses `cookies`,
+`declarativeNetRequest` and `tabs` as below.
 
 | Permission | Why |
 | --- | --- |
-| `cookies` | to remove the site's old cookies and write the sent ones |
+| `cookies` | to remove the site's old cookies and write the sent ones; to read the act window's cookies of a site for the move of a stored sign-in (`act_cookies`) |
 | `scripting` | to write the page storage on the restore page and then open the site |
 | `tabs` | to open the restore tab and to close the tabs that a send or a list change makes stale |
 | `storage` | to keep the copy of the tab-to-scope map in `chrome.storage.session` (only for this browser run), so a restarted service worker knows each tab's scope |
 | `webNavigation` | to know when the restore page has loaded, and to report a blocked navigation |
 | `webRequest` | to read the method of a popup's blocked first request: the retry reloads a GET only, so a form that posts into a new tab fails closed with no "Confirm Form Resubmission" dialog (read only; Chrome shows no install warning for it) |
-| `declarativeNetRequest` | the allowlist block, the frame rule and the navigation header |
+| `declarativeNetRequest` | the allowlist block, the frame rule, the navigation header and the act's rules A to E |
 | `nativeMessaging` | the link to the agentwatch daemon |
 | `debugger` | to serve the restore page from the extension (the site never sees that request) and to bypass the site's service worker during the import; the bridge's CDP commands |
 | `browsingData` | to remove the service workers when a site leaves the allowlist: a worker would otherwise answer a navigation to its host past the block |

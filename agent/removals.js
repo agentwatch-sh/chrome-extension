@@ -9,7 +9,11 @@
 //   the tabs with a pending close, the item first opens an about:blank tab
 //   (not active, in no scope) in the window of its last tab, so Chrome never
 //   ends. The query and that tab each have REMOVAL_WAIT_MS; when either
-//   fails or comes later, the item closes no tab.
+//   fails or comes later, the item closes no tab. An incognito tab never
+//   counts as a tab that stays (an act window closes at the act's end), and
+//   the about:blank tab never goes into an incognito window: it goes into the
+//   window of the item's last tab that is not incognito, else into a new
+//   window (windows.create, not focused) of the default context.
 // - The receiver's close (every close but a client's Page.close):
 //   Target.closeTarget through chrome.debugger on the tab, one op of the
 //   tab's chain of attaches (attach.js). No beforeunload handler runs. Its
@@ -157,18 +161,24 @@ export class Removals {
   // item's tabs, or select(tabs) picks them from the query. start(tabId)
   // starts one close and gives its Close. Gives {closes, error}: error when
   // the query or the window rule failed (then no close started).
-  async #item({ ids = null, select = null, start }) {
+  async #item({ ids = null, select = null, start, refuse = null }) {
     const q = await this.#limit(() => this.#chrome.tabs.query({}));
     if (!q.ok) return { closes: [], error: q.error };
     const tabs = (Array.isArray(q.value) ? q.value : []).filter((t) => t && Number.isInteger(t.id));
+    // refuse(tabs): a text that refuses the item, from its own read (no close starts).
+    const no = refuse ? refuse(tabs) : null;
+    if (no) return { closes: [], error: new Error(no) };
     const mine = ids ?? select(tabs);
     if (mine.length === 0) return { closes: [], error: null };
     const byId = new Map(tabs.map((t) => [t.id, t]));
     const open = mine.filter((id) => byId.has(id));
-    const stays = tabs.some((t) => !mine.includes(t.id) && !this.isPending(t.id));
+    const regular = (t) => t.incognito !== true;
+    const stays = tabs.some((t) => !mine.includes(t.id) && !this.isPending(t.id) && regular(t));
     if (open.length > 0 && !stays) {
-      const last = byId.get(open.at(-1));
-      const blank = await this.#limit(() => this.#chrome.tabs.create({ windowId: last.windowId, url: "about:blank", active: false }));
+      const last = open.map((id) => byId.get(id)).filter(regular).at(-1);
+      const blank = last
+        ? await this.#limit(() => this.#chrome.tabs.create({ windowId: last.windowId, url: "about:blank", active: false }))
+        : await this.#limit(() => this.#chrome.windows.create({ url: "about:blank", focused: false }));
       if (!blank.ok) return { closes: [], error: blank.error };
     }
     const closes = mine.map((id) => start(id));
@@ -342,8 +352,11 @@ export class Removals {
       if (op.stale()) return answer.reject(stale());
       if (op.expired) return answer.reject(new Error("timeout"));
       // The orphan set's check (and the restore tab's and the mark's) when the item starts.
-      if (this.#map.isOrphan(tabId) || this.#map.isMarked(tabId) || this.#att.isRestoreTab(tabId)) return answer.reject(new Error(NOT_AGENT_TAB));
-      const r = await this.#item({ ids: [tabId], start: (id) => this.#receiverClose(id) });
+      if (this.#map.isOrphan(tabId) || this.#map.isMarked(tabId) || this.#att.isRestoreTab(tabId) || this.#map.isIncognito(tabId)) return answer.reject(new Error(NOT_AGENT_TAB));
+      // The item's own read refuses an incognito tab too: also one that the
+      // map does not know (a start whose read failed; review-ce44b R2).
+      const refuse = (tabs) => (tabs.some((t) => t.id === tabId && t.incognito === true) ? NOT_AGENT_TAB : null);
+      const r = await this.#item({ ids: [tabId], start: (id) => this.#receiverClose(id), refuse });
       if (r.error) return answer.reject(r.error);
       const c = r.closes[0];
       void c.ended.then(() => (c.closed ? answer.resolve(null) : answer.reject(c.error ?? new Error("close failed"))));

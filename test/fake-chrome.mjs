@@ -19,6 +19,11 @@
 // When fake.autoNavigate is true, the import's last script (leaveRestorePage)
 // fires webNavigation.onCommitted for its URL.
 //
+// For the act of the stored sign-ins (C4, C10; act.js): extension.isAllowedIncognitoAccess
+// gives fake.incognitoAllowed, cookies.getAllCookieStores gives fake.cookieStores_, and
+// cookies.getAll with a storeId gives the cookies of that store (a cookie with no storeId is of
+// the default store "0", which a getAll with no storeId reads).
+//
 // For the worker removal of the recorded origins (C5): webNavigation.getAllFrames
 // gives fake.frames_.get(tabId) when the test set it, else the main frame of a
 // tab of fake.tabs_ at its url, and null for a tab that does not exist (as
@@ -74,6 +79,8 @@ export function makeFakeChrome() {
     trackDebuggerCommands: false, // detach fails running commands; an explicit detach sends no onDetach
     debuggerCommands_: new Set(),
     sessionRules_: [],
+    incognitoAllowed: true,
+    cookieStores_: [{ id: "0", tabIds: [] }],
     dynamicRules_: [],
     trackNewTabs: false,
     frames_: new Map(), // tabId -> the frames that webNavigation.getAllFrames gives
@@ -206,7 +213,13 @@ export function makeFakeChrome() {
       onReplaced: makeEvent(),
     },
     windows: {
-      get: rec("windows.get", async (windowId) => ({ id: windowId })),
+      // A window is incognito when a tab of fake.tabs_ in it is (the act of the stored sign-ins).
+      get: rec("windows.get", async (windowId) => (fake.tabs_.some((t) => t.windowId === windowId && t.incognito === true) ? { id: windowId, incognito: true } : { id: windowId })),
+      getAll: rec("windows.getAll", async () => {
+        const out = new Map();
+        for (const t of fake.tabs_) if (Number.isInteger(t.windowId) && !out.has(t.windowId)) out.set(t.windowId, { id: t.windowId, incognito: t.incognito === true, focused: false, type: "normal" });
+        return [...out.values()];
+      }),
       create: rec("windows.create", async (data) => ({ id: 800 + calls.length, ...data })),
       update: rec("windows.update", async (windowId, info) => ({ id: windowId, ...info })),
     },
@@ -222,11 +235,16 @@ export function makeFakeChrome() {
         clear: rec("contentSettings." + type + ".clear", async () => {}),
       }]),
     ),
+    extension: {
+      isAllowedIncognitoAccess: rec("extension.isAllowedIncognitoAccess", async () => fake.incognitoAllowed),
+    },
     cookies: {
       // Without partitionKey: unpartitioned cookies only. With partitionKey {}:
-      // every cookie, so the two reads overlap (as in Chrome).
+      // every cookie, so the two reads overlap (as in Chrome). Without storeId:
+      // the default store's.
       getAll: rec("cookies.getAll", async (filter) =>
-        fake.cookies_.filter((c) => (filter.partitionKey ? true : !c.partitionKey)).map((c) => ({ ...c }))),
+        fake.cookies_.filter((c) => (filter.partitionKey ? true : !c.partitionKey) && (c.storeId ?? "0") === (filter.storeId ?? "0")).map((c) => ({ ...c }))),
+      getAllCookieStores: rec("cookies.getAllCookieStores", async () => structuredClone(fake.cookieStores_)),
       getPartitionKey: rec("cookies.getPartitionKey", async () =>
         fake.partitionKey ? { partitionKey: fake.partitionKey } : {}),
       set: rec("cookies.set", async (details) => ({ ...details })),

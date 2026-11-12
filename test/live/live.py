@@ -214,7 +214,7 @@ class Live:
         st = self.ctl(op="daemon_state")
         self.r.add("receiver links up and says hello", bool(ok), "stub daemon socket: link event, then hello",
                    version=st.get("hello"))
-        self.r.add('the hello says features ["scopes"]', st.get("features") == ["scopes"],
+        self.r.add('the hello says features ["scopes", "act"]', st.get("features") == ["scopes", "act"],
                    "stub daemon socket: the hello's features", features=st.get("features"))
         self.agent_tab()
         ping = self.ctl(op="ping")
@@ -838,10 +838,151 @@ class Live:
                    created=[[e.get("tab"), e.get("active"), e.get("attached"), e.get("held")] for e in created],
                    restore_debugger_events=len(onev))
 
+    def act(self) -> None:
+        """The receiver's part of the stored sign-ins (board ab-v16.97.3; C4, C5, C10): the act window (an incognito
+        window, with the allow from the profile's Preferences), windows.get of it, the act's rules A to E with their
+        confirmation, rule C in a tab of the default context, the read of the act store's cookies, no blocked notice
+        from the act tab, and the act's end. The act tab's page and a tab of the default context of the same site
+        fire requests to a tracker host (on the list, so only the act's rules stop them) and to the site's own origin.
+        Made-up cookie values only; the driver prints cookie names, never a value."""
+        base = sorted(set(self.ctl(op="daemon_state")["allow"]))
+        self.allow(base + ["signin.localhost", "tracker.localhost"])
+        origin = self.site("signin", "")
+        tracker = self.site("tracker", "")
+        sub = "http://sub.www.signin.localhost:%d" % self.port  # rule D: a subdomain of a host of send_to
+        w = self.bridge("windows.create", {"url": "about:blank", "focused": False, "incognito": True}, SCOPE, "act")
+        win = w.get("data") or {}
+        tab0 = (win.get("tabs") or [{}])[0]
+        act_tab = tab0.get("id")
+        scopes = [x.get("tabId") for x in (self.bridge("bridge.tabScopes").get("data") or [])]
+        self.r.add("windows.create with the mark act opens an incognito window; bridge.tabScopes leaves its tab out",
+                   w.get("ok") is True and win.get("incognito") is True and tab0.get("incognito") is True and act_tab not in scopes,
+                   "stub daemon's bridge request; the receiver's allow from the profile's Preferences",
+                   answered=w.get("ok"), error=w.get("error"), incognito=win.get("incognito"), in_tab_scopes=act_tab in scopes)
+        if not w.get("ok"):
+            return
+        g = self.bridge("windows.get", win.get("id"))
+        gd = g.get("data") or {}
+        self.r.add("windows.get of the act window answers it", g.get("ok") is True and gd.get("incognito") is True and gd.get("id") == win.get("id"),
+                   "stub daemon's bridge request", bounds=[gd.get(k) for k in ("left", "top", "width", "height")])
+        u = self.bridge("windows.update", win.get("id"), {"left": 0})
+        self.r.add("windows.update of the act window gets not an agent window", u.get("error") == "not an agent window",
+                   "stub daemon's bridge request", error=u.get("error"))
+        att = self.bridge("debugger.attach", act_tab)
+        m = self.ctl.mark()
+        self.cdp(act_tab, "Page.navigate", {"url": origin + "/p/act-login"})
+        act_load = self.ctl.wait(m, 10, kind="page", page_kind="page-load", page="/p/act-login")
+        self.cdp(act_tab, "Runtime.evaluate", {"expression": "document.cookie = 'aw_act_test=test-act-value-1; path=/'; 1"})
+        dtab = self.new_tab(origin + "/p/act-default")
+        default_load = self.ctl.wait(m, 10, kind="page", page_kind="page-load", page="/p/act-default")
+        self.cdp(dtab, "Runtime.evaluate", {"expression": "document.cookie = 'aw_default_test=test-default-value-2; path=/'; 1"})
+        self.r.add("the act tab attaches and loads the site; a tab of the default context loads it too",
+                   att.get("ok") is True and bool(act_load) and bool(default_load), "server page log", attach=att.get("error"))
+        def fire(tag: str) -> str:
+            return ("(() => { const T = %s, S = %s, P = '/%s/';"
+                    " fetch(T + P + 'a-fetch', {mode: 'no-cors'}).catch(() => {});"
+                    " new Image().src = T + P + 'a-img';"
+                    " navigator.sendBeacon(T + P + 'a-beacon', 'x');"
+                    " try { new WebSocket(T.replace('http:', 'ws:') + P + 'a-ws'); } catch (e) {}"
+                    " fetch(S + P + 'd-fetch', {mode: 'no-cors'}).catch(() => {});"
+                    " fetch(P + 'e-fetch').catch(() => {});"
+                    " try { new WebSocket(location.origin.replace('http:', 'ws:') + P + 'e-ws'); } catch (e) {}"
+                    " const w = window.open(''); if (w) w.fetch(T + P + 'c-popup', {mode: 'no-cors'}).catch(() => {});"
+                    " return 1; })()") % (json.dumps(tracker), json.dumps(sub), tag)
+
+        def post(tag: str) -> str:
+            return ("(() => { const f = document.createElement('form'); f.method = 'post'; f.action = %s + '/%s/b-post';"
+                    " document.body.append(f); f.submit(); return 1; })()") % (json.dumps(tracker), tag)
+
+        def requests_of(m0: int, tag: str) -> list[str]:
+            pre = "/%s/" % tag
+            return sorted(e["path"][len(pre):] for e in self.ctl.events(m0) if e["kind"] == "req" and e["path"].startswith(pre))
+
+        def run_requests(tag: str) -> list[str]:
+            m0 = self.ctl.mark()
+            self.cdp(act_tab, "Runtime.evaluate", {"expression": fire(tag), "userGesture": True})
+            self.cdp(dtab, "Runtime.evaluate", {"expression": "fetch(%s + '/%s/c-default', {mode: 'no-cors'}).catch(() => {}); 1" % (json.dumps(tracker), tag)})
+            self.ctl.wait(m0, 10, kind="req", path="/%s/e-fetch" % tag)
+            self.ctl.wait(m0, 5, kind="req", path="/%s/e-ws" % tag)
+            time.sleep(2.0)
+            self.cdp(act_tab, "Runtime.evaluate", {"expression": post(tag), "userGesture": True})
+            time.sleep(2.0)
+            self.cdp(act_tab, "Page.navigate", {"url": tracker + "/%s/get-top" % tag})
+            self.ctl.wait(m0, 10, kind="req", path="/%s/get-top" % tag)
+            time.sleep(1.0)
+            return requests_of(m0, tag)
+
+        def back() -> None:
+            m9 = self.ctl.mark()
+            self.cdp(act_tab, "Page.navigate", {"url": origin + "/p/act-login"})
+            self.ctl.wait(m9, 10, kind="page", page_kind="page-load", page="/p/act-login")
+
+        def pop_requests(tag: str) -> list[str]:
+            # review-ce44's popup rows: a popup that a form posts into (rule B, the popup in T), and a popup
+            # that goes by GET to another host on the list and then fetches (rule A, the popup in T).
+            m0 = self.ctl.mark()
+            self.cdp(act_tab, "Runtime.evaluate", {"expression": "window.__p1 = window.open('', 'awpop1'); 1", "userGesture": True})
+            time.sleep(1.5)
+            self.cdp(act_tab, "Runtime.evaluate", {"expression": ("(() => { const f = document.createElement('form'); f.method = 'post';"
+                     " f.target = 'awpop1'; f.action = %s + '/%s/pop-post'; document.body.append(f); f.submit(); return 1; })()")
+                     % (json.dumps(tracker), tag), "userGesture": True})
+            time.sleep(2.0)
+            self.cdp(act_tab, "Runtime.evaluate", {"expression": "window.__p2 = window.open('', 'awpop2'); 1", "userGesture": True})
+            time.sleep(1.5)
+            self.cdp(act_tab, "Runtime.evaluate", {"expression": "window.__p2.location.href = %s + '/%s/pop-get'; 1" % (json.dumps(tracker), tag)})
+            self.ctl.wait(m0, 10, kind="req", path="/%s/pop-get" % tag)
+            time.sleep(1.0)
+            tabs = self.bridge("tabs.query", {}).get("data") or []
+            p2 = next((t.get("id") for t in tabs if t.get("incognito") and str(t.get("url", "")).endswith("/%s/pop-get" % tag)), None)
+            if p2 is not None:
+                self.bridge("debugger.attach", p2)
+                self.cdp(p2, "Runtime.evaluate", {"expression": "fetch(location.origin + '/%s/pop-fetch', {mode: 'no-cors'}).catch(() => {}); 1" % tag})
+            time.sleep(2.0)
+            return requests_of(m0, tag)
+
+        # The control: before act_rules every request reaches the server (no rule of the act holds yet).
+        before = run_requests("pre")
+        back()
+        before_pop = pop_requests("pre")
+        back()
+        everything = sorted(["a-beacon", "a-fetch", "a-img", "a-ws", "b-post", "c-default", "c-popup", "d-fetch", "e-fetch", "e-ws", "get-top"])
+        self.r.add("the control: before act_rules each request of the act tab, its popup and the default context's tab reaches the server",
+                   before == everything, "server request log", reached=before)
+        self.r.add("the control: before act_rules a form's POST into a popup, and a popup's GET to the tracker and its fetch there, reach the server",
+                   before_pop == ["pop-fetch", "pop-get", "pop-post"], "server request log", reached=before_pop)
+        rr = self.ctl(op="act", call="act_rules", fields={"tab": act_tab, "origin": origin, "send_to": [origin]})
+        self.r.add("act_rules writes rules A to E for the act tab and confirms them", rr.get("ok") is True
+                   and (rr.get("data") or {}).get("rules") == [10, 11, 12, 13, 14, 15], "stub daemon's main request",
+                   error=rr.get("error"), rules=(rr.get("data") or {}).get("rules"))
+        reached = run_requests("act")
+        self.r.add("rules A to E: only the site's own origin (fetch and ws:) and a top-level GET reach the server; A, B, C (the popup and a tab of the default context) and D block the rest",
+                   reached == ["e-fetch", "e-ws", "get-top"], "server request log", reached=reached)
+        back()
+        reached_pop = pop_requests("act")
+        self.r.add("the act's popups join rules A, B, D and E: a form's POST into a popup (B) and a popup's fetch after its GET to the tracker (A) are blocked; the GET reaches the server",
+                   reached_pop == ["pop-get"], "server request log", reached=reached_pop)
+        notices = [e for e in self.ctl.events(m) if e["kind"] == "blocked" and e.get("tab") == act_tab]
+        self.r.add("no blocked notice comes from the act tab", not notices, "stub daemon's notices", notices=len(notices))
+        ck = self.ctl(op="act", call="act_cookies", fields={"tab": act_tab, "domain": "www.signin.localhost"})
+        names = sorted(c.get("name") for c in ((ck.get("data") or {}).get("cookies") or []))
+        self.r.add("act_cookies reads the act store's cookies of the host, not the default context's", ck.get("ok") is True and names == ["aw_act_test"],
+                   "stub daemon's main request (names only)", names=names, error=ck.get("error"))
+        end = self.ctl(op="act", call="act_end")
+        left = [t.get("id") for t in (self.bridge("tabs.query", {}).get("data") or []) if t.get("incognito")]
+        m3 = self.ctl.mark()
+        self.cdp(dtab, "Runtime.evaluate", {"expression": "fetch(%s + '/act/c-after', {mode: 'no-cors'}).catch(() => {}); 1" % json.dumps(tracker)})
+        after = self.ctl.wait(m3, 10, kind="req", path="/act/c-after")
+        self.r.add("act_end closes the act window and its popups, then its rules go (the default context's request passes again)",
+                   end.get("ok") is True and (end.get("data") or {}).get("closed", 0) >= 3 and not left and bool(after),
+                   "stub daemon's main request; tabs.query; server request log", closed=(end.get("data") or {}).get("closed"),
+                   error=end.get("error"), incognito_tabs=len(left), after=bool(after))
+        self.close_tab(dtab)
+        self.allow(base)
+
 
 CASES = ["link", "stub_refusals", "static_block", "agent_old_state", "operator_list", "add_box", "operator_setup", "popup_before_login",
          "box_login", "send_s1", "nav_cases", "allowlist_change", "service_worker", "sw_removed", "big30", "big33",
-         "bridge_info", "nav_header", "frame_rule", "hold", "hold_import"]
+         "bridge_info", "nav_header", "frame_rule", "hold", "hold_import", "act"]
 
 
 def main() -> int:

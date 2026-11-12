@@ -193,6 +193,11 @@ EOF
     sleep 0.2
   done
 
+  # The receiver's incognito allow, as agent-browser's service writes it into the profile before each
+  # Chrome start (the act window of the stored sign-ins, C10; board ab-v16.97.3; the case act).
+  mkdir -p "$run/agent/Default"
+  printf '{"extensions":{"settings":{"%s":{"incognito":true}}}}\n' "$receiver_id" >"$run/agent/Default/Preferences"
+
   # www.plain.test: a plain-http site that is not localhost (Chrome sends it no
   # Sec-Fetch-* header), on the same loopback server; .test is never a real site.
   start_chromium "$run" agent "$a" "$run/agent" "$RECEIVER" --silent-debugger-extension-api \

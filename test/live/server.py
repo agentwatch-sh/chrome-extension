@@ -1106,6 +1106,14 @@ def control(world: World, req: dict) -> object:
         return world.daemon.bridge(str(req.get("call")), list(req.get("args") or []), req.get("wait"))
     if op == "import":
         return world.daemon.request("import", state=req.get("state"))
+    if op == "act":
+        # The act of the stored sign-ins (C4, board ab-v16.97.3): act_rules, act_cookies, act_end. The
+        # answer of act_cookies holds made-up cookie values; it goes to the driver only, never into a log.
+        call = str(req.get("call"))
+        if call not in ("act_rules", "act_cookies", "act_end"):
+            return {"error": "not an act request"}
+        fields = req.get("fields") if isinstance(req.get("fields"), dict) else {}
+        return world.daemon.request(call, **fields)
     if op == "report":
         r = world.reports.get(str(req.get("rid")))
         return report_summary(r) if r else {"error": "no report"}

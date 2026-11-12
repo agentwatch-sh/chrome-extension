@@ -643,6 +643,9 @@ test("the navigation-target handler waits for the restore: the popup takes its s
   assert.equal(r.map.has(9), false, "the handler waits for the restore");
   assert.deepEqual(sent, [], "no bridge.tabScope, no navigation target and no tabs.onCreated before the popup's scope");
   f.chrome.webNavigation.onErrorOccurred.fire({ tabId: 9, frameId: 0, url: URL_A, error: BLOCKED });
+  // The map does not know tab 9 yet: the notice comes after a read of the tab, which is no incognito tab
+  // (review-ce44b R2), and before the restore ends.
+  await flush();
   assert.deepEqual(sent.filter((m) => m.t === "blocked"), [notice(9, "a.example", null)], "no retry for a popup whose scope is not known yet");
   give({ "tab:7": B.scope });
   await started;

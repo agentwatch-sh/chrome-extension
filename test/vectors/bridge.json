@@ -34,7 +34,8 @@
     "scope": "a string that matches C11's scope pattern ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
     "newTab": "an object with url (about:blank) and at most active (boolean), windowId and index (ids)",
     "tabUpdate": "exactly {\"active\": <boolean>}",
-    "newWindow": "an object with url (about:blank, a string) and at most focused (boolean), left, top, width, height (integers) and state; no tabId",
+    "newWindow": "an object with url (about:blank, a string) and at most focused (boolean), left, top, width, height (integers), state and incognito (true, only with the mark act: the pair rule of windows.create); no tabId",
+    "mark": "the string act: the mark of an act window of the stored sign-ins (board ab-v16.97.3; test/vectors/act.json)",
     "windowUpdate": "an object with at least one of left, top, width, height, state and focused, and no other key",
     "contentDetails": "exactly primaryPattern (<scheme>://<host>/* or <scheme>://<host>:<port>/*, scheme http, https or *, host covered by the allowlist, with or without *.) and setting (allow or block)"
   },
@@ -53,7 +54,7 @@
     {"op": "tabs.update", "args": ["tabId", "updateProperties"], "kinds": ["id", "tabUpdate"], "required": 2, "result": "`Tab`", "defaultWait": "WAIT_DEFAULT_MS"},
     {"op": "tabs.remove", "args": ["tabId"], "kinds": ["id"], "required": 1, "result": "`null`", "defaultWait": "WAIT_DEFAULT_MS"},
     {"op": "windows.get", "args": ["windowId", "queryOptions?"], "kinds": ["id", "object"], "required": 1, "result": "`Window`", "defaultWait": "WAIT_DEFAULT_MS"},
-    {"op": "windows.create", "args": ["createData", "scope"], "kinds": ["newWindow", "scope"], "required": 2, "result": "`Window`", "defaultWait": "WAIT_DEFAULT_MS"},
+    {"op": "windows.create", "args": ["createData", "scope", "mark?"], "kinds": ["newWindow", "scope", "mark"], "required": 2, "result": "`Window`", "defaultWait": "WAIT_DEFAULT_MS"},
     {"op": "windows.update", "args": ["windowId", "updateInfo"], "kinds": ["id", "windowUpdate"], "required": 2, "result": "`Window`", "defaultWait": "WAIT_DEFAULT_MS"},
     {"op": "downloads.search", "args": ["query"], "kinds": ["object"], "required": 1, "result": "`[DownloadItem]`", "defaultWait": "WAIT_DEFAULT_MS"},
     {"op": "downloads.cancel", "args": ["downloadId"], "kinds": ["id"], "required": 1, "result": "`null`", "defaultWait": "WAIT_DEFAULT_MS"},
@@ -142,7 +143,11 @@
     {"note": "Also on a child session: Target.closeTarget would close another tab with no tab check.", "req": {"t": "req", "id": "b48", "op": "debugger.sendCommand", "args": [{"tabId": 7, "sessionId": "A1B2C3"}, "Target.closeTarget", {"targetId": "D8E9F0"}]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b48", "ok": false, "error": "bad args"}},
     {"note": "A daemon. op never reaches the receiver: the daemon answers it itself (C10, the daemon's own ops). A receiver that gets one (from a daemon before agentwatch task age-0kh.28) answers unknown op, and the relay turns its paths off (C11).", "req": {"t": "req", "id": "b49", "op": "daemon.movePointer", "args": [{"at": {"x": 812, "y": 431}, "from": {"x": 640, "y": 410}, "path": [{"x": 652, "y": 405, "dt": 16}, {"x": 671, "y": 398, "dt": 16}, {"x": 700, "y": 402, "dt": 33}], "width": 1280, "height": 900, "notAfter": 5839201300, "views": 0}], "wait": 1565}, "error": "unknown op", "res": {"t": "res", "ch": "bridge", "id": "b49", "ok": false, "error": "unknown op"}},
     {"note": "The relay's probe at the receiver of such a daemon: unknown op.", "req": {"t": "req", "id": "b50", "op": "daemon.pointerAt", "args": [], "wait": 1200}, "error": "unknown op", "res": {"t": "res", "ch": "bridge", "id": "b50", "ok": false, "error": "unknown op"}},
-    {"note": "A refused navigation report at the receiver of an older carrier: unknown op.", "req": {"t": "req", "id": "b51", "op": "daemon.blocked", "args": [{"host": "a.example", "scope": "scope-a"}], "wait": 250}, "error": "unknown op", "res": {"t": "res", "ch": "bridge", "id": "b51", "ok": false, "error": "unknown op"}}
+    {"note": "A refused navigation report at the receiver of an older carrier: unknown op.", "req": {"t": "req", "id": "b51", "op": "daemon.blocked", "args": [{"host": "a.example", "scope": "scope-a"}], "wait": 250}, "error": "unknown op", "res": {"t": "res", "ch": "bridge", "id": "b51", "ok": false, "error": "unknown op"}},
+    {"note": "The pair rule of windows.create (board ab-v16.97.3): incognito true only with the mark act.", "req": {"t": "req", "id": "b52", "op": "windows.create", "args": [{"url": "about:blank", "incognito": true}, "my-repo"]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b52", "ok": false, "error": "bad args"}},
+    {"note": "The pair rule: the mark act only with incognito true.", "req": {"t": "req", "id": "b53", "op": "windows.create", "args": [{"url": "about:blank", "focused": false}, "my-repo", "act"]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b53", "ok": false, "error": "bad args"}},
+    {"note": "incognito is true or absent.", "req": {"t": "req", "id": "b54", "op": "windows.create", "args": [{"url": "about:blank", "incognito": false}, "my-repo", "act"]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b54", "ok": false, "error": "bad args"}},
+    {"note": "The mark is the string act.", "req": {"t": "req", "id": "b55", "op": "windows.create", "args": [{"url": "about:blank", "incognito": true}, "my-repo", "Act"]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b55", "ok": false, "error": "bad args"}}
   ],
   "events": [
     {"ev": "debugger.onEvent", "fields": ["source", "method", "params"], "optional": []},

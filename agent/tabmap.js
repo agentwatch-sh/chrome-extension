@@ -15,6 +15,13 @@
 // (the reference of the checks of a new entry, the sweep and contentDetails).
 // The marks have no copy: they go at the worker's start, and those tabs then
 // fail closed.
+//
+// The act tabs of the sign-in act (C10, the act window; act.js) are in the
+// map with their caller's scope, for the list rules only: bridge.tabScopes
+// leaves them out, and they have no key in the copy (a worker that starts
+// again gives no act tab a scope). A popup or a replaced tab of an act tab is
+// an act tab. An act tab that closed or was replaced stays one for
+// TOMBSTONE_MS (wasAct), as a mark does.
 import { NO_SCOPES, isName } from "./scopes.js";
 
 export const TOMBSTONE_MS = 10000;
@@ -32,6 +39,9 @@ export class TabMap {
   #gone = new Map(); // tabId -> until: tabs that closed (no entry is written for them)
   #marks = new Set(); // the marked tabs: the operator's own
   #keptMarks = new Map(); // tabId -> until: marks of tabs that closed or were replaced
+  #acts = new Set(); // the act tabs of the sign-in act (act.js)
+  #incognito = new Set(); // the incognito tabs that the receiver knows (tabs.onCreated, the start's read, tabs.onReplaced)
+  #keptActs = new Map(); // tabId -> until: act tabs that closed or were replaced
   #restored = false;
   #restoring = null;
   // The object of the last set_scopes (it applies now), and the last applied one.
@@ -93,6 +103,7 @@ export class TabMap {
       return;
     }
     const [data, tabs] = got.value;
+    for (const t of Array.isArray(tabs) ? tabs : []) this.noteTab(t);
     const open = new Set((Array.isArray(tabs) ? tabs : []).map((t) => t && t.id));
     const drop = [];
     for (const [k, v] of Object.entries(data ?? {})) {
@@ -133,7 +144,7 @@ export class TabMap {
 
   #prune() {
     const now = this.#clock.now();
-    for (const m of [this.#kept, this.#keptOrphans, this.#gone, this.#keptMarks]) {
+    for (const m of [this.#kept, this.#keptOrphans, this.#gone, this.#keptMarks, this.#keptActs]) {
       for (const [k, v] of m) if ((typeof v === "number" ? v : v.until) <= now) m.delete(k);
     }
   }
@@ -146,9 +157,10 @@ export class TabMap {
     return this.#entries.get(tabId);
   }
 
-  // bridge.tabScopes: every entry, in no set order.
+  // bridge.tabScopes: every entry, in no set order, except the act tabs: no
+  // connection sees an act tab, also after a link change.
   list() {
-    return [...this.#entries].map(([tabId, scope]) => ({ tabId, scope }));
+    return [...this.#entries].filter(([tabId]) => !this.#acts.has(tabId)).map(([tabId, scope]) => ({ tabId, scope }));
   }
 
   entries() {
@@ -231,15 +243,69 @@ export class TabMap {
     return true;
   }
 
+  // ---- the incognito tabs ----
+
+  // A tab of tabs.onCreated or of the start's read: an incognito tab joins the set.
+  noteTab(tab) {
+    if (tab && Number.isInteger(tab.id) && tab.incognito === true) this.#incognito.add(tab.id);
+  }
+
+  // An incognito tab: one that the receiver knows (an act tab is one). A tab
+  // that the start's read missed (it failed) counts as a tab of the default
+  // context.
+  isIncognito(tabId) {
+    return this.#incognito.has(tabId) || this.#acts.has(tabId);
+  }
+
+  // An incognito tab that is no act tab: the operator's own (C5, C10).
+  isOtherIncognito(tabId) {
+    return this.#incognito.has(tabId) && !this.#acts.has(tabId);
+  }
+
+  // Some incognito tab is open.
+  hasIncognito() {
+    return this.#incognito.size > 0 || this.#acts.size > 0;
+  }
+
+  // ---- the act tabs ----
+
+  // An act tab now (not one that closed).
+  isAct(tabId) {
+    return this.#acts.has(tabId);
+  }
+
+  // An act tab now, or one that closed or was replaced in the last TOMBSTONE_MS.
+  wasAct(tabId) {
+    this.#prune();
+    return this.#acts.has(tabId) || this.#keptActs.has(tabId);
+  }
+
+  addAct(tabId) {
+    this.#acts.add(tabId);
+  }
+
+  acts() {
+    return [...this.#acts];
+  }
+
+  #leaveActs(tabId) {
+    if (!this.#acts.delete(tabId)) return false;
+    this.#prune();
+    this.#keptActs.set(tabId, this.#clock.now() + TOMBSTONE_MS);
+    return true;
+  }
+
   // ---- the events ----
 
   // tabs.onRemoved: the entry, the orphan membership and the mark leave, and
   // each is kept for TOMBSTONE_MS. Gives the scope that the tab had, or
   // undefined.
   removed(tabId) {
+    this.#incognito.delete(tabId);
     const scope = this.leave(tabId);
     this.#leaveOrphans(tabId);
     this.#leaveMarks(tabId);
+    this.#leaveActs(tabId);
     this.#gone.set(tabId, this.#clock.now() + TOMBSTONE_MS);
     return scope;
   }
@@ -248,13 +314,15 @@ export class TabMap {
   // sourceTabId, a replaced tab): {orphan: true} for a tab of the orphan set
   // or a kept membership of one (the set spreads as the mark does), else its
   // entry, {mark: true} for a marked tab, else its kept entry or kept mark,
-  // else null (no scope).
+  // else null (no scope). The entry of an act tab (or a kept one) gives
+  // {scope, act: true}: the new tab is an act tab too.
   opener(tabId) {
     this.#prune();
+    const act = this.#acts.has(tabId) || this.#keptActs.has(tabId) ? { act: true } : {};
     if (this.#orphans.has(tabId) || this.#keptOrphans.has(tabId)) return { orphan: true };
-    if (this.#entries.has(tabId)) return { scope: this.#entries.get(tabId) };
+    if (this.#entries.has(tabId)) return { scope: this.#entries.get(tabId), ...act };
     if (this.#marks.has(tabId)) return { mark: true };
-    if (this.#kept.has(tabId)) return { scope: this.#kept.get(tabId).scope };
+    if (this.#kept.has(tabId)) return { scope: this.#kept.get(tabId).scope, ...act };
     if (this.#keptMarks.has(tabId)) return { mark: true };
     return null;
   }
@@ -263,8 +331,9 @@ export class TabMap {
   // the first applied set_scopes after the worker's start on, a scope with no
   // list never enters the map: its tab joins the orphan set. Before it, such
   // a tab enters the map with its scope (that set_scopes sweeps it). A tab of
-  // a marked tab is marked. Gives {orphan: true}, {mark: true}, {scope} (the
-  // tab entered the map) or null.
+  // a marked tab is marked, and a tab of an act tab is an act tab. Gives
+  // {orphan: true}, {mark: true}, {scope} or {scope, act: true} (the tab
+  // entered the map) or null.
   adopt(tabId, from) {
     if (from === null) return null;
     if (from.mark) {
@@ -276,6 +345,10 @@ export class TabMap {
       return { orphan: true };
     }
     this.#entries.set(tabId, from.scope);
+    if (from.act) {
+      this.#acts.add(tabId);
+      return { scope: from.scope, act: true };
+    }
     return { scope: from.scope };
   }
 
@@ -283,9 +356,11 @@ export class TabMap {
   // orphan set and the marks; its added tab takes its place (opener() before,
   // adopt() after).
   release(tabId) {
+    this.#incognito.delete(tabId);
     this.leave(tabId);
     this.#leaveOrphans(tabId);
     this.#leaveMarks(tabId);
+    this.#leaveActs(tabId);
   }
 
   // ---- set_scopes ----

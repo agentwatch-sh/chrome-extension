@@ -158,6 +158,52 @@ trial's `frame_after_release` and `release_to_frame_ms`.
 `npm test` also runs the Python tests in `test_live.py`. They reject missing or early
 frame requests and a shared operator and scope list.
 
+## The act of the stored sign-ins: the case `act`
+
+The case `act` (board ab-v16.97.3; contracts C4, C5 and C10, the act of the stored sign-ins) drives the
+receiver's part of the sign-in act as agent-browser's service will: through the stub daemon's channel bridge and
+its control op `act` (the main requests `act_rules`, `act_cookies` and `act_end`). The list of scope `live` gains
+`signin.localhost` and `tracker.localhost`: the tracker is on the list, so only the act's rules stop a request to
+it. The case checks:
+
+- `windows.create` with `incognito` `true` and the mark `act` opens an incognito window (the incognito allow
+  comes from the profile's `Preferences`), and `bridge.tabScopes` leaves its tab out;
+- `windows.get` of the act window answers it, and `windows.update` of it gets `not an agent window`;
+- `act_rules` with the origin `http://www.signin.localhost:<port>` as the only origin of `send_to` answers the
+  rule ids 10 to 15;
+- from the act tab's page: a fetch, an image, a beacon and a WebSocket to the tracker (rule A), a fetch to a
+  subdomain of the site (rule D), a fetch from an `about:blank` popup (rule C), and from a tab of the default
+  context of the site a fetch to the tracker (rule C in every tab) reach no server; a fetch and a WebSocket
+  (`ws:`) to the site's own origin (rule E) and a top-level GET to the tracker reach the server; a form's POST to
+  the tracker (rule B) does not;
+- the act's popups join rules A, B, D and E (review-ce44): a form's POST into a popup (rule B) and a popup's own
+  fetch after its top-level GET to the tracker (rule A) reach no server, and the popup's GET does;
+- no `blocked` notice names the act tab;
+- `act_cookies` gives the act store's cookie of the site (a made-up value that the act tab's page wrote), not
+  the default context's;
+- `act_end` closes the act window (no incognito tab is left), and then the default context's request to the
+  tracker passes again.
+
+The driver prints cookie names only, never a value. Before `act_rules` the case fires the same requests once
+more as a control: each of them must reach the server, so a request that the rules stop is stopped by the rules.
+
+Run of 2026-11-12 after review-ce44's fix round (the same setup, `run.sh test <run> link act`): **15 checks, 15
+passed**. The control: 11 of 11 requests, and 3 of 3 of the popup rows (a POST into a popup, a popup's GET to the
+tracker and its fetch there), reached the server. With the rules: 3 of 11, and 1 of 3 of the popup rows (the
+popup's GET) reached it. `act_end` closed 7 tabs (the act tab and six popups), and no incognito tab was left.
+
+Run of 2026-11-12 on taylor (Chromium 156.0.8078.79, the unpacked receiver 0.3.6 of the branch
+`ab-v16.97.3-act-window`, `LIVE_DISPLAY=171`, displays 171 and 172, `run.sh up`, then `run.sh test <run> link act`,
+then `run.sh down`, under the shared heavy-job lock): **13 checks, 13 passed**. The act window was incognito, and
+`bridge.tabScopes` did not list its tab; `windows.get` answered it (bounds 0, 0, 1279, 899: the case does not move
+it); `windows.update` of it got `not an agent window`. The control: 11 of 11 requests reached the server. With
+the rules (ids 10 to 15): 3 of 11 reached it (the site's own fetch and WebSocket, and the top-level GET); no
+`blocked` notice named the act tab; `act_cookies` gave the act store's cookie name only; `act_end` closed 3 tabs
+(the act tab and two popups), no incognito tab was left, and the default context's request reached the server
+again. A run of every case before it (the same branch, `run.sh` in `all` mode): 75 checks, 74 passed; the one
+failure is the accepted partitioned-cookie check (below), and the case `act` stopped at a fault of its own first
+version, which the run above fixed.
+
 ## Run it with Google Chrome 157
 
 `run.sh` loads the receiver with `--load-extension`, which Google Chrome 157 ignores. To load the
@@ -256,7 +302,7 @@ and 27 to 60 ms. After the leave, the marked tab's next navigation to the host w
 | Piece | What it is |
 | --- | --- |
 | Two private displays | `Xvfb :N -nolisten tcp -auth <file>`, one for each Chromium. Each auth file (0600) holds one FamilyWild MIT-MAGIC-COOKIE-1 entry from `os.urandom`; the cookie never enters an argv. The script checks that a client without the cookie is refused. |
-| The agent Chromium | `--user-data-dir=<run>/agent --no-first-run --no-default-browser-check --password-store=basic --load-extension=<repo>/agent --silent-debugger-extension-api "--host-resolver-rules=MAP www.plain.test 127.0.0.1"`, headed, no remote debugging. Its profile holds the native host manifest `NativeMessagingHosts/sh.agentwatch.browser.json` (allowed origin: the receiver ID), whose `path` is a 0700 wrapper that runs `host.py`. |
+| The agent Chromium | `--user-data-dir=<run>/agent --no-first-run --no-default-browser-check --password-store=basic --load-extension=<repo>/agent --silent-debugger-extension-api "--host-resolver-rules=MAP www.plain.test 127.0.0.1"`, headed, no remote debugging. Its profile holds the native host manifest `NativeMessagingHosts/sh.agentwatch.browser.json` (allowed origin: the receiver ID), whose `path` is a 0700 wrapper that runs `host.py`, and a `Default/Preferences` with the receiver's incognito allow (`extensions.settings.<receiver ID>.incognito: true`), as agent-browser's service writes it before each Chrome start (the case `act`). |
 | The operator Chromium | A copy of `operator/` in `<run>/sender-copy/`, whose manifest gains a test-only `commands._execute_action` shortcut (Ctrl+Shift+U) so that xdotool can open the popup. The `key` stays, so the ID stays. The committed `operator/` is never changed. |
 | `server.py` | One HTTP server on 127.0.0.1, routed by the Host header: the test sites, and the stub box at `box.localhost` (`/login` sets a made-up login cookie; `GET /api/browser/targets`; `POST /api/browser/send` checks `Origin` and the cookie, caps the body at 33,554,432 bytes, then asks the stub daemon to add the domain to the list (`set_scopes`) and to import). The stub daemon listens on `<sockets>/daemon.sock` (0600) and speaks contract C4: it sends each request as parts of 700,000 bytes, one main request at a time. On channel `bridge` it sends the driver's bridge requests (C10) at the same time, and it logs each bridge event by its name, tab and outcome (of a paused request its id and path), never a header, a body or other params. A control socket `<sockets>/ctl.sock` serves the driver. |
 | `host.py` | The native messaging host for this test only: Chrome's stdio messages to one NDJSON line each on the stub daemon's socket, and back. After each connect it tells the receiver `{"t":"link","up":true}`. |

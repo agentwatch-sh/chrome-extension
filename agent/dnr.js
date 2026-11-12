@@ -11,6 +11,12 @@
 //   document in the operator's marked tabs, with no host condition. With a
 //   list name, the marked tabs are in that list's tabIds instead (the model);
 //   with null they have no rule.
+// - the act's rules A to E (the stored sign-ins' block, C5; act.js): from
+//   the act's first key to its end, every request of the act tab, of its
+//   popups and of the site's workers to a host outside send_to is blocked,
+//   except a top-level GET. Ids 10 to 13 (A to D) and from 14 (E, two for
+//   each origin of send_to), priorities 4 (block) and 5 (allow), above the
+//   scope rules (2) and rule 5 (3).
 // Dynamic rule 5 sets Sec-Fetch-Site: none on the receiver's own top-level
 // requests. Dynamic rules 2 and 4 (one list for every tab, before part 1a)
 // are gone: the worker removes them at its start and at each set_scopes.
@@ -31,6 +37,19 @@ export const FIRST_SCOPE_RULE_ID = 100;
 const IMPORT_IDS = [IMPORT_RULE_ID, IMPORT_FRAME_RULE_ID];
 // Rule 8, the marked-tab rule (C5).
 export const MARKED_RULE_ID = 8;
+// The act's rules (C5): A 10, B 11, C 12, D 13, and E from 14, two for each
+// origin of send_to (at most MAX_SEND_TO origins), so up to 77, below the
+// scope rules' 100.
+export const ACT_RULE_A = 10;
+export const ACT_RULE_B = 11;
+export const ACT_RULE_C = 12;
+export const ACT_RULE_D = 13;
+export const ACT_RULE_E = 14;
+export const MAX_SEND_TO = 32;
+export const ACT_RULE_MAX = ACT_RULE_E + 2 * MAX_SEND_TO - 1;
+const ACT_IDS = Array.from({ length: ACT_RULE_MAX - ACT_RULE_A + 1 }, (_, i) => ACT_RULE_A + i);
+export const ACT_BLOCK_PRIORITY = 4;
+export const ACT_ALLOW_PRIORITY = 5;
 // Chrome's MAX_NUMBER_OF_SESSION_RULES (measured: the 5001st is refused).
 const MAX_SESSION_RULES = 5000;
 // The potentially trustworthy URLs, to which Chrome sends Sec-Fetch-*
@@ -66,6 +85,40 @@ export function markedRule(tabIds) {
   return { id: MARKED_RULE_ID, priority: 2, action: { type: "allow" }, condition: { resourceTypes: [...MAIN, ...FRAMES], tabIds: [...tabIds] } };
 }
 
+// The act's rules A to E (C5, the stored sign-ins' block; the stored
+// sign-ins design, section 7.6). tabIds: the act tabs (the act tab, and each
+// act popup and replaced act tab that joined); sendTo: the origins that may
+// receive the password (origin first). DNR matches hosts, not origins: A, B
+// and C block by the hosts of send_to (a host and its subdomains), D blocks
+// those hosts in the act tabs, and E allows back exactly the origins of
+// send_to (and ws: or wss: to the same host and port), one urlFilter rule
+// each. No rule but B matches a main frame, so a top-level GET to another
+// host stays open and rule 5 still sets the act's own navigations as typed
+// ones. C has no tabIds: it matches in every tab, also in the default
+// context, by the initiator: any host of send_to (review-ce44).
+export function actRules({ tabIds, sendTo }) {
+  const hosts = [...new Set(sendTo.map((o) => new URL(o).hostname))];
+  const tabs = [...tabIds];
+  const notMain = ["main_frame"];
+  const block = { type: "block" };
+  const rules = [
+    { id: ACT_RULE_A, priority: ACT_BLOCK_PRIORITY, action: block, condition: { tabIds: [...tabs], excludedResourceTypes: notMain, excludedRequestDomains: hosts } },
+    { id: ACT_RULE_B, priority: ACT_BLOCK_PRIORITY, action: block, condition: { tabIds: [...tabs], resourceTypes: MAIN, excludedRequestMethods: ["get"], excludedRequestDomains: hosts } },
+    { id: ACT_RULE_C, priority: ACT_BLOCK_PRIORITY, action: block, condition: { initiatorDomains: [...hosts], excludedResourceTypes: notMain, excludedRequestDomains: hosts } },
+    { id: ACT_RULE_D, priority: ACT_BLOCK_PRIORITY, action: block, condition: { tabIds: [...tabs], excludedResourceTypes: notMain, requestDomains: hosts } },
+  ];
+  let id = ACT_RULE_E;
+  for (const o of sendTo) {
+    const u = new URL(o);
+    const ws = u.protocol === "https:" ? "wss:" : "ws:";
+    for (const prefix of [u.origin, ws + "//" + u.host]) {
+      rules.push({ id, priority: ACT_ALLOW_PRIORITY, action: { type: "allow" }, condition: { tabIds: [...tabs], excludedResourceTypes: notMain, urlFilter: "|" + prefix + "/" } });
+      id += 1;
+    }
+  }
+  return rules;
+}
+
 // Chrome names the extension as the initiator of a Page.navigate, so the site
 // sees Sec-Fetch-Site: cross-site. This rule sets none for the top-level
 // requests that the agent package starts, and for no other: then a
@@ -95,6 +148,8 @@ export class SessionRules {
   #dirty = false; // after a failed update: the next change is a full replace
   #unknown = false; // the start's removal failed: a full replace removes every rule of the scheme first
   #importing = false; // rules 6 and 7 of a running import are (or may be) in force
+  #acting = false; // the act's rules are (or may be) in force
+  #actSpec = null; // {tabIds, sendTo} of the act's rules in force
 
   constructor(chrome, model, clock = { setTimer: (fn, ms) => setTimeout(fn, ms), clearTimer: (h) => clearTimeout(h) }, marked = () => []) {
     this.#chrome = chrome;
@@ -130,7 +185,11 @@ export class SessionRules {
         }
         const rules = await this.#dnr.getSessionRules();
         if (over) return;
-        const ids = (Array.isArray(rules) ? rules : []).map((r) => r.id);
+        const all = (Array.isArray(rules) ? rules : []).map((r) => r.id);
+        // The act's rules of a worker before this one stay until the act's
+        // end has closed that act's tabs (C10, the act window; review-ce44 N1).
+        if (all.some((id) => ACT_IDS.includes(id))) this.#acting = true;
+        const ids = all.filter((id) => !ACT_IDS.includes(id));
         if (ids.length > 0) await this.#dnr.updateSessionRules({ removeRuleIds: ids });
       })();
       let handle;
@@ -143,6 +202,8 @@ export class SessionRules {
       const ok = await Promise.race([work.then(() => true, () => false), late]).finally(() => this.#clock.clearTimer(handle));
       if (!ok) {
         this.#unknown = true;
+        // Act rules of a worker before this one can be there: the act's end removes them.
+        this.#acting = true;
         console.warn("agentwatch receiver: the session rules of the worker's start were not removed in time");
       }
     });
@@ -193,12 +254,13 @@ export class SessionRules {
       } catch {
         rules = null;
       }
-      // Rules 6 and 7 go too when no import of this worker runs.
-      const keep = this.#importing ? IMPORT_IDS : [];
+      // Rules 6 and 7 go too when no import of this worker runs, and the
+      // act's rules when no act of this worker holds them.
+      const keep = [...(this.#importing ? IMPORT_IDS : []), ...(this.#acting ? ACT_IDS : [])];
       if (Array.isArray(rules)) {
         for (const r of rules) if (!keep.includes(r.id)) remove.add(r.id);
       } else {
-        for (const i of [...IMPORT_IDS, MARKED_RULE_ID]) if (!keep.includes(i)) remove.add(i);
+        for (const i of [...IMPORT_IDS, MARKED_RULE_ID, ...ACT_IDS]) if (!keep.includes(i)) remove.add(i);
         for (let i = FIRST_SCOPE_RULE_ID; i < FIRST_SCOPE_RULE_ID + 2 * MAX_SESSION_RULES; i++) remove.add(i);
       }
     }
@@ -284,6 +346,50 @@ export class SessionRules {
   removeImport() {
     return this.#run(() => this.#dnr.updateSessionRules({ removeRuleIds: IMPORT_IDS }).then(() => {
       this.#importing = false;
+    }));
+  }
+
+  // The act's rules held now (C5): true from a confirmed add to their removal.
+  get acting() {
+    return this.#acting;
+  }
+
+  // C5, the act's rules: one call that replaces them all (all or nothing:
+  // after a failure the rules before it stay), then the confirmation: a read
+  // of the session rules that must hold each rule of the call. Gives their
+  // ids; throws when the call fails or a rule is not there.
+  setAct(spec) {
+    return this.#run(async () => {
+      const rules = actRules(spec);
+      await this.#dnr.updateSessionRules({ removeRuleIds: ACT_IDS, addRules: rules });
+      this.#acting = true;
+      this.#actSpec = { tabIds: [...spec.tabIds], sendTo: [...spec.sendTo] };
+      const held = await this.#dnr.getSessionRules();
+      const ids = new Set((Array.isArray(held) ? held : []).map((r) => r && r.id));
+      if (!rules.every((r) => ids.has(r.id))) throw new Error("a rule is not held");
+      return rules.map((r) => r.id);
+    });
+  }
+
+  // An act popup or a replaced act tab joins the tabIds of rules A, B, D and
+  // E while they hold: one call that replaces them all. With no act's rules
+  // in force it does nothing. A call that fails rejects (the caller closes the
+  // tab), and the rules before it stay.
+  addActTab(tabId) {
+    return this.#run(async () => {
+      const spec = this.#actSpec;
+      if (!this.#acting || spec === null || spec.tabIds.includes(tabId)) return;
+      const next = { tabIds: [...spec.tabIds, tabId], sendTo: spec.sendTo };
+      await this.#dnr.updateSessionRules({ removeRuleIds: ACT_IDS, addRules: actRules(next) });
+      this.#actSpec = next;
+    });
+  }
+
+  // The act's end (and the cleanup of a left act): every id of the act's rules goes.
+  removeAct() {
+    return this.#run(() => this.#dnr.updateSessionRules({ removeRuleIds: ACT_IDS }).then(() => {
+      this.#acting = false;
+      this.#actSpec = null;
     }));
   }
 }
