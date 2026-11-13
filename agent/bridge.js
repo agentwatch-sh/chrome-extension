@@ -25,6 +25,9 @@ export const BRIDGE_VERSION = 1;
 export const WAIT_DEFAULT_MS = 30000;
 export const WAIT_MAX_MS = 600000;
 export const CONTENT_TYPES = Object.freeze(["location", "notifications", "camera", "microphone", "clipboard", "automaticDownloads"]);
+// bridge.mergeGuard's limits (C10, board ab-v16.99).
+export const MAX_GUARD_HOSTS = 16;
+export const MAX_GUARD_TABS = 1024;
 // chrome.tabs.TAB_ID_NONE: the tabId of bridge.tooLarge for an event of no tab (a download).
 const NO_TAB = -1;
 
@@ -92,6 +95,11 @@ const KINDS = {
   contentDetails: (a, domains) =>
     isObj(a) && onlyKeys(a, ["primaryPattern", "setting"]) && ["allow", "block"].includes(a.setting) &&
     patternFits(a.primaryPattern, domains),
+  // bridge.mergeGuard (C10, board ab-v16.99): {"hosts":[<C5 host>...],"tabs":[<tabId>...]}.
+  mergeGuard: (a) =>
+    isObj(a) && onlyKeys(a, ["hosts", "tabs"]) && Array.isArray(a.hosts) && a.hosts.length <= MAX_GUARD_HOSTS &&
+    a.hosts.every((h) => typeof h === "string" && normalizeEntry(h).ok && normalizeEntry(h).entry === h) &&
+    Array.isArray(a.tabs) && a.tabs.length <= MAX_GUARD_TABS && a.tabs.every(isId),
 };
 
 // ---- the tab checks ----
@@ -235,6 +243,10 @@ export const OPS = Object.freeze({
   "bridge.release": op(["id"], 1, (c, [tabId]) => c.att.release(tabId), { nullResult: true }),
   // Every entry of the tab-to-scope map at the moment of the answer.
   "bridge.tabScopes": op([], 0, (c) => c.r.map.list()),
+  // The merge guard's floor (C5, board ab-v16.99): the hosts and the guarded
+  // tabs, of which only the bridge's own tabs count; it answers when the rule
+  // is in force.
+  "bridge.mergeGuard": op(["mergeGuard"], 1, (c, [g]) => c.r.rules.setGuard(g.hosts, g.tabs.filter((t) => c.att.isBridgeTab(t))), { nullResult: true }),
 });
 
 function argsFit(spec, args, domains) {

@@ -222,7 +222,10 @@ test("act_rules: the receiver writes rules A to E of the vector for the act tab,
   assert.deepEqual(await s.main(V.rulesReq), V.rulesRes);
   assert.deepEqual(s.f.sessionRules_.filter(isActRule), V.rules);
   const calls = callsSince(s.f, mark).map(([p]) => p);
-  assert.deepEqual(calls.filter((p) => p.startsWith("declarativeNetRequest.")), ["declarativeNetRequest.updateSessionRules", "declarativeNetRequest.getSessionRules"], "one call, then the confirmation");
+  // One call of the act's rules, the merge guard's floor without the act tabs (C5, board ab-v16.99), then the confirmation.
+  assert.deepEqual(calls.filter((p) => p.startsWith("declarativeNetRequest.")), ["declarativeNetRequest.updateSessionRules", "declarativeNetRequest.updateSessionRules", "declarativeNetRequest.getSessionRules"], "the act's call, the floor's, then the confirmation");
+  const floor = s.f.sessionRules_.find((r) => r.id === 9);
+  assert.ok(V.rules[0].condition.tabIds.every((t) => floor.condition.excludedTabIds.includes(t)), "the floor leaves the act tabs out");
   // Rule C matches in every tab (no tabIds) by the credential's host as the initiator; no rule but B a main frame.
   const c = V.rules.find((r) => r.id === 12);
   assert.equal(Object.hasOwn(c.condition, "tabIds"), false);

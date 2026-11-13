@@ -17,6 +17,13 @@
 //   except a top-level GET. Ids 10 to 13 (A to D) and from 14 (E, two for
 //   each origin of send_to), priorities 4 (block) and 5 (allow), above the
 //   scope rules (2) and rule 5 (3).
+// - the merge guard's floor, rule 9 (C5; board ab-v16.99): it blocks every
+//   request to a guarded host (GitHub's, and the hosts that bridge.mergeGuard
+//   adds) whose method is not GET, HEAD or OPTIONS (a write), in every tab and
+//   in each request with no tab, except the tabs where agent-browser's model
+//   judges each request itself (the guarded tabs of bridge.mergeGuard, while
+//   the bridge holds them), the marked tabs (the operator's own) and the act
+//   tabs. Priority 6, above every allow rule.
 // Dynamic rule 5 sets Sec-Fetch-Site: none on the receiver's own top-level
 // requests. Dynamic rules 2 and 4 (one list for every tab, before part 1a)
 // are gone: the worker removes them at its start and at each set_scopes.
@@ -46,6 +53,15 @@ export const ACT_RULE_C = 12;
 export const ACT_RULE_D = 13;
 export const ACT_RULE_E = 14;
 export const MAX_SEND_TO = 32;
+// The merge guard's floor (C5, board ab-v16.99): rule 9, priority 6.
+export const FLOOR_RULE_ID = 9;
+export const FLOOR_PRIORITY = 6;
+// GitHub's hosts: always in the floor, from the worker's start (bridge.mergeGuard can only add hosts).
+export const FLOOR_HOSTS = Object.freeze(["github.com"]);
+// The methods that change nothing: every other method is a write.
+export const FLOOR_FREE_METHODS = Object.freeze(["get", "head", "options"]);
+// Every resource type: with neither resourceTypes nor excludedResourceTypes, DNR matches no main frame.
+const ALL_TYPES = ["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "webtransport", "webbundle", "other"];
 export const ACT_RULE_MAX = ACT_RULE_E + 2 * MAX_SEND_TO - 1;
 const ACT_IDS = Array.from({ length: ACT_RULE_MAX - ACT_RULE_A + 1 }, (_, i) => ACT_RULE_A + i);
 export const ACT_BLOCK_PRIORITY = 4;
@@ -119,6 +135,15 @@ export function actRules({ tabIds, sendTo }) {
   return rules;
 }
 
+// C5, the merge guard's floor: each write to a host of hosts (and its
+// subdomains), of any resource type, in every tab but the excluded ones, and
+// in each request with no tab (a shared or a service worker).
+export function floorRule(hosts, excluded) {
+  const condition = { requestDomains: [...hosts], excludedRequestMethods: [...FLOOR_FREE_METHODS], resourceTypes: [...ALL_TYPES] };
+  if (excluded.length > 0) condition.excludedTabIds = [...excluded];
+  return { id: FLOOR_RULE_ID, priority: FLOOR_PRIORITY, action: { type: "block" }, condition };
+}
+
 // Chrome names the extension as the initiator of a Page.navigate, so the site
 // sees Sec-Fetch-Site: cross-site. This rule sets none for the top-level
 // requests that the agent package starts, and for no other: then a
@@ -150,12 +175,65 @@ export class SessionRules {
   #importing = false; // rules 6 and 7 of a running import are (or may be) in force
   #acting = false; // the act's rules are (or may be) in force
   #actSpec = null; // {tabIds, sendTo} of the act's rules in force
+  #floorMarked; // () => every marked tab (the operator's own), whatever the operator value is
+  #guardHosts = [...FLOOR_HOSTS]; // the floor's hosts: GitHub's and those that bridge.mergeGuard added
+  #guarded = new Set(); // the tabs that agent-browser's model guards (bridge.mergeGuard), while the bridge holds them
+  #floorKey = null; // the floor rule in force (JSON), or null when it is not known to be in force
+  #floorStarted = false; // the worker's start wrote the floor (or tried): before it, only the start writes it
 
-  constructor(chrome, model, clock = { setTimer: (fn, ms) => setTimeout(fn, ms), clearTimer: (h) => clearTimeout(h) }, marked = () => []) {
+  constructor(chrome, model, clock = { setTimer: (fn, ms) => setTimeout(fn, ms), clearTimer: (h) => clearTimeout(h) }, marked = () => [], floorMarked = () => []) {
     this.#chrome = chrome;
     this.#model = model;
     this.#clock = clock;
     this.#marked = marked;
+    this.#floorMarked = floorMarked;
+  }
+
+  // The floor rule now: its hosts, and the tabs that it leaves out (the
+  // guarded tabs, the marked tabs and the act tabs), in order.
+  floorRule() {
+    const out = new Set([...this.#guarded, ...this.#floorMarked(), ...(this.#actSpec ? this.#actSpec.tabIds : [])]);
+    return floorRule(this.#guardHosts, [...out].filter(Number.isInteger).sort((a, b) => a - b));
+  }
+
+  // The floor rule again when it changed (inside the chain). A call that fails
+  // leaves the floor unknown: the next change writes it again.
+  async #syncFloor() {
+    if (!this.#floorStarted) return;
+    const rule = this.floorRule();
+    const key = JSON.stringify(rule);
+    if (key === this.#floorKey) return;
+    this.#floorKey = null;
+    await this.#dnr.updateSessionRules({ removeRuleIds: [FLOOR_RULE_ID], addRules: [rule] });
+    this.#floorKey = key;
+  }
+
+  // C10 bridge.mergeGuard: the floor's hosts (GitHub's always, and the op's)
+  // and the guarded tabs (the caller gives only the bridge's tabs), a full
+  // replace; it answers when the rule is in force.
+  setGuard(hosts, tabIds) {
+    return this.#run(() => {
+      this.#guardHosts = [...new Set([...FLOOR_HOSTS, ...hosts])];
+      this.#guarded = new Set(tabIds);
+      return this.#syncFloor();
+    });
+  }
+
+  // A guarded tab leaves its guard (the bridge's detach, Chrome's detach),
+  // or every one (null: a link change): the floor holds it again. The
+  // bridge's detach waits for this, so the floor is in force first.
+  unguard(tabIds) {
+    return this.#run(() => {
+      const before = this.#guarded.size;
+      if (tabIds === null) this.#guarded.clear();
+      else for (const id of tabIds) this.#guarded.delete(id);
+      return this.#guarded.size === before ? undefined : this.#syncFloor();
+    });
+  }
+
+  // A mark changed (the floor leaves the marked tabs out).
+  syncFloor() {
+    return this.#run(() => this.#syncFloor());
   }
 
   get #dnr() {
@@ -190,7 +268,12 @@ export class SessionRules {
         // end has closed that act's tabs (C10, the act window; review-ce44 N1).
         if (all.some((id) => ACT_IDS.includes(id))) this.#acting = true;
         const ids = all.filter((id) => !ACT_IDS.includes(id));
-        if (ids.length > 0) await this.#dnr.updateSessionRules({ removeRuleIds: ids });
+        // The floor in the same call as the removal: a worker that starts again leaves no moment without it.
+        this.#guarded.clear();
+        const floor = this.floorRule();
+        this.#floorStarted = true;
+        await this.#dnr.updateSessionRules({ removeRuleIds: [...new Set([...ids, FLOOR_RULE_ID])], addRules: [floor] });
+        this.#floorKey = JSON.stringify(floor);
       })();
       let handle;
       const late = new Promise((resolve) => {
@@ -201,6 +284,9 @@ export class SessionRules {
       });
       const ok = await Promise.race([work.then(() => true, () => false), late]).finally(() => this.#clock.clearTimer(handle));
       if (!ok) {
+        // The floor alone, so that it holds even when the removal did not end (not awaited: a call that hangs keeps no change back).
+        this.#floorStarted = true;
+        void this.#syncFloor().catch(() => console.warn("agentwatch receiver: the merge guard's floor was not written at the worker's start"));
         this.#unknown = true;
         // Act rules of a worker before this one can be there: the act's end removes them.
         this.#acting = true;
@@ -256,7 +342,7 @@ export class SessionRules {
       }
       // Rules 6 and 7 go too when no import of this worker runs, and the
       // act's rules when no act of this worker holds them.
-      const keep = [...(this.#importing ? IMPORT_IDS : []), ...(this.#acting ? ACT_IDS : [])];
+      const keep = [FLOOR_RULE_ID, ...(this.#importing ? IMPORT_IDS : []), ...(this.#acting ? ACT_IDS : [])];
       if (Array.isArray(rules)) {
         for (const r of rules) if (!keep.includes(r.id)) remove.add(r.id);
       } else {
@@ -364,6 +450,8 @@ export class SessionRules {
       await this.#dnr.updateSessionRules({ removeRuleIds: ACT_IDS, addRules: rules });
       this.#acting = true;
       this.#actSpec = { tabIds: [...spec.tabIds], sendTo: [...spec.sendTo] };
+      // The act tabs leave the floor: their sign-in's POST goes to its site (the act's own guard judges them).
+      await this.#syncFloor();
       const held = await this.#dnr.getSessionRules();
       const ids = new Set((Array.isArray(held) ? held : []).map((r) => r && r.id));
       if (!rules.every((r) => ids.has(r.id))) throw new Error("a rule is not held");
@@ -382,6 +470,7 @@ export class SessionRules {
       const next = { tabIds: [...spec.tabIds, tabId], sendTo: spec.sendTo };
       await this.#dnr.updateSessionRules({ removeRuleIds: ACT_IDS, addRules: actRules(next) });
       this.#actSpec = next;
+      await this.#syncFloor();
     });
   }
 
@@ -390,6 +479,7 @@ export class SessionRules {
     return this.#run(() => this.#dnr.updateSessionRules({ removeRuleIds: ACT_IDS }).then(() => {
       this.#acting = false;
       this.#actSpec = null;
+      return this.#syncFloor();
     }));
   }
 }

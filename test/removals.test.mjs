@@ -7,6 +7,9 @@ import { readFileSync } from "node:fs";
 import { REMOVAL_WAIT_MS } from "../agent/removals.js";
 import { callsSince, flush, startReceiver } from "./receiver-harness.mjs";
 
+// The merge guard's floor (rule 9, C5; board ab-v16.99) is in force from the worker's start; these tests read the other rules.
+const noFloor = (rules) => rules.filter((r) => r.id !== 9);
+
 const B = JSON.parse(readFileSync(new URL("./vectors/bridge.json", import.meta.url), "utf8"));
 const blank = (id, windowId = 1) => ({ id, windowId, url: "about:blank" });
 const target = (id) => ({ id: "T" + id, tabId: id, type: "page", attached: false });
@@ -394,7 +397,7 @@ test("a tabs.create during a sweep that takes its scope's list: no entry, the ne
 
 test("a tabs.create whose rule update fails: the new tab closes, the op answers the error, and the scope rules fail closed", async () => {
   const s = await startReceiver({ tabs: [blank(3), blank(9)], copy: { "tab:9": B.scope }, scopes: B.setScopes });
-  assert.equal(s.f.sessionRules_.length, 2);
+  assert.equal(noFloor(s.f.sessionRules_).length, 2);
   s.f.impl["tabs.create"] = async (p) => {
     s.f.tabs_.push(blank(41));
     s.f.targets_.push(target(41));
@@ -408,7 +411,7 @@ test("a tabs.create whose rule update fails: the new tab closes, the op answers 
   assert.deepEqual(res.error, "Session rule count exceeded.");
   assert.equal(isOpen(s.f, 41), false);
   assert.equal(s.r.map.has(41), false);
-  assert.deepEqual(s.f.sessionRules_, [], "fail closed");
+  assert.deepEqual(noFloor(s.f.sessionRules_), [], "fail closed");
 });
 
 test("tabs.create answers when the tab's scope rule is in force and its key is in the copy; a scope with no list gets no tab", async () => {
@@ -425,7 +428,7 @@ test("tabs.create answers when the tab's scope rule is in force and its key is i
   s.send({ t: "req", id: "c1", op: "tabs.create", args: [{ url: "about:blank", active: false }, B.scope] });
   await flush();
   const id = s.f.callsTo("tabs.create").length && s.r.map.list()[0].tabId;
-  assert.deepEqual(s.f.sessionRules_.find((r) => r.id === 100).condition.tabIds, [id], "the rule is in force");
+  assert.deepEqual(noFloor(s.f.sessionRules_).find((r) => r.id === 100).condition.tabIds, [id], "the rule is in force");
   assert.deepEqual(s.resOf("c1"), [], "the key is not in the copy yet");
   wrote();
   await flush();
@@ -437,7 +440,7 @@ test("tabs.create answers when the tab's scope rule is in force and its key is i
   const w = await s.answer({ id: "w", op: "windows.create", args: [{ url: "about:blank", focused: false }, B.scope] });
   assert.equal(w.ok, true);
   assert.equal(s.r.map.scopeOf(50), B.scope);
-  assert.deepEqual(s.f.sessionRules_.find((r) => r.id === 100).condition.tabIds, [id, 50]);
+  assert.deepEqual(noFloor(s.f.sessionRules_).find((r) => r.id === 100).condition.tabIds, [id, 50]);
 });
 
 // review-20 note 1 (a surviving mutation): "Detached while handling command." is no error, also when the
@@ -869,6 +872,6 @@ test("a tabs.create or windows.create whose copy write fails: the new tab joins 
     assert.equal(res.error, "QUOTA_BYTES quota exceeded", op);
     assert.equal(s.r.map.has(41), false, op);
     assert.equal(isOpen(s.f, 41), false, `${op}: closed`);
-    assert.deepEqual(s.f.sessionRules_.find((r) => r.id === 100).condition.tabIds, [9], `${op}: its rule went`);
+    assert.deepEqual(noFloor(s.f.sessionRules_).find((r) => r.id === 100).condition.tabIds, [9], `${op}: its rule went`);
   }
 });

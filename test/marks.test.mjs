@@ -17,16 +17,22 @@ import { parseScopes } from "../agent/scopes.js";
 import { TOMBSTONE_MS } from "../agent/tabmap.js";
 import { flush, startReceiver } from "./receiver-harness.mjs";
 
+// The merge guard's floor (rule 9, C5; board ab-v16.99) is in force from the worker's start; these tests read the other rules.
+const noFloor = (rules) => rules.filter((r) => r.id !== 9);
+
 const B = JSON.parse(readFileSync(new URL("./vectors/bridge.json", import.meta.url), "utf8"));
 const NAV_TARGET = B.eventVectors.find((v) => v.chrome && v.chrome[0] === "webNavigation.onCreatedNavigationTarget");
 const BLOCKED = "net::ERR_BLOCKED_BY_CLIENT";
 
 const blank = (id, windowId = 1) => ({ id, windowId, url: "about:blank" });
 const page = (id, url, windowId = 1) => ({ id, windowId, url });
-const ruleIds = (f) => f.sessionRules_.map((r) => r.id).sort((a, b) => a - b);
-const ruleOf = (f, id) => f.sessionRules_.find((r) => r.id === id);
+const ruleIds = (f) => noFloor(f.sessionRules_).map((r) => r.id).sort((a, b) => a - b);
+const ruleOf = (f, id) => noFloor(f.sessionRules_).find((r) => r.id === id);
 const tabIdsOf = (f, id) => ruleOf(f, id)?.condition.tabIds;
-const updates = (f) => f.callsTo("declarativeNetRequest.updateSessionRules").map(([d]) => d);
+// The rule calls of the scopes and the marks; the floor's own calls (rule 9 alone, after a change of the marks) are left out.
+const updates = (f) => f.callsTo("declarativeNetRequest.updateSessionRules").map(([d]) => d).filter((d) => !(JSON.stringify(d.removeRuleIds) === "[9]" && (d.addRules ?? []).every((r) => r.id === 9)));
+/** The floor's own calls: rule 9 alone. */
+const floorWrites = (f) => f.callsTo("declarativeNetRequest.updateSessionRules").map(([d]) => d).filter((d) => JSON.stringify(d.removeRuleIds) === "[9]");
 const evNames = (s, from) => s.evs().slice(from).map((e) => `${e.ev}:${e.tabId ?? e.tab?.id ?? e.details?.tabId ?? e.addedTabId}`);
 const created = (s, tabId, from = 0) => s.evs().slice(from).filter((e) => e.ev === "tabs.onCreated" && e.tab.id === tabId);
 
@@ -263,12 +269,12 @@ test("with a list name: the marked tabs join that list's two scope rules, also a
   await flush();
   assert.equal(ruleOf(s.f, MARKED_RULE_ID), undefined);
   assert.deepEqual(ruleIds(s.f), [100, 101, 102, 103]);
-  assert.deepEqual(s.f.sessionRules_.filter((r) => r.id >= 102), scopeRules(102, ["o.example"], [20]), "a list that only marked tabs use has its two rules");
+  assert.deepEqual(noFloor(s.f.sessionRules_).filter((r) => r.id >= 102), scopeRules(102, ["o.example"], [20]), "a list that only marked tabs use has its two rules");
   // The operator's list is a list of a scope too: its tabs and the marked tabs share the two rules.
   s.sendMain({ t: "req", id: "m1", op: "set_scopes", ...scopesWith("md") });
   await flush();
   assert.deepEqual(s.resOf("m1")[0].data, { rules: 2, closed: 0, refused: 0 });
-  assert.deepEqual(s.f.sessionRules_, scopeRules(100, ["a.example"], [7, 20]));
+  assert.deepEqual(noFloor(s.f.sessionRules_), scopeRules(100, ["a.example"], [7, 20]));
   // A marked tab that closes replaces only its list's two rules.
   s.f.closeTab(20);
   await flush();
@@ -293,7 +299,7 @@ test("before the first set_scopes after the worker's start a marked tab has no r
   const s = await setup({ scopes: null });
   operatorTab(s, 20);
   await flush();
-  assert.deepEqual(s.f.sessionRules_, []);
+  assert.deepEqual(noFloor(s.f.sessionRules_), []);
   assert.equal(s.r.map.isMarked(20), true);
   const r = await s.set(scopesWith("*"));
   assert.equal(r.rules, 3);
@@ -334,7 +340,7 @@ test("a failed rule update fails closed: the remove-only call takes rule 8 out t
   operatorTab(s, 21);
   await flush();
   assert.deepEqual(updates(s.f).at(-1), { removeRuleIds: [100, 101, 8] }, "the remove-only call");
-  assert.deepEqual(s.f.sessionRules_, []);
+  assert.deepEqual(noFloor(s.f.sessionRules_), []);
   assert.equal(s.r.map.isMarked(20), true);
   assert.equal(s.r.map.isMarked(21), true);
   delete s.f.impl["declarativeNetRequest.updateSessionRules"];
