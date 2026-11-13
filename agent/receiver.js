@@ -64,7 +64,9 @@ export class Receiver {
       now: () => this.clock.now(),
     };
     this.map = new TabMap(chrome, clock);
-    this.rules = new SessionRules(chrome, () => this.#model(), clock, () => (this.map.current.operator === ANY ? this.map.marked() : []));
+    this.rules = new SessionRules(chrome, () => this.#model(), clock, () => (this.map.current.operator === ANY ? this.map.marked() : []), () => this.map.marked());
+    // The merge guard's floor (C5): a tab that leaves the bridge leaves its guard first.
+    this.att.onUnguard = (tabIds) => this.rules.unguard(tabIds);
     this.removals = new Removals(chrome, { att: this.att, map: this.map, clock });
     this.popups = new Popups(this);
     this.guard = new Guard(this);
@@ -126,6 +128,8 @@ export class Receiver {
   // worker removal (a site that no marked tab shows any more).
   #markRules() {
     void this.rules.replaceLists([this.markList()]).catch(() => {});
+    // The floor leaves the marked tabs out (C5, the merge guard's floor).
+    void this.rules.syncFloor().catch(() => {});
     void this.workers.schedule();
   }
 

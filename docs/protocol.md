@@ -741,6 +741,29 @@ before that only agent-browser's own tests of the act. The daemon never sends th
       rules A, B and C with a probe extension. Not measured: Google Chrome with the receiver's CRX, a
       site's service worker or shared worker (rule C), WebTransport, more than one origin in `send_to`,
       a replaced act tab, and the real act: the act task's live check (board ab-v16.97.4) proves them.
+  - The merge guard's floor (board ab-v16.99; agent-browser C11, the merge guard; the operator's rule of 2026-11-12: no
+    agent merges a PR of agentwatch's issue triage): session rule id 9, priority 6, `{"type":"block"}`, `requestDomains`
+    = the guarded hosts, `excludedRequestMethods` `["get","head","options"]`, `resourceTypes` every resource type (the
+    main frame among them), and `excludedTabIds` = the guarded tabs, the marked tabs and the act tabs (no
+    `excludedTabIds` while none is). It blocks each write (a request whose method is not `GET`, `HEAD` or `OPTIONS`) to
+    a guarded host or its subdomains from every other tab, and from each request with no tab (a shared worker, a
+    service worker). The guarded hosts are GitHub's, `github.com`, always, and the hosts that `bridge.mergeGuard` adds
+    (C10). The guarded tabs are the tabs of the last `bridge.mergeGuard` that are bridge tabs: the tabs where
+    agent-browser's model judges each request itself with its own `Fetch`. Its priority is above every allow rule (the
+    scope rules' 2, the import's rules' 2, rule 8's 2, the act's rules' 5), so no allow rule lets a write through.
+    - The receiver writes it at its worker's start, in the same `updateSessionRules` call that removes the session rules
+      of a worker before it (with no guarded tab), so a worker that starts again leaves no moment without it; when that
+      removal fails or has not ended in time, it writes the floor in a call of its own.
+    - It writes it again in the receiver's one chain of rule changes, when it changes: at each `bridge.mergeGuard`, at
+      each change of the marks, and when the act's rules come, change or go (the act tabs leave the floor: the act's
+      sign-in posts to its site, and the act's own guard judges it).
+    - A tab leaves the guarded tabs before its debugger goes: at the bridge's `debugger.detach` the receiver writes the
+      floor first, then detaches (Chrome lets a paused request go at a detach); at a link change and at the worker's
+      start every tab leaves them before any detach. After Chrome's own detach (`chrome.debugger.onDetach`) the tab
+      leaves them too, a moment after the detach.
+    - What it does not stop, stated plainly: a write of a guarded tab (agent-browser's model judges those); a write of an
+      operator's marked tab or of an act tab; a request to a host that is not guarded; a message on a WebSocket; and a
+      write in the moment after Chrome's own detach, before the floor is written again.
   - Each change is one `updateSessionRules` call, and the changes run one after the other, each from
     the map when it runs. A `set_scopes` replaces every scope rule and rule 8. A tab that gets or
     loses a scope replaces only the two rules of its list (of both lists when it changes lists). A
@@ -1410,6 +1433,8 @@ first document request of a new tab (below).
     and the mark `act` only with `incognito` `true`; else `bad args`.
   - `windowUpdate` (`windows.update`): an object with at least one of `left`, `top`, `width`,
     `height`, `state` and `focused`, and no other key.
+  - `mergeGuard` (`bridge.mergeGuard`, board ab-v16.99): exactly `hosts` and `tabs`. `hosts` is a list of at most 16
+    hosts, each a normalized C5 entry. `tabs` is a list of at most 1024 ids.
   - `contentDetails` (`contentSettings.set`): exactly `primaryPattern` and `setting`. `setting` is
     `allow` or `block`. `primaryPattern` is `<scheme>://<host>/*` or `<scheme>://<host>:<port>/*`.
     `<scheme>` is `http`, `https` or `*`. `<host>` is a host that a list of the receiver's last
@@ -1529,7 +1554,7 @@ the receiver has no part (the daemon's own ops, below).
 | Op | Args | Result | Default wait | What the receiver does |
 | --- | --- | --- | --- | --- |
 | `debugger.attach` | `[tabId]` | `{"already": <bool>}` | `WAIT_DEFAULT_MS` | `chrome.debugger.attach({tabId}, "1.3")`. `already` is true for a bridge tab. A second attach of a tab while one is in flight joins it: both get its answer, the second with `already` true. |
-| `debugger.detach` | `[tabId]` | `null` | `WAIT_DEFAULT_MS` | Releases a hold of the tab, then `chrome.debugger.detach({tabId})`. A tab that is not a bridge tab also answers `null`. |
+| `debugger.detach` | `[tabId]` | `null` | `WAIT_DEFAULT_MS` | Takes the tab out of the merge guard's guarded tabs and writes the floor (C5, the merge guard's floor), releases a hold of the tab, then `chrome.debugger.detach({tabId})`. A tab that is not a bridge tab also answers `null`. |
 | `debugger.sendCommand` | `[target, method, params?]` | the CDP result | `WAIT_MAX_MS` | `chrome.debugger.sendCommand(target, method, params)`; a missing `params` goes as `{}`. In the per-scope build a `Page.close` on the tab's own session runs in the removal queue (removals and the last window, below); on an incognito tab it gets `not an agent tab` (the act window, below). |
 | `debugger.getTargets` | `[]` | `[TargetInfo]` | `WAIT_DEFAULT_MS` | `chrome.debugger.getTargets()`. |
 | `tabs.create` | `[createProperties, scope]` | `Tab` | `WAIT_DEFAULT_MS` | `chrome.tabs.create(createProperties)`. The new tab gets the scope; the op answers when the tab's scope rule is in force and its key is in the copy (each tab's scope, below). In the per-scope build a scope that the last applied `set_scopes` gives no list gets `no list for this scope`, and no tab. The `windowId` of an incognito window gets `not an agent window`, and opens no tab; with no `windowId` while an incognito tab is open, the tab opens in a window of the default context; a tab that Chrome still opens in an incognito window closes, and the op answers `not an agent window` (the act window, below). |
@@ -1548,6 +1573,7 @@ the receiver has no part (the daemon's own ops, below).
 | `bridge.attachNew` | `[on]` | `null` | `WAIT_DEFAULT_MS` | Turns the eager attach on or off (the hold, below). |
 | `bridge.release` | `[tabId]` | `null` | `WAIT_DEFAULT_MS` | Ends the hold of the tab (below). A tab with no hold also answers `null`. |
 | `bridge.tabScopes` | `[]` | `[{"tabId":<id>,"scope":"<scope>"}]` | `WAIT_DEFAULT_MS` | The receiver's own op (board ab-v16.41): every entry of the tab-to-scope map at the moment of the answer (each tab's scope, below). |
+| `bridge.mergeGuard` | `[guard]` | `null` | `WAIT_DEFAULT_MS` | The receiver's own op (board ab-v16.99): the merge guard's floor (C5). `guard` gives the hosts that the floor adds to GitHub's and the tabs where agent-browser's model guards each request itself, a full replace of both; of the tabs only the bridge tabs count. It answers `null` when the floor rule is in force. agent-browser's model sends it at each link up and after each tab that it guards. |
 | `daemon.pointerAt` | `[]` | `{"x":<int>,"y":<int>,"width":<int>,"height":<int>,"views":<int>}` | `POINTER_READ_WAIT_MS` | Nothing: the daemon answers it itself and never forwards it (board ab-v16.70; the daemon's own ops, below). A receiver that gets one answers `unknown op`. |
 | `daemon.movePointer` | `[move]` | `{"x":<int>,"y":<int>,"views":<int>}` | per request (below) | Nothing: the daemon answers it itself and never forwards it (board ab-v16.70; the daemon's own ops, below). A receiver that gets one answers `unknown op`. |
 | `daemon.blocked` | `[block]` | `{}` | `BLOCKED_WAIT_MS` | Nothing: the daemon answers it itself and never forwards it (the daemon's own ops, below). A receiver that gets one answers `unknown op`. |

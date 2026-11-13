@@ -1029,3 +1029,47 @@ test("the import's restore tab: a new tab's eager attach waits while the import 
   assert.deepEqual(s.f.callsTo("debugger.attach").map(([t]) => t.tabId).sort(), [31, 32], "the restore tab is attached once: by the import");
   assert.equal(s.att.isBridgeTab(31), false);
 });
+
+// ---- the merge guard's floor (C5, C10; board ab-v16.99) ----
+
+const floorOf = (s) => s.f.sessionRules_.find((r) => r.id === 9);
+test("bridge.mergeGuard: the floor holds from the worker's start; the op leaves out only the bridge's own tabs; a detach writes the floor before chrome.debugger.detach; a link change takes every tab back before its detaches", async () => {
+  const s = await setup({ tabs: [{ id: 7, windowId: 1, url: "https://a.example/" }, { id: 8, windowId: 1, url: "https://a.example/b" }] });
+  assert.deepEqual(floorOf(s).condition.requestDomains, ["github.com"], "the floor from the worker's start");
+  assert.equal(Object.hasOwn(floorOf(s).condition, "excludedTabIds"), false);
+  const att7 = await s.answer({ t: "req", id: "g-a7", op: "debugger.attach", args: [7] });
+  assert.equal(att7.ok, true, JSON.stringify(att7));
+  const r = await s.answer({ t: "req", id: "g-1", op: "bridge.mergeGuard", args: [{ hosts: ["github-standin.localhost"], tabs: [7, 8] }] });
+  assert.deepEqual(r, { t: "res", ch: "bridge", id: "g-1", ok: true, data: null });
+  assert.deepEqual([floorOf(s).condition.requestDomains, floorOf(s).condition.excludedTabIds], [["github.com", "github-standin.localhost"], [7]], "tab 8 is no bridge tab: it stays in the floor");
+  const mark = s.f.calls.length;
+  assert.equal((await s.answer({ t: "req", id: "g-d7", op: "debugger.detach", args: [7] })).ok, true);
+  const seq = callsSince(s.f, mark).map(([p]) => p).filter((p) => p === "declarativeNetRequest.updateSessionRules" || p === "debugger.detach");
+  assert.deepEqual(seq, ["declarativeNetRequest.updateSessionRules", "debugger.detach"], "the floor first, then the detach");
+  assert.equal(Object.hasOwn(floorOf(s).condition, "excludedTabIds"), false);
+  // A link change: the floor holds every tab again before any detach.
+  assert.equal((await s.answer({ t: "req", id: "g-a8", op: "debugger.attach", args: [8] })).ok, true);
+  await s.answer({ t: "req", id: "g-2", op: "bridge.mergeGuard", args: [{ hosts: [], tabs: [8] }] });
+  assert.deepEqual(floorOf(s).condition.excludedTabIds, [8]);
+  const mark2 = s.f.calls.length;
+  s.port().fireMessage({ t: "link", up: true }); // a new daemon connection: a link change
+  await flush();
+  const seq2 = callsSince(s.f, mark2).map(([p]) => p).filter((p) => p === "declarativeNetRequest.updateSessionRules" || p === "debugger.detach");
+  assert.equal(seq2[0], "declarativeNetRequest.updateSessionRules", `the floor before the detaches: ${seq2.join(", ")}`);
+  assert.equal(Object.hasOwn(floorOf(s).condition, "excludedTabIds"), false);
+});
+
+test("bridge.mergeGuard: Chrome's own detach takes the tab back into the floor; bad args get bad args and change nothing", async () => {
+  const s = await setup({ tabs: [{ id: 7, windowId: 1, url: "https://a.example/" }] });
+  assert.equal((await s.answer({ t: "req", id: "h-a7", op: "debugger.attach", args: [7] })).ok, true);
+  await s.answer({ t: "req", id: "h-1", op: "bridge.mergeGuard", args: [{ hosts: [], tabs: [7] }] });
+  assert.deepEqual(floorOf(s).condition.excludedTabIds, [7]);
+  s.f.chrome.debugger.onDetach.fire({ tabId: 7 }, "target_closed");
+  await flush();
+  assert.equal(Object.hasOwn(floorOf(s).condition, "excludedTabIds"), false);
+  const before = JSON.stringify(floorOf(s));
+  for (const args of [[{ hosts: ["https://github.com"], tabs: [] }], [{ hosts: [], tabs: ["7"] }], [{ hosts: [], tabs: [], all: true }], [{ hosts: Array.from({ length: 17 }, (_, i) => `h${i}.example`), tabs: [] }], []]) {
+    assert.equal(await s.errorOf({ t: "req", id: "h-bad", op: "bridge.mergeGuard", args }), "bad args", JSON.stringify(args).slice(0, 60));
+  }
+  assert.equal(JSON.stringify(floorOf(s)), before);
+});

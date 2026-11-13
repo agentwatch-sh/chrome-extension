@@ -15,14 +15,17 @@ import { receiver } from "../agent/receiver.js";
 import { makeFakeChrome } from "./fake-chrome.mjs";
 import { callsSince, flush, startReceiver } from "./receiver-harness.mjs";
 
+// The merge guard's floor (rule 9, C5; board ab-v16.99) is in force from the worker's start; these tests read the other rules.
+const noFloor = (rules) => rules.filter((r) => r.id !== 9);
+
 const read = (p) => JSON.parse(readFileSync(new URL(p, import.meta.url), "utf8"));
 const S = read("./vectors/scopes.json");
 const H = read("./vectors/hello.json");
 const B = read("./vectors/bridge.json");
 const applied = (a) => ({ lists: a.lists, scopes: a.scopes, default: a.default, operator: a.operator });
 const blank = (id, windowId = 1) => ({ id, windowId, url: "about:blank" });
-const ruleIds = (f) => f.sessionRules_.map((r) => r.id).sort((a, b) => a - b);
-const tabIdsOf = (f, id) => f.sessionRules_.find((r) => r.id === id)?.condition.tabIds;
+const ruleIds = (f) => noFloor(f.sessionRules_).map((r) => r.id).sort((a, b) => a - b);
+const tabIdsOf = (f, id) => noFloor(f.sessionRules_).find((r) => r.id === id)?.condition.tabIds;
 
 // ---- C4: set_scopes by its rules, the hello, the rollout ----
 
@@ -63,13 +66,13 @@ test("set_scopes answers {rules, closed, refused} after the scope rules are in f
     tabs: [blank(7), blank(8), blank(9), blank(3)],
     copy: { "tab:7": "md-lead", "tab:8": "md-worker-2", "tab:9": "vedlo-cron" },
   });
-  assert.deepEqual(s.f.sessionRules_, [], "no scope rule before the first set_scopes: every tab is blocked");
+  assert.deepEqual(noFloor(s.f.sessionRules_), [], "no scope rule before the first set_scopes: every tab is blocked");
   s.sendMain({ t: "req", id: "m1", op: "set_scopes", ...S.cases[0].in, lists: { ...S.cases[0].in.lists, unused: ["u.example"], bad: "x" } });
   await flush();
   assert.deepEqual(s.resOf("m1"), [{ t: "res", id: "m1", ok: true, data: { rules: 4, closed: 0, refused: 1 } }]);
   assert.deepEqual(ruleIds(s.f), [100, 101, 102, 103]);
-  assert.deepEqual(s.f.sessionRules_.slice(0, 2), scopeRules(100, ["marketdata.app", "github.com"], [7, 8]));
-  assert.deepEqual(s.f.sessionRules_.slice(2), scopeRules(102, ["vedlo.example"], [9]));
+  assert.deepEqual(noFloor(s.f.sessionRules_).slice(0, 2), scopeRules(100, ["marketdata.app", "github.com"], [7, 8]));
+  assert.deepEqual(noFloor(s.f.sessionRules_).slice(2), scopeRules(102, ["vedlo.example"], [9]));
   assert.deepEqual(s.f.dynamicRules_.map((r) => r.id), [5], "rule 5; no rule 2 or 4");
   assert.deepEqual(s.f.callsTo("declarativeNetRequest.updateDynamicRules").at(-1)[0].removeRuleIds, [2, 4, 5]);
 });
@@ -83,7 +86,7 @@ test("a failed rule update fails closed: every scope rule goes, the tabs still c
     s.f.sessionRules_ = s.f.sessionRules_.filter((r) => !d.removeRuleIds.includes(r.id));
   };
   await assert.rejects(s.set({ lists: { md: ["a.example"] }, scopes: { "md-lead": "md" }, default: null }), /Session rule count exceeded/);
-  assert.deepEqual(s.f.sessionRules_, [], "fail closed");
+  assert.deepEqual(noFloor(s.f.sessionRules_), [], "fail closed");
   assert.equal(s.f.tabs_.some((t) => t.id === 7), false, "the closing rule ran with the new lists");
   assert.equal(s.r.map.scopeOf(8), "md-lead", "the map stays");
   delete s.f.impl["declarativeNetRequest.updateSessionRules"];
@@ -262,7 +265,7 @@ test("a set_scopes that is not applied (a bad scopes or lists field) sweeps noth
     const res = await s.set(bad);
     assert.equal(res.refused, 1, JSON.stringify(bad));
     assert.equal(s.r.map.reference, ref, "the last applied set_scopes stays the reference");
-    assert.deepEqual(s.f.sessionRules_, [], "C4's reading gives no scope a list: the scope rules go");
+    assert.deepEqual(noFloor(s.f.sessionRules_), [], "C4's reading gives no scope a list: the scope rules go");
     const open = s.f.tabs_.map((t) => t.id);
     assert.deepEqual(open, [7, 8, 5, 3], `${JSON.stringify(bad)}: no sweep; tabs 8 and 5 stay by the last applied lists; tab 9 left md; tab 13 has no list`);
     assert.equal(res.closed, 2);
@@ -313,7 +316,7 @@ test("a set_scopes that answers ok:false with its rules in force (a failed key r
   };
   await assert.rejects(s.set({ lists: { md: ["a.example", "z.example"] }, scopes: { "md-lead": "md" }, default: null }), /copy key removal failed/);
   delete s.f.impl["storage.session.remove"];
-  assert.deepEqual(s.f.sessionRules_.find((r) => r.id === 100).condition.requestDomains, ["a.example", "z.example"], "S2's rules are in force");
+  assert.deepEqual(noFloor(s.f.sessionRules_).find((r) => r.id === 100).condition.requestDomains, ["a.example", "z.example"], "S2's rules are in force");
   // S3: z.example leaves md. Against S1 nothing shrinks, but z.example's workers may exist.
   await s.set({ lists: { md: ["a.example"] }, scopes: { "md-lead": "md" }, default: null });
   assert.equal(removals(), 2, "the owed removal ran");

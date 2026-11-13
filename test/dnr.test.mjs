@@ -2,7 +2,7 @@
 // import's rules 6 and 7, rule 5, and no rule 2 or 4.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { headerRule, importRules, scopeRules, SessionRules, TRUSTWORTHY } from "../agent/dnr.js";
+import { floorRule, FLOOR_RULE_ID, headerRule, importRules, scopeRules, SessionRules, TRUSTWORTHY } from "../agent/dnr.js";
 import { RESTORE_MAX_MS } from "../agent/tabmap.js";
 import { makeFakeChrome } from "./fake-chrome.mjs";
 
@@ -46,7 +46,8 @@ function rulesWith(model) {
   const f = makeFakeChrome();
   const m = { current: model };
   const rules = new SessionRules(f.chrome, () => new Map(Object.entries(m.current)));
-  const session = () => f.sessionRules_.map((r) => [r.id, r.condition.requestDomains ?? r.condition.topDomains, r.condition.tabIds]);
+  // The scope rules' tests read every rule but the merge guard's floor (rule 9), which its own tests read.
+  const session = () => f.sessionRules_.filter((r) => r.id !== FLOOR_RULE_ID).map((r) => [r.id, r.condition.requestDomains ?? r.condition.topDomains, r.condition.tabIds]);
   return { f, m, rules, session, updates: () => f.callsTo("declarativeNetRequest.updateSessionRules").map(([d]) => d) };
 }
 
@@ -55,8 +56,9 @@ test("the worker's start removes dynamic rules 2 and 4 and every session rule; s
   f.sessionRules_ = [{ id: 6 }, { id: 8 }, { id: 100 }, { id: 101 }];
   await rules.start();
   assert.deepEqual(f.callsTo("declarativeNetRequest.updateDynamicRules"), [[{ removeRuleIds: [2, 4] }]]);
-  assert.deepEqual(f.callsTo("declarativeNetRequest.updateSessionRules"), [[{ removeRuleIds: [6, 8, 100, 101] }]]);
-  assert.deepEqual(f.sessionRules_, []);
+  // The floor (rule 9, C5) goes in in the same call, so a worker that starts again leaves no moment without it.
+  assert.deepEqual(f.callsTo("declarativeNetRequest.updateSessionRules"), [[{ removeRuleIds: [6, 8, 100, 101, 9], addRules: [floorRule(["github.com"], [])] }]]);
+  assert.deepEqual(f.sessionRules_, [floorRule(["github.com"], [])]);
   await rules.writeHeader();
   assert.deepEqual(f.callsTo("declarativeNetRequest.updateDynamicRules")[1], [{ removeRuleIds: [2, 4, 5], addRules: [headerRule(ID)] }]);
 });
@@ -157,7 +159,7 @@ test("a removal at the start that has not ended in time fails closed: the start 
   }
   hang = false;
   assert.equal(await rules.replaceAll(), 2);
-  assert.deepEqual(f.sessionRules_.map((r) => r.id), [100, 101]);
+  assert.deepEqual(f.sessionRules_.map((r) => r.id).filter((id) => id !== FLOOR_RULE_ID), [100, 101]);
 });
 
 // review-20 note 4: after a failed removal at the start, the next full replace also removes rules 6 and 7
@@ -175,7 +177,7 @@ test("after a failed removal at the start, a full replace removes rules 6 and 7 
     fail = false;
     if (importing) await rules.addImport("i.example", 31);
     await rules.replaceAll();
-    assert.deepEqual(f.sessionRules_.map((r) => r.id).sort((a, b) => a - b), importing ? [6, 7, 100, 101] : [100, 101], `an import runs: ${importing}`);
+    assert.deepEqual(f.sessionRules_.map((r) => r.id).filter((id) => id !== FLOOR_RULE_ID).sort((a, b) => a - b), importing ? [6, 7, 100, 101] : [100, 101], `an import runs: ${importing}`);
   }
 });
 
@@ -204,7 +206,7 @@ test("a late read of the session rules at the start removes nothing after its ti
     console.warn = warn;
   }
   assert.equal(await rules.replaceAll(), 4);
-  const now = () => f.sessionRules_.map((r) => [r.id, r.condition.tabIds]);
+  const now = () => f.sessionRules_.filter((r) => r.id !== FLOOR_RULE_ID).map((r) => [r.id, r.condition.tabIds]);
   assert.deepEqual(now(), [[100, [7]], [101, [7]], [102, [8]], [103, [8]]]);
   release(); // the start's late read answers now, with the old worker's ids
   await new Promise((r) => setTimeout(r, 10));
@@ -249,5 +251,71 @@ test("after an import ended, a full replace in the failed-start state removes ru
   await rules.removeImport();
   f.sessionRules_.push({ id: 6, condition: {} }, { id: 7, condition: {} }); // rules of a worker before this one
   await rules.replaceAll();
-  assert.deepEqual(f.sessionRules_.map((r) => r.id), [100, 101]);
+  assert.deepEqual(f.sessionRules_.map((r) => r.id).filter((id) => id !== FLOOR_RULE_ID), [100, 101]);
+  assert.ok(f.sessionRules_.some((r) => r.id === FLOOR_RULE_ID), "the floor stays");
+});
+
+// ---- the merge guard's floor (C5; board ab-v16.99) ----
+
+test("the merge guard's floor is C5's rule 9: a block of every write to the guarded hosts, every resource type, priority 6 above every allow rule", () => {
+  assert.deepEqual(floorRule(["github.com"], []), {
+    id: 9, priority: 6, action: { type: "block" },
+    condition: { requestDomains: ["github.com"], excludedRequestMethods: ["get", "head", "options"], resourceTypes: ["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "webtransport", "webbundle", "other"] },
+  });
+  assert.deepEqual(floorRule(["github.com", "github-standin.localhost"], [3, 7]).condition.excludedTabIds, [3, 7]);
+  assert.ok(!Object.hasOwn(floorRule(["github.com"], []).condition, "excludedTabIds"), "no empty excludedTabIds");
+  for (const r of [...scopeRules(100, ["a.example"], [1]), ...importRules("a.example", 1)]) assert.ok(floorRule(["github.com"], []).priority > r.priority);
+  assert.ok(floorRule(["github.com"], []).priority > 5, "above the act's allow rules (5)");
+});
+
+test("the floor: bridge.mergeGuard's setGuard adds hosts to GitHub's and leaves the guarded tabs out; unguard and a link change take them back; a change that changes nothing writes nothing", async () => {
+  const { f, rules } = rulesWith({});
+  await rules.start();
+  const floor = () => f.sessionRules_.find((r) => r.id === FLOOR_RULE_ID);
+  const floorCalls = () => f.callsTo("declarativeNetRequest.updateSessionRules").length;
+  await rules.setGuard(["github-standin.localhost"], [7, 9]);
+  assert.deepEqual([floor().condition.requestDomains, floor().condition.excludedTabIds], [["github.com", "github-standin.localhost"], [7, 9]]);
+  await rules.setGuard([], [9]);
+  assert.deepEqual([floor().condition.requestDomains, floor().condition.excludedTabIds], [["github.com"], [9]], "GitHub's host always; a full replace");
+  const n = floorCalls();
+  await rules.setGuard([], [9]);
+  assert.equal(floorCalls(), n, "the same floor: no call");
+  await rules.unguard([9]);
+  assert.equal(Object.hasOwn(floor().condition, "excludedTabIds"), false, "the tab is in the floor again");
+  await rules.setGuard([], [4, 5]);
+  await rules.unguard(null);
+  assert.equal(Object.hasOwn(floor().condition, "excludedTabIds"), false, "a link change: every tab");
+  const m = floorCalls();
+  await rules.unguard([4]);
+  assert.equal(floorCalls(), m, "an unguard that changes nothing: no call");
+});
+
+test("the floor leaves the marked tabs and the act tabs out, and takes the act tabs back at the act's end", async () => {
+  const f = makeFakeChrome();
+  let marked = [20];
+  const rules = new SessionRules(f.chrome, () => new Map(), undefined, () => [], () => marked);
+  await rules.start();
+  const floor = () => f.sessionRules_.find((r) => r.id === FLOOR_RULE_ID);
+  assert.deepEqual(floor().condition.excludedTabIds, [20], "the marked tab at the start");
+  marked = [20, 21];
+  await rules.syncFloor();
+  assert.deepEqual(floor().condition.excludedTabIds, [20, 21]);
+  f.impl["declarativeNetRequest.getSessionRules"] = async () => structuredClone(f.sessionRules_);
+  await rules.setAct({ tabIds: [31], sendTo: ["https://login.example"] });
+  assert.deepEqual(floor().condition.excludedTabIds, [20, 21, 31], "the act tab: its sign-in posts to its site");
+  await rules.addActTab(32);
+  assert.deepEqual(floor().condition.excludedTabIds, [20, 21, 31, 32]);
+  await rules.removeAct();
+  assert.deepEqual(floor().condition.excludedTabIds, [20, 21]);
+});
+
+test("the floor at the worker's start: a removal that fails or hangs still leaves the floor written in a call of its own; no floor call comes before the start", async () => {
+  const { f, rules } = rulesWith({});
+  await rules.setGuard([], [7]);
+  assert.equal(f.callsTo("declarativeNetRequest.updateSessionRules").length, 0, "before the start only the start writes the floor");
+  f.impl["declarativeNetRequest.getSessionRules"] = async () => { throw new Error("not yet"); };
+  await rules.start();
+  await new Promise((r) => setTimeout(r, 5));
+  const calls = f.callsTo("declarativeNetRequest.updateSessionRules").map(([d]) => d);
+  assert.deepEqual(calls.at(-1), { removeRuleIds: [FLOOR_RULE_ID], addRules: [floorRule(["github.com"], [7])] });
 });

@@ -44,6 +44,9 @@ export class Attachments {
   // The eager attach of a new tab (C10 bridge.attachNew). Off at the start
   // and after each reset.
   attachNew = false;
+  // The merge guard's floor (C5, board ab-v16.99): a tab that leaves the
+  // bridge leaves its guard first (null: every tab). receiver.js sets it.
+  onUnguard = () => Promise.resolve();
 
   constructor(chrome) {
     this.#chrome = chrome;
@@ -212,6 +215,8 @@ export class Attachments {
     return this.#queue(tabId, "detach", async () => {
       if (!this.#tabs.has(tabId)) return null;
       this.#tabs.delete(tabId);
+      // The floor holds the tab again before its debugger goes: Chrome lets a paused request go at the detach.
+      await call(() => this.onUnguard([tabId])).catch(() => {});
       await this.holds.release(tabId, false); // the relay takes no request of a tab that it detaches
       await this.#detachNow(tabId);
       return null;
@@ -225,6 +230,8 @@ export class Attachments {
     this.holds.drop(tabId);
     this.#live.delete(tabId);
     this.#closing.delete(tabId);
+    // The floor holds the tab again (after Chrome's own detach: a moment comes before it).
+    void call(() => this.onUnguard([tabId])).catch(() => {});
     return this.#tabs.delete(tabId);
   }
 
@@ -243,6 +250,8 @@ export class Attachments {
     this.holds.releaseAll();
     const known = [...this.#tabs];
     this.#tabs.clear();
+    // Every tab leaves its guard before any detach of the reset.
+    await call(() => this.onUnguard(null)).catch(() => {});
     const quiet = (tabId) => this.#queue(tabId, "detach", () => {
       this.#closing.delete(tabId);
       return this.#detachNow(tabId);

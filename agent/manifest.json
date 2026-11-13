@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "agentwatch — agent mode (agent browser only)",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "description": "For the agent browser only: writes sent sign-ins, blocks sites off each tab's list and carries the agent-mode bridge.",
   "minimum_chrome_version": "145",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsziBDDaGg1zQUjG2lEG99T7u8QkT7MQEu18OEcdosfDHwVEeZMjLbj9plY4sB4KaqYi2RxktPSo1k15VBtKxMBCss+AXF51nv2jXT8RSzLGX2vgfbiixALx/yFJehZ7B95GrOD39PP9gmayuUcbR2z2kVuZHeH/Q3cUKvwfCJte5CsaLQ8c/n5nrwSKoPn/R0QLQ0kGct/FoBC+Awxez+uj8WjpJawppuJ5/+bpDtuHH2D1bexTjrmfwe27R10LTa6Lh1ugaX4IiDUcO9In4xp4xrv0Ap7APAb4l7e07uya8xgP0ARfU/CDFzVCb+k7RcHGlB2KkQrAsnzrNb0/fkwIDAQAB",

@@ -538,6 +538,11 @@ function kindFits(kind, a) {
         ["left", "top", "width", "height"].every((k) => !Object.hasOwn(a, k) || int(a[k]));
     case "contentDetails":
       return isObj(a) && onlyKeys(a, ["primaryPattern", "setting"]) && ["allow", "block"].includes(a.setting) && patternFits(a.primaryPattern);
+    // The merge guard's floor (board ab-v16.99): normalized C5 hosts and tab ids, at most 16 and 1024.
+    case "mergeGuard":
+      return isObj(a) && onlyKeys(a, ["hosts", "tabs"]) && Array.isArray(a.hosts) && a.hosts.length <= 16 &&
+        a.hosts.every((h) => typeof h === "string" && normalizeEntry(h).ok && normalizeEntry(h).entry === h) &&
+        Array.isArray(a.tabs) && a.tabs.length <= 1024 && a.tabs.every((t) => int(t) && t >= 0);
     default: return false;
   }
 }
@@ -2041,4 +2046,46 @@ test("review-ce44b and the daemon lead's P1: C5 and C10 state R1's item, the exa
     "When a tab does not close, the act's rules stay (fail closed), and the next link change or act window tries again, with the same rule (every incognito tab), until one end succeeds.",
   ]) assert.ok(says(C10, s), `C10 says: ${s}`);
   assert.ok(C10.includes("`not an agent download`"), "the error text");
+});
+
+
+// ---- the merge guard's floor (C5, C10; board ab-v16.99; agent-browser C11, the merge guard) ----
+// C5's item holds exactly these sentences; C10's op row, its kind and the changed row of debugger.detach (old, then new).
+const FLOOR_ITEMS = [
+  "The merge guard's floor (board ab-v16.99; agent-browser C11, the merge guard; the operator's rule of 2026-11-12: no agent merges a PR of agentwatch's issue triage): session rule id 9, priority 6, `{\"type\":\"block\"}`, `requestDomains` = the guarded hosts, `excludedRequestMethods` `[\"get\",\"head\",\"options\"]`, `resourceTypes` every resource type (the main frame among them), and `excludedTabIds` = the guarded tabs, the marked tabs and the act tabs (no `excludedTabIds` while none is). It blocks each write (a request whose method is not `GET`, `HEAD` or `OPTIONS`) to a guarded host or its subdomains from every other tab, and from each request with no tab (a shared worker, a service worker). The guarded hosts are GitHub's, `github.com`, always, and the hosts that `bridge.mergeGuard` adds (C10). The guarded tabs are the tabs of the last `bridge.mergeGuard` that are bridge tabs: the tabs where agent-browser's model judges each request itself with its own `Fetch`. Its priority is above every allow rule (the scope rules' 2, the import's rules' 2, rule 8's 2, the act's rules' 5), so no allow rule lets a write through.",
+  "The receiver writes it at its worker's start, in the same `updateSessionRules` call that removes the session rules of a worker before it (with no guarded tab), so a worker that starts again leaves no moment without it; when that removal fails or has not ended in time, it writes the floor in a call of its own.",
+  "It writes it again in the receiver's one chain of rule changes, when it changes: at each `bridge.mergeGuard`, at each change of the marks, and when the act's rules come, change or go (the act tabs leave the floor: the act's sign-in posts to its site, and the act's own guard judges it).",
+  "A tab leaves the guarded tabs before its debugger goes: at the bridge's `debugger.detach` the receiver writes the floor first, then detaches (Chrome lets a paused request go at a detach); at a link change and at the worker's start every tab leaves them before any detach. After Chrome's own detach (`chrome.debugger.onDetach`) the tab leaves them too, a moment after the detach.",
+  "What it does not stop, stated plainly: a write of a guarded tab (agent-browser's model judges those); a write of an operator's marked tab or of an act tab; a request to a host that is not guarded; a message on a WebSocket; and a write in the moment after Chrome's own detach, before the floor is written again."
+];
+test("C5 states the merge guard's floor, sentence by sentence, before the rule on how the changes run", () => {
+  for (const s of FLOOR_ITEMS) assert.ok(says(C5, s), `C5 says: ${s.slice(0, 120)}`);
+  const at = flat(C5).indexOf(flat(FLOOR_ITEMS[0]));
+  assert.ok(at > 0 && at < flat(C5).indexOf("Each change is one `updateSessionRules` call, and the changes run one after the other"));
+  assert.ok(!/\/home\//.test(FLOOR_ITEMS.join(" ")), "no box path");
+});
+
+const FLOOR_C10 = [
+  { old: "| `debugger.detach` | `[tabId]` | `null` | `WAIT_DEFAULT_MS` | Releases a hold of the tab, then `chrome.debugger.detach({tabId})`. A tab that is not a bridge tab also answers `null`. |",
+    text: "| `debugger.detach` | `[tabId]` | `null` | `WAIT_DEFAULT_MS` | Takes the tab out of the merge guard's guarded tabs and writes the floor (C5, the merge guard's floor), releases a hold of the tab, then `chrome.debugger.detach({tabId})`. A tab that is not a bridge tab also answers `null`. |" },
+  { old: "(a new row after the row of bridge.tabScopes)",
+    text: "| `bridge.mergeGuard` | `[guard]` | `null` | `WAIT_DEFAULT_MS` | The receiver's own op (board ab-v16.99): the merge guard's floor (C5). `guard` gives the hosts that the floor adds to GitHub's and the tabs where agent-browser's model guards each request itself, a full replace of both; of the tabs only the bridge tabs count. It answers `null` when the floor rule is in force. agent-browser's model sends it at each link up and after each tab that it guards. |" },
+  { old: "(a new kind before the kind contentDetails)",
+    text: "- `mergeGuard` (`bridge.mergeGuard`, board ab-v16.99): exactly `hosts` and `tabs`. `hosts` is a list of at most 16 hosts, each a normalized C5 entry. `tabs` is a list of at most 1024 ids." },
+];
+test("C10 states the op bridge.mergeGuard, its kind, and the floor at debugger.detach: each new text exactly, and no old text", () => {
+  for (const e of FLOOR_C10) {
+    assert.ok(says(C10, e.text), e.text.slice(0, 100));
+    if (!e.old.startsWith("(a new ")) assert.ok(!says(C10, e.old), `the old text is gone: ${e.old.slice(0, 80)}`);
+  }
+});
+
+test("the receiver's floor is the code's: rule 9, priority 6, GitHub's host, the free methods, the limits of bridge.mergeGuard", async () => {
+  const { FLOOR_RULE_ID, FLOOR_PRIORITY, FLOOR_HOSTS, FLOOR_FREE_METHODS } = await import("../agent/dnr.js");
+  const { MAX_GUARD_HOSTS, MAX_GUARD_TABS } = await import("../agent/bridge.js");
+  const c5 = flat(C5);
+  assert.ok(c5.includes(`session rule id ${FLOOR_RULE_ID}, priority ${FLOOR_PRIORITY}, \`{"type":"block"}\``));
+  assert.ok(c5.includes(`The guarded hosts are GitHub's, \`${FLOOR_HOSTS[0]}\`, always`));
+  assert.ok(c5.includes(`\`excludedRequestMethods\` \`${JSON.stringify(FLOOR_FREE_METHODS)}\``));
+  assert.ok(flat(C10).includes(`a list of at most ${MAX_GUARD_HOSTS} hosts`) && flat(C10).includes(`a list of at most ${MAX_GUARD_TABS} ids`));
 });
