@@ -591,7 +591,9 @@ is on, agent-browser's service. The daemon never sends it.
 - The order of `fetch_end` is the order of `act_end`: first the tabs, then the rules. So no page of the fetch is left
   when rule 78 and the blocks of the refused addresses go (C5).
 - The fetch's caller sends `fetch_end` at the end of each fetch, also after an error (the PageFetch design, section
-  5.3). Chrome then drops the incognito context with its cookies, storage, cache and workers.
+  5.3). Chrome then drops the incognito context with its cookies, storage, cache and workers when it has closed its
+  last incognito tab; while Chrome still lists its cookie store, a new fetch window or act window answers `another
+  private window is open` (C10), and the caller tries again on its lock (review-46 N1).
 - A link change and the worker's start end the fetch window too (C10, the fetch window).
 - `fetch_end` runs in channel `main`'s one queue (above), as the act's requests do. The fetch's caller waits 10 s for
   it from its send.
@@ -790,28 +792,33 @@ is on, agent-browser's service. The daemon never sends it.
     - The blocks of the refused addresses: for each pattern P of `REFUSED_ADDRESSES` (`agent/dnr.js`, in its order) a
       rule with priority 6, `{"type":"block"}`, `regexFilter` P, `isUrlFilterCaseSensitive` `true`, every resource
       type (the main frame among them) and `tabIds` F (ids 79 to 82); and for each P the same rule with `tabIds`
-      `[-1]` and `domainType` `"thirdParty"` (ids 83 to 86). The patterns refuse these hosts, as Chrome's URL parser
-      writes them (IPv4 in dotted decimal, also for `0x7f.1`, `2130706433` and `127.1`; IPv6 in lowercase hex with
-      `::`, an IPv4-mapped address as `::ffff:7f00:1`; a name with its trailing dot):
+      `[-1]`, `domainType` `"thirdParty"` and `excludedInitiatorDomains` `["localhost","local","internal"]` (ids 83 to
+      86). The patterns refuse these hosts, as Chrome's URL parser writes them (IPv4 in dotted decimal, also for
+      `0x7f.1`, `2130706433` and `127.1`; IPv6 in lowercase hex with `::`, an IPv4-mapped address as `::ffff:7f00:1`;
+      a name with its trailing dot):
       - IPv4 `0.0.0.0/8` (with `0.0.0.0`), `10.0.0.0/8`, `127.0.0.0/8` (loopback), `224.0.0.0/4` (multicast),
         `100.64.0.0/10` (carrier-grade NAT), `172.16.0.0/12`, `192.168.0.0/16` and `169.254.0.0/16` (link-local, with
         `169.254.169.254`);
       - IPv6 `::` and `::1`, `fc00::/7` (unique local), `fe80::/10` (link-local) and `ff00::/8` (multicast);
       - the IPv4-mapped form (`::ffff:0:0/96`) of each IPv4 range above;
       - `localhost`, `local` and `internal`, and every name under them.
-    - Each pattern starts at the scheme, allows a userinfo part (`user@`), and needs the end of the host (a port or
-      the path) right after the address or the name, so a name such as `10.0.0.1.example.com` or
-      `localhost.example.com` passes. One `regexFilter` for each pattern: Chrome refuses one above its compiled size
-      limit (2 KB).
+    - Each pattern starts at the scheme, allows a userinfo part (`user@`), and needs the end of the host (a port of
+      digits or the path) right after the address or the name, so a name such as `10.0.0.1.example.com` or
+      `localhost.example.com` passes, and so does a userinfo part that looks like a refused host
+      (`http://a.localhost:pw@example.com/`; review-46 N4). One `regexFilter` for each pattern: Chrome refuses one
+      above its compiled size limit (2 KB).
     - Rules 79 to 82 match every request of a fetch tab: its page, its frames, its dedicated workers, its WebSockets,
       and each redirect and navigation that its page makes. Rules 83 to 86 match each request with no tab (a service
-      worker or a shared worker, which no tab rule names) to a refused address on another site than its initiator. The
-      fetched page is on a public host, so its workers' requests to a refused address are always on another site, and
-      a worker of the default context keeps its own local site (for example `localhost`, `app.localhost` or
-      `127.0.0.1`) while a fetch runs. They hold only while a fetch window is open. The PageFetch design names this
-      rule (section 5.4: "a receiver rule that blocks every request to a refused IP literal from the fetch window");
-      DNR has no condition for a browser context, so "from the fetch window" is the fetch tabs and the requests with
-      no tab.
+      worker or a shared worker, which no tab rule names) to a refused address on another site than its initiator,
+      unless the initiator is `localhost`, `local`, `internal` or a name under them. The fetched page is on a public
+      host, and its documents on a refused host are blocked, so its workers' requests to a refused address always
+      match; a worker of the default context keeps its own local site (for example `localhost`, `app.localhost` or
+      `127.0.0.1`) while a fetch runs, and a worker on a local name (for example `localhost:3000` or `app.localhost`)
+      also reaches another local site (review-46 N2). The side effect that stays: while a fetch window is open, a
+      worker whose initiator is an IP literal (for example `http://127.0.0.1:8000`) cannot reach a refused address on
+      another site. They hold only while a fetch window is open. The PageFetch design names this rule (section 5.4: "a
+      receiver rule that blocks every request to a refused IP literal from the fetch window"); DNR has no condition
+      for a browser context, so "from the fetch window" is the fetch tabs and the requests with no tab.
     - Priority 6 is above every allow rule (the scope rules' 2, the import's rules' 2, rule 8's 2, rule 78's 2, the
       act's rules' 5), so no allow rule opens a refused address in a fetch tab. The ids are 78 to 86, between the
       act's rules (10 to 77) and the scope rules (100 and up). They count in the 5000 session rules (9 rules), and
@@ -828,19 +835,23 @@ is on, agent-browser's service. The daemon never sends it.
     - The guard skips a fetch tab (the guard and `blocked`, below), and the merge guard's floor (rule 9, below) still
       blocks every write to a guarded host from it.
     - What they do not stop, stated plainly: a name that resolves to a refused address (DNR sees the URL, not the
-      address: the fetch's caller checks each name by DNS, and Chrome's Local Network Access stops a public
-      page's request to a loopback or private address); an address outside these ranges (for example `::7f00:1`,
+      address: the fetch's caller checks each name by DNS, and Chrome's Local Network Access stops a public page's
+      request to a loopback or private address); an address outside these ranges (for example `::7f00:1`,
       `64:ff9b::7f00:1` or `240.0.0.0/4`); a request of a fetch popup before its join of F (static rule 1 blocks its
       main frame until rule 78 names it, but a request that its opener's page writes into it is not held); a request
-      with no tab to a refused address on the site of its initiator; DNS prefetch and preconnect, and WebRTC.
+      with no tab to a refused address on the site of its initiator, or from an initiator on a local name; DNS
+      prefetch and preconnect, and WebRTC.
     - Measured on Chromium 156.0.8078.79 (board ab-v16.102: an unpacked extension with these 9 rules for one fetch
       tab, `chrome.declarativeNetRequest.isRegexSupported` and `testMatchOutcome`; no request was sent and no name
       resolved): each pattern passes `isRegexSupported`; each refused URL of `test/vectors/fetch.json` (42) matched a
       block in the fetch tab as `xmlhttprequest`, its first six also as `main_frame` and `sub_frame`, and with no tab
-      from a public initiator; each allowed URL (34: public hosts and the edges of the ranges) matched no block; rule
-      78 matched a public host's `main_frame`, `sub_frame` and `object` in the fetch tab; no rule matched in another
-      tab; a request with no tab to its own local site (`localhost:3000`, `app.localhost`, `127.0.0.1:8000`) matched
-      no block. Chromium's URL parser writes `[::ffff:127.0.0.1]` as `[::ffff:7f00:1]` and keeps the dot of
+      from a public initiator; each allowed URL (36: public hosts, the edges of the ranges, and two userinfo parts
+      that look like a refused host) matched no block; rule 78 matched a public host's `main_frame`, `sub_frame` and
+      `object` in the fetch tab; no rule matched in another tab; a request with no tab to its own local site
+      (`localhost:3000`, `app.localhost`, `127.0.0.1:8000`) matched no block, and so did one from a worker on a local
+      name to another local site (4 cases); one from `http://127.0.0.1:8000` to `localhost:3000` matched a block (the
+      side effect that stays); `updateSessionRules` took `excludedInitiatorDomains` with the names `local` and
+      `internal`. Chromium's URL parser writes `[::ffff:127.0.0.1]` as `[::ffff:7f00:1]` and keeps the dot of
       `foo.localhost.`. Not measured: the rules with real requests in a real fetch window (stage 2's live tests; a
       test site there needs a name that Chrome maps to the loopback server, as `www.plain.test` here, because the
       rules judge the URL's host).
@@ -2482,9 +2493,12 @@ Chrome drops it when its last incognito window closes.
      act's caller, or an act that did not end) and each act tab close, and the act's rules go. When a tab of
      it stays open: `another private window is open`; when its rules do not go: `rules not removed`
      (review-ce44 N6);
-  4. reads every tab (`tabs.query` with `{}`): while any incognito tab is open (for example one that the
-     operator opened in the live view; all incognito windows of a profile share one context), `another
-     private window is open`, and no window opens;
+  4. reads every tab (`tabs.query` with `{}`): while any incognito tab is open (for example one that the operator
+     opened in the live view; all incognito windows of a profile share one context), `another private window is open`,
+     and no window opens; then reads the cookie stores (`cookies.getAllCookieStores`): while a store other than the
+     default context's (`"0"`) is listed, or the read fails, `another private window is open` too, and no window
+     opens. Chrome can hold the off-the-record profile, with its cookies, for a moment after its last incognito tab
+     closed (for example right after an `act_end` or a `fetch_end`), and a new window would share them (review-46 N1);
   5. calls `chrome.windows.create(createData)`. A result that is no incognito window with a tab (Chrome gives
      an extension that it does not allow in incognito no window) gets `not allowed in incognito`;
   6. keeps the window as an act window, with the key `act:<windowId>` in the copy (each tab's scope, above:
@@ -2546,9 +2560,9 @@ Chrome drops it when its last incognito window closes.
   queue (the receiver's close), and only then removes the act's rules. While an act runs, every incognito tab
   belongs to it, because no act window opens while another private window is open; so an act tab whose key
   had not reached the copy closes too, and so does a private window that the operator opened during an act's
-  seconds. This holds also when the read of the copy fails or comes after `RESTORE_MAX_MS`. When a tab does
-  not close, the act's rules stay (fail closed), and the next link change or act window tries again, with the
-  same rule (every incognito tab), until one end succeeds.
+  seconds. This holds also when the read of the copy fails or comes after `RESTORE_MAX_MS`. When a tab does not close,
+  the act's rules stay (fail closed), and the next link change or act window tries again, with the same rule (every
+  incognito tab but a fetch tab of this worker and a popup of one: review-46 N3), until one end succeeds.
 - The limits, stated plainly. The start's sweep runs only when an act's rules are or may be in force or the
   copy names an act. A worker that stopped during an act before its `act_rules` (no rule yet, so no typed
   key yet), when the start's read of the copy then fails, leaves the act's tabs open in no scope, with no
@@ -2572,7 +2586,9 @@ is an incognito window: its off-the-record context shares no cookie, storage, Ca
      stop of the fetch's caller, or a fetch that did not end) and each fetch tab close, and the fetch window's rules
      go. When a tab of it stays open: `another private window is open`; when its rules do not go: `rules not removed`;
   3. reads every tab (`tabs.query` with `{}`): while any incognito tab is open (an act tab, or one that the operator
-     opened in the live view), `another private window is open`, and no window opens;
+     opened in the live view), `another private window is open`, and no window opens; then reads the cookie stores, as
+     the act window's step 4 does: while a store other than `"0"` is listed, or the read fails, `another private
+     window is open` too (review-46 N1);
   4. calls `chrome.windows.create(createData)`. A result that is no incognito window with a tab gets `not allowed in
      incognito`;
   5. keeps the window as a fetch window, with the key `fetch:<windowId>` in the copy, makes the window's tab the fetch
@@ -2584,7 +2600,9 @@ is an incognito window: its off-the-record context shares no cookie, storage, Ca
   work (its window and `fetch_end`) run one at a time, in one chain of the receiver. So an act window and a fetch
   window never both open: the check of the incognito tabs of the second one comes after the first one's window, and
   answers `another private window is open`. Neither ends the other: a fetch window ends only a left fetch window, and
-  an act window only a left act. The fetch's caller holds one lock for both (agent-browser C11).
+  an act window only a left act; the start's sweep of one kind leaves each tab of the other kind that this worker
+  opened and each popup of one, also when the sweep is still owed after a failure (review-46 N3). The fetch's caller
+  holds one lock for both (agent-browser C11).
 - The fetch tab has no scope, no operator mark and no key `tab:<id>`. No connection sees it: `bridge.tabScopes` leaves
   it out, no `bridge.tabScope` names it, and the fetch's caller hides it and its window from every client
   (agent-browser's model, as for an act tab). The scope's list does not apply to it: C5's rule 78 lets its main frame
@@ -2608,7 +2626,8 @@ is an incognito window: its off-the-record context shares no cookie, storage, Ca
   78 to 86, or its removal of the session rules failed or came late) or the copy names a fetch window or a fetch tab,
   the receiver closes every incognito tab that is open, in one item of the removal queue, and only then removes the
   fetch window's rules, as the act's start's sweep does. When a tab does not close, the rules stay (fail closed), and
-  the next link change or fetch window tries again. While no fetch window, fetch tab or fetch rule is there, a link
+  the next link change or fetch window tries again, with the same rule (every incognito tab but an act tab of this
+  worker and a popup of one: review-46 N3). While no fetch window, fetch tab or fetch rule is there, a link
   change makes no chrome call for the fetch.
 - The vector: `test/vectors/fetch.json`, with C4's `fetch_end` and C5's rules.
 

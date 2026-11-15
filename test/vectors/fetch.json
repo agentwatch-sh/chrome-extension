@@ -103,7 +103,7 @@
     "type": "block"
    },
    "condition": {
-    "regexFilter": "^[a-z]+://([^/?#@]*@)?((0|10|127|22[4-9]|23[0-9])\\.[0-9]+|100\\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])|172\\.(1[6-9]|2[0-9]|3[01])|192\\.168|169\\.254)\\.[0-9.]+[:/]",
+    "regexFilter": "^[a-z]+://([^/?#@]*@)?((0|10|127|22[4-9]|23[0-9])\\.[0-9]+|100\\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])|172\\.(1[6-9]|2[0-9]|3[01])|192\\.168|169\\.254)\\.[0-9.]+(:[0-9]+)?/",
     "isUrlFilterCaseSensitive": true,
     "resourceTypes": [
      "main_frame",
@@ -196,7 +196,7 @@
     "type": "block"
    },
    "condition": {
-    "regexFilter": "^[a-z]+://([^/?#@]*@)?([^/?#@:]*\\.)?(localhost|local|internal)\\.?[:/]",
+    "regexFilter": "^[a-z]+://([^/?#@]*@)?([^/?#@:]*\\.)?(localhost|local|internal)\\.?(:[0-9]+)?/",
     "isUrlFilterCaseSensitive": true,
     "resourceTypes": [
      "main_frame",
@@ -227,7 +227,7 @@
     "type": "block"
    },
    "condition": {
-    "regexFilter": "^[a-z]+://([^/?#@]*@)?((0|10|127|22[4-9]|23[0-9])\\.[0-9]+|100\\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])|172\\.(1[6-9]|2[0-9]|3[01])|192\\.168|169\\.254)\\.[0-9.]+[:/]",
+    "regexFilter": "^[a-z]+://([^/?#@]*@)?((0|10|127|22[4-9]|23[0-9])\\.[0-9]+|100\\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])|172\\.(1[6-9]|2[0-9]|3[01])|192\\.168|169\\.254)\\.[0-9.]+(:[0-9]+)?/",
     "isUrlFilterCaseSensitive": true,
     "resourceTypes": [
      "main_frame",
@@ -249,7 +249,12 @@
     "tabIds": [
      -1
     ],
-    "domainType": "thirdParty"
+    "domainType": "thirdParty",
+    "excludedInitiatorDomains": [
+     "localhost",
+     "local",
+     "internal"
+    ]
    }
   },
   {
@@ -281,7 +286,12 @@
     "tabIds": [
      -1
     ],
-    "domainType": "thirdParty"
+    "domainType": "thirdParty",
+    "excludedInitiatorDomains": [
+     "localhost",
+     "local",
+     "internal"
+    ]
    }
   },
   {
@@ -313,7 +323,12 @@
     "tabIds": [
      -1
     ],
-    "domainType": "thirdParty"
+    "domainType": "thirdParty",
+    "excludedInitiatorDomains": [
+     "localhost",
+     "local",
+     "internal"
+    ]
    }
   },
   {
@@ -323,7 +338,7 @@
     "type": "block"
    },
    "condition": {
-    "regexFilter": "^[a-z]+://([^/?#@]*@)?([^/?#@:]*\\.)?(localhost|local|internal)\\.?[:/]",
+    "regexFilter": "^[a-z]+://([^/?#@]*@)?([^/?#@:]*\\.)?(localhost|local|internal)\\.?(:[0-9]+)?/",
     "isUrlFilterCaseSensitive": true,
     "resourceTypes": [
      "main_frame",
@@ -345,7 +360,12 @@
     "tabIds": [
      -1
     ],
-    "domainType": "thirdParty"
+    "domainType": "thirdParty",
+    "excludedInitiatorDomains": [
+     "localhost",
+     "local",
+     "internal"
+    ]
    }
   }
  ],
@@ -549,7 +569,9 @@
   "http://10.0.0.1.example.com/",
   "http://local.example/",
   "http://internal.example/",
-  "http://example.com/http://127.0.0.1/"
+  "http://example.com/http://127.0.0.1/",
+  "http://a.localhost:pw@example.com/",
+  "http://127.0.0.1:x@example.com/"
  ],
  "sameSite": [
   {
@@ -563,6 +585,32 @@
   },
   {
    "url": "http://127.0.0.1:8000/x",
+   "initiator": "http://127.0.0.1:8000"
+  }
+ ],
+ "localWorkers": [
+  {
+   "note": "A request with no tab from a worker of a local name to another local site: no block (excludedInitiatorDomains; review-46 N2).",
+   "url": "http://127.0.0.1:8000/api",
+   "initiator": "http://localhost:3000"
+  },
+  {
+   "url": "http://api.localhost/x",
+   "initiator": "http://app.localhost"
+  },
+  {
+   "url": "http://10.0.0.5/x",
+   "initiator": "http://printer.local"
+  },
+  {
+   "url": "http://localhost:3000/x",
+   "initiator": "http://db.internal"
+  }
+ ],
+ "ipWorkers": [
+  {
+   "note": "The side effect that stays (C5): a worker whose initiator is an IP literal is blocked on another site while a fetch window is open.",
+   "url": "http://localhost:3000/x",
    "initiator": "http://127.0.0.1:8000"
   }
  ]

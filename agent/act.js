@@ -35,6 +35,20 @@ const KEY = /^act:(0|[1-9][0-9]{0,15})$/;
 const TAB_KEY = /^acttab:(0|[1-9][0-9]{0,15})$/;
 // The cookie store of the default context: act_cookies never reads it.
 const DEFAULT_STORE = "0";
+
+// A cookie store other than the default context's is listed (or the read
+// fails): Chrome still holds an off-the-record profile, for example for a
+// moment after the last incognito tab of an act or a fetch closed, or for the
+// operator's private window. A new act window or fetch window would share
+// its cookies (an act's sign-in session), so neither opens (review-46 N1).
+export async function otherCookieStore(chrome) {
+  try {
+    const stores = await call(() => chrome.cookies.getAllCookieStores());
+    return (Array.isArray(stores) ? stores : []).some((s) => !s || s.id !== DEFAULT_STORE);
+  } catch {
+    return true;
+  }
+}
 // The bridge's error texts of the act window (C10).
 export const ANOTHER_PRIVATE = "another private window is open";
 export const NO_INCOGNITO = "not allowed in incognito";
@@ -150,6 +164,8 @@ export class Act {
       // All incognito windows share one context: no other may be open (a fetch window neither).
       const tabs = await call(() => this.#chrome.tabs.query({}));
       if ((Array.isArray(tabs) ? tabs : []).some((t) => t && t.incognito === true)) throw new Error(ANOTHER_PRIVATE);
+      // Nor may Chrome still hold that context with no tab (review-46 N1).
+      if (await otherCookieStore(this.#chrome)) throw new Error(ANOTHER_PRIVATE);
       if (op.stale()) throw new Error("detached");
       const win = await call(() => this.#chrome.windows.create(data));
       const tab = win && Array.isArray(win.tabs) ? win.tabs[0] : null;
@@ -271,8 +287,12 @@ export class Act {
     // acttab:<id>, and an incognito tab whose opener is one of them (a popup
     // whose navigation target has not come yet; review-ce44 N2).
     const known = (id) => r.map.isAct(id) || r.map.wasAct(id) || tabs.has(id);
+    // The start's sweep takes every incognito tab but a fetch tab of this
+    // worker and a popup of one: an act never ends a fetch window, also when
+    // a failed start's sweep is still owed (review-46 N3).
     const sweepAll = this.#sweepAll;
-    const ofAct = (t) => t && Number.isInteger(t.id) && (r.map.isAct(t.id) || (t.incognito === true && (sweepAll ||
+    const ofFetch = (t) => r.map.wasFetch(t.id) || (Number.isInteger(t.openerTabId) && r.map.wasFetch(t.openerTabId));
+    const ofAct = (t) => t && Number.isInteger(t.id) && (r.map.isAct(t.id) || (t.incognito === true && ((sweepAll && !ofFetch(t)) ||
       windows.has(t.windowId) || tabs.has(t.id) || (Number.isInteger(t.openerTabId) && known(t.openerTabId)))));
     let closed = 0;
     if (sweepAll || windows.size > 0 || tabs.size > 0 || r.map.acts().length > 0) {

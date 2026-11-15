@@ -26,7 +26,7 @@
 // - A link change ends the fetch window, and so does the worker's start.
 //
 // No log line holds a URL, a host or a value of the page.
-import { ANOTHER_PRIVATE, NO_INCOGNITO, RULES_NOT_HELD, RULES_NOT_REMOVED } from "./act.js";
+import { ANOTHER_PRIVATE, NO_INCOGNITO, RULES_NOT_HELD, RULES_NOT_REMOVED, otherCookieStore } from "./act.js";
 import { call } from "./attach.js";
 
 export const FETCH_MARK = "fetch";
@@ -96,6 +96,10 @@ export class FetchWindow {
       // All incognito windows share one context: no other may be open (an act window neither).
       const tabs = await call(() => this.#chrome.tabs.query({}));
       if ((Array.isArray(tabs) ? tabs : []).some((t) => t && t.incognito === true)) throw new Error(ANOTHER_PRIVATE);
+      // Nor may Chrome still hold that context with no tab: right after an
+      // act_end it can hold the act's cookies, the operator's sign-in session
+      // (review-46 N1).
+      if (await otherCookieStore(this.#chrome)) throw new Error(ANOTHER_PRIVATE);
       if (op.stale()) throw new Error("detached");
       const win = await call(() => this.#chrome.windows.create(data));
       const tab = win && Array.isArray(win.tabs) ? win.tabs[0] : null;
@@ -162,8 +166,12 @@ export class FetchWindow {
     // key fetchtab:<id>, and an incognito tab whose opener is one of them (a
     // popup whose navigation target has not come yet).
     const known = (id) => r.map.wasFetch(id) || tabs.has(id);
+    // The start's sweep takes every incognito tab but an act tab of this
+    // worker and a popup of one: a fetch never ends an act, also when a
+    // failed start's sweep is still owed (review-46 N3).
     const sweepAll = this.#sweepAll;
-    const ofFetch = (t) => t && Number.isInteger(t.id) && (r.map.isFetch(t.id) || (t.incognito === true && (sweepAll ||
+    const ofAct = (t) => r.map.wasAct(t.id) || (Number.isInteger(t.openerTabId) && r.map.wasAct(t.openerTabId));
+    const ofFetch = (t) => t && Number.isInteger(t.id) && (r.map.isFetch(t.id) || (t.incognito === true && ((sweepAll && !ofAct(t)) ||
       windows.has(t.windowId) || tabs.has(t.id) || (Number.isInteger(t.openerTabId) && known(t.openerTabId)))));
     let closed = 0;
     if (sweepAll || windows.size > 0 || tabs.size > 0 || r.map.fetches().length > 0) {

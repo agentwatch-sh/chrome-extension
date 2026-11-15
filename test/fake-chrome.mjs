@@ -22,7 +22,9 @@
 // For the act of the stored sign-ins (C4, C10; act.js): extension.isAllowedIncognitoAccess
 // gives fake.incognitoAllowed, cookies.getAllCookieStores gives fake.cookieStores_, and
 // cookies.getAll with a storeId gives the cookies of that store (a cookie with no storeId is of
-// the default store "0", which a getAll with no storeId reads).
+// the default store "0", which a getAll with no storeId reads). When the last incognito tab of
+// fake.tabs_ closes, Chrome drops the off-the-record profile: every store but "0" leaves
+// fake.cookieStores_, unless fake.otrLingers is true (Chrome still holds it; review-46 N1).
 //
 // For the worker removal of the recorded origins (C5): webNavigation.getAllFrames
 // gives fake.frames_.get(tabId) when the test set it, else the main frame of a
@@ -81,6 +83,7 @@ export function makeFakeChrome() {
     sessionRules_: [],
     incognitoAllowed: true,
     cookieStores_: [{ id: "0", tabIds: [] }],
+    otrLingers: false,
     dynamicRules_: [],
     trackNewTabs: false,
     frames_: new Map(), // tabId -> the frames that webNavigation.getAllFrames gives
@@ -359,6 +362,9 @@ export function makeFakeChrome() {
     fake.tabs_ = fake.tabs_.filter((x) => x.id !== tabId);
     fake.created_.delete(tabId);
     fake.targets_ = fake.targets_.filter((x) => x.tabId !== tabId);
+    if (t.incognito === true && !fake.otrLingers && !fake.tabs_.some((x) => x.incognito === true)) {
+      fake.cookieStores_ = fake.cookieStores_.filter((x) => x.id === "0");
+    }
     chrome.tabs.onRemoved.fire(tabId, { windowId: t.windowId, isWindowClosing: false });
   };
   return fake;

@@ -2043,7 +2043,7 @@ test("review-ce44b and the daemon lead's P1: C5 and C10 state R1's item, the exa
     "The start's sweep (the daemon lead's P1). At the worker's start, when the act's rules are or may be in force (the start found ids 10 to 77, or its removal of the session rules failed or came late) or the copy names an act window or an act tab, the receiver closes every incognito tab that is open, in one item of the removal queue (the receiver's close), and only then removes the act's rules.",
     "While an act runs, every incognito tab belongs to it, because no act window opens while another private window is open; so an act tab whose key had not reached the copy closes too, and so does a private window that the operator opened during an act's seconds.",
     "This holds also when the read of the copy fails or comes after `RESTORE_MAX_MS`.",
-    "When a tab does not close, the act's rules stay (fail closed), and the next link change or act window tries again, with the same rule (every incognito tab), until one end succeeds.",
+    "When a tab does not close, the act's rules stay (fail closed), and the next link change or act window tries again, with the same rule (every incognito tab but a fetch tab of this worker and a popup of one: review-46 N3), until one end succeeds.",
   ]) assert.ok(says(C10, s), `C10 says: ${s}`);
   assert.ok(C10.includes("`not an agent download`"), "the error text");
 });
@@ -2106,6 +2106,7 @@ test("C4 states PageFetch's fetch window: the feature fetch by membership, fetch
     "Else the fetch window's rules go (C5; a call that fails answers `rules not removed`, and they stay)",
     "The order of `fetch_end` is the order of `act_end`: first the tabs, then the rules.",
     "A link change and the worker's start end the fetch window too (C10, the fetch window).",
+    "while Chrome still lists its cookie store, a new fetch window or act window answers `another private window is open` (C10), and the caller tries again on its lock (review-46 N1).",
     "The shared vector: `test/vectors/fetch.json`",
   ]) assert.ok(says(part, s), `C4 says: ${s}`);
   for (const e of fetchV.errors.main) assert.ok(part.includes("`" + e + "`"), `C4 names the error ${e}`);
@@ -2121,7 +2122,7 @@ test("C5 states the fetch window's rules with the code's ids, priorities, patter
   assert.deepEqual([FETCH_RULE_ID, FETCH_BLOCK_FIRST, FETCH_BLOCK_PRIORITY, FETCH_RULE_MAX, REFUSED_ADDRESSES.length], [78, 79, 6, 86, 4]);
   for (const s of [
     "Rule 78, of the marked-tab rule 8's kind: priority 2, `{\"type\":\"allow\"}`, `resourceTypes` `[\"main_frame\", \"sub_frame\", \"object\"]`, `tabIds` F, no host condition.",
-    "a rule with priority 6, `{\"type\":\"block\"}`, `regexFilter` P, `isUrlFilterCaseSensitive` `true`, every resource type (the main frame among them) and `tabIds` F (ids 79 to 82); and for each P the same rule with `tabIds` `[-1]` and `domainType` `\"thirdParty\"` (ids 83 to 86).",
+    "a rule with priority 6, `{\"type\":\"block\"}`, `regexFilter` P, `isUrlFilterCaseSensitive` `true`, every resource type (the main frame among them) and `tabIds` F (ids 79 to 82); and for each P the same rule with `tabIds` `[-1]`, `domainType` `\"thirdParty\"` and `excludedInitiatorDomains` `[\"localhost\",\"local\",\"internal\"]` (ids 83 to 86).",
     "IPv4 `0.0.0.0/8` (with `0.0.0.0`), `10.0.0.0/8`, `127.0.0.0/8` (loopback), `224.0.0.0/4` (multicast), `100.64.0.0/10` (carrier-grade NAT), `172.16.0.0/12`, `192.168.0.0/16` and `169.254.0.0/16` (link-local, with `169.254.169.254`);",
     "IPv6 `::` and `::1`, `fc00::/7` (unique local), `fe80::/10` (link-local) and `ff00::/8` (multicast);",
     "the IPv4-mapped form (`::ffff:0:0/96`) of each IPv4 range above;",
@@ -2134,7 +2135,10 @@ test("C5 states the fetch window's rules with the code's ids, priorities, patter
     "A fetch tab is never a guarded tab (C10, the fetch window)",
     "A fetch tab of PageFetch sends no `blocked`, and neither does one that closed or was replaced in the last `TOMBSTONE_MS` (C10, the fetch window; board ab-v16.102).",
     `each refused URL of \`test/vectors/fetch.json\` (${fetchV.refused.length}) matched a block in the fetch tab`,
-    `each allowed URL (${fetchV.allowed.length}: public hosts and the edges of the ranges) matched no block`,
+    `each allowed URL (${fetchV.allowed.length}: public hosts, the edges of the ranges, and two userinfo parts that look like a refused host) matched no block`,
+    "unless the initiator is `localhost`, `local`, `internal` or a name under them.",
+    "The side effect that stays: while a fetch window is open, a worker whose initiator is an IP literal (for example `http://127.0.0.1:8000`) cannot reach a refused address on another site.",
+    "needs the end of the host (a port of digits or the path) right after the address or the name",
   ]) assert.ok(says(C5, s), `C5 says: ${s}`);
 });
 
@@ -2149,7 +2153,9 @@ test("C10 states the fetch window: the mark and the pair rule, the steps of wind
     "`windows.create` with `[createData, scope, \"fetch\"]`",
     "ends a left fetch window, as `fetch_end` does (C4)",
     "One private window at a time: the act's work (its window, `act_rules`, `act_cookies` and `act_end`) and the fetch's work (its window and `fetch_end`) run one at a time, in one chain of the receiver.",
-    "Neither ends the other: a fetch window ends only a left fetch window, and an act window only a left act.",
+    "Neither ends the other: a fetch window ends only a left fetch window, and an act window only a left act; the start's sweep of one kind leaves each tab of the other kind that this worker opened and each popup of one, also when the sweep is still owed after a failure (review-46 N3).",
+    "then reads the cookie stores, as the act window's step 4 does: while a store other than `\"0\"` is listed, or the read fails, `another private window is open` too (review-46 N1);",
+    "then reads the cookie stores (`cookies.getAllCookieStores`): while a store other than the default context's (`\"0\"`) is listed, or the read fails, `another private window is open` too, and no window opens.",
     "The fetch tab has no scope, no operator mark and no key `tab:<id>`.",
     "Only `fetch_end` closes a fetch tab.",
     "The vector: `test/vectors/fetch.json`, with C4's `fetch_end` and C5's rules.",

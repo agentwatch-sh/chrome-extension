@@ -85,22 +85,29 @@ export const FETCH_BLOCK_PRIORITY = 6;
 // for 0x7f.1, 2130706433 and 127.1), IPv6 in lowercase hex with :: (an
 // IPv4-mapped address as ::ffff:7f00:1, never ::ffff:127.0.0.1), a name with
 // its trailing dot. Each pattern starts at the scheme and allows a userinfo
-// part, and its host ends at the port or the path. One regexFilter each:
+// part, and its host ends at the port (digits only) or the path, so a
+// userinfo part such as a.localhost:pw@ never counts as the host
+// (review-46 N4). One regexFilter each:
 // Chrome refuses one above its compiled size limit (2 KB), and these four
 // pass (measured on Chromium 156 with isRegexSupported).
 export const REFUSED_ADDRESSES = Object.freeze([
   // 0.0.0.0/8, 10/8, 127/8 (loopback), 224/4 (multicast), 100.64/10 (CGNAT),
   // 172.16/12, 192.168/16, 169.254/16 (link-local, with 169.254.169.254).
-  "^[a-z]+://([^/?#@]*@)?((0|10|127|22[4-9]|23[0-9])\\.[0-9]+|100\\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])|172\\.(1[6-9]|2[0-9]|3[01])|192\\.168|169\\.254)\\.[0-9.]+[:/]",
+  "^[a-z]+://([^/?#@]*@)?((0|10|127|22[4-9]|23[0-9])\\.[0-9]+|100\\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])|172\\.(1[6-9]|2[0-9]|3[01])|192\\.168|169\\.254)\\.[0-9.]+(:[0-9]+)?/",
   // :: and ::1, fc00::/7 (unique local), fe80::/10 (link-local), ff00::/8 (multicast).
   "^[a-z]+://([^/?#@]*@)?\\[(::1?|(f[cdf][0-9a-f]|fe[89ab])[0-9a-f]:[0-9a-f:.]*)\\]",
   // ::ffff:0:0/96 with an IPv4 address of the first pattern: its first hex
   // group is the address's first two bytes.
   "^[a-z]+://([^/?#@]*@)?\\[::ffff:(7f[0-9a-f]{2}|a[0-9a-f]{2}|ac1[0-9a-f]|e[0-9a-f]{3}|[0-9a-f]{1,2}|c0a8|a9fe|64[4-7][0-9a-f]):[0-9a-f]{1,4}\\]",
   // localhost, local and internal, and every name under them.
-  "^[a-z]+://([^/?#@]*@)?([^/?#@:]*\\.)?(localhost|local|internal)\\.?[:/]",
+  "^[a-z]+://([^/?#@]*@)?([^/?#@:]*\\.)?(localhost|local|internal)\\.?(:[0-9]+)?/",
 ]);
 export const FETCH_RULE_MAX = FETCH_BLOCK_FIRST + 2 * REFUSED_ADDRESSES.length - 1;
+// The initiators that rules 83 to 86 (the requests with no tab) leave out,
+// with every name under them: a fetch window never has a worker there (its
+// documents on these hosts are blocked), so a worker of an agent's own local
+// site keeps reaching another local site while a fetch runs (review-46 N2).
+export const FETCH_WORKER_FREE = Object.freeze(["localhost", "local", "internal"]);
 const FETCH_IDS = Array.from({ length: FETCH_RULE_MAX - FETCH_RULE_ID + 1 }, (_, i) => FETCH_RULE_ID + i);
 // chrome.tabs.TAB_ID_NONE: a request with no tab.
 const NO_TAB = -1;
@@ -178,9 +185,10 @@ export function actRules({ tabIds, sendTo }) {
 // no host condition, so the fetch tabs load any host, and the scope's list
 // does not apply to them. Each block rule matches every resource type (the
 // main frame among them). The rules with no tab match only a request to
-// another site than its initiator: the fetched page is on a public host, so
-// its workers' requests to a refused address always are, and a worker of the
-// default context keeps its own local site while a fetch runs.
+// another site than its initiator, and no initiator of FETCH_WORKER_FREE:
+// the fetched page is on a public host, so its workers' requests to a
+// refused address always match, and a worker of the default context keeps
+// its own local site, and a local site of a name, while a fetch runs.
 export function fetchRules(tabIds) {
   const rules = [{ id: FETCH_RULE_ID, priority: 2, action: { type: "allow" }, condition: { resourceTypes: [...MAIN, ...FRAMES], tabIds: [...tabIds] } }];
   const block = (id, regexFilter, more) => ({
@@ -188,7 +196,7 @@ export function fetchRules(tabIds) {
     condition: { regexFilter, isUrlFilterCaseSensitive: true, resourceTypes: [...ALL_TYPES], ...more },
   });
   REFUSED_ADDRESSES.forEach((re, i) => rules.push(block(FETCH_BLOCK_FIRST + i, re, { tabIds: [...tabIds] })));
-  REFUSED_ADDRESSES.forEach((re, i) => rules.push(block(FETCH_BLOCK_FIRST + REFUSED_ADDRESSES.length + i, re, { tabIds: [NO_TAB], domainType: "thirdParty" })));
+  REFUSED_ADDRESSES.forEach((re, i) => rules.push(block(FETCH_BLOCK_FIRST + REFUSED_ADDRESSES.length + i, re, { tabIds: [NO_TAB], domainType: "thirdParty", excludedInitiatorDomains: [...FETCH_WORKER_FREE] })));
   return rules;
 }
 

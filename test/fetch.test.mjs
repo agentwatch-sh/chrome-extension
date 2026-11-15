@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { FETCH_BLOCK_FIRST, FETCH_BLOCK_PRIORITY, FETCH_RULE_ID, FETCH_RULE_MAX, FLOOR_RULE_ID, REFUSED_ADDRESSES, SessionRules, fetchRules } from "../agent/dnr.js";
+import { FETCH_BLOCK_FIRST, FETCH_BLOCK_PRIORITY, FETCH_RULE_ID, FETCH_RULE_MAX, FETCH_WORKER_FREE, FLOOR_RULE_ID, REFUSED_ADDRESSES, SessionRules, fetchRules } from "../agent/dnr.js";
 import { FEATURES } from "../agent/link.js";
 import { callsSince, flush, startReceiver } from "./receiver-harness.mjs";
 import { makeFakeChrome } from "./fake-chrome.mjs";
@@ -23,7 +23,8 @@ const isActRule = (r) => r.id >= 10 && r.id <= 77;
 const fetchRulesIn = (f) => f.sessionRules_.filter(isFetchRule).sort((a, b) => a.id - b.id);
 
 // windows.create with incognito gives the fetch window of the vector (or the act window of act.json
-// for the act's createData); its tab is open, with a target, so the receiver's close can close it.
+// for the act's createData); its tab is open, with a target, so the receiver's close can close it,
+// and Chrome lists the off-the-record cookie store "1" (the fake drops it with the last incognito tab).
 function incognitoWindows(f, win = WIN) {
   f.impl["windows.create"] = async (data) => {
     if (data.incognito !== true) return { id: 800 + f.calls.length, incognito: false, ...data, tabs: [{ id: 850 + f.calls.length, incognito: false }] };
@@ -33,6 +34,7 @@ function incognitoWindows(f, win = WIN) {
       f.tabs_.push({ id: t.id, windowId: w.id, incognito: true, url: "about:blank" });
       f.targets_.push({ id: "T" + t.id, tabId: t.id, type: "page", attached: false });
     }
+    f.cookieStores_ = [{ id: "0", tabIds: f.tabs_.filter((t) => !t.incognito).map((t) => t.id) }, { id: "1", tabIds: f.tabs_.filter((t) => t.incognito).map((t) => t.id) }];
     return w;
   };
 }
@@ -444,6 +446,7 @@ test("the fetch window's rules: rule 78 is rule 8's kind with no host condition;
     const tab = r.id < 83;
     assert.deepEqual(r.condition.tabIds, tab ? [FETCH_TAB] : [-1]);
     assert.equal(r.condition.domainType, tab ? undefined : "thirdParty");
+    assert.deepEqual(r.condition.excludedInitiatorDomains, tab ? undefined : ["localhost", "local", "internal"], `rule ${r.id}: the local names' workers (review-46 N2)`);
     assert.equal(r.condition.regexFilter, REFUSED_ADDRESSES[(r.id - 79) % 4]);
   }
   // Each pattern is plain RE2 syntax that JavaScript reads the same way (Chromium 156 measured these lists: C5).
@@ -457,11 +460,121 @@ test("the fetch window's rules: rule 78 is rule 8's kind with no host condition;
     assert.ok(res.some((re) => re.test(new URL(raw).href)), `refused after the parser: ${raw}`);
   }
   // Each pattern stays short: Chrome refuses a regexFilter above its compiled size limit (2 KB; all four passed isRegexSupported).
-  for (const p of REFUSED_ADDRESSES) assert.ok(p.length <= 160, p);
+  for (const p of REFUSED_ADDRESSES) assert.ok(p.length <= 200, p);
+  // A user part that looks like a refused host is no host (review-46 N4): the host ends at a port of digits or the path.
+  for (const u of ["http://a.localhost:pw@example.com/", "http://127.0.0.1:x@example.com/"]) {
+    assert.ok(V.allowed.includes(u), `the vector holds ${u}`);
+    assert.ok(!res.some((re) => re.test(new URL(u).href)), `allowed: ${u}`);
+  }
+  for (const u of ["http://127.0.0.1:8080/", "http://a.localhost:3000/x", "http://u@10.1.1.1:81/", "http://x.local./"]) assert.ok(res.some((re) => re.test(u)), `refused: ${u}`);
+});
+
+test("rules 83 to 86 leave out a worker of a local name (localhost, local, internal): it reaches another local site while a fetch runs; a worker of an IP literal does not (review-46 N2)", () => {
+  assert.deepEqual(FETCH_WORKER_FREE, ["localhost", "local", "internal"]);
+  const res = REFUSED_ADDRESSES.map((p) => new RegExp(p));
+  const host = (o) => new URL(o).hostname;
+  const freed = (initiator) => FETCH_WORKER_FREE.some((d) => host(initiator) === d || host(initiator).endsWith("." + d));
+  for (const c of V.localWorkers) {
+    assert.ok(res.some((re) => re.test(c.url)), `${c.url}: a refused address`);
+    assert.notEqual(host(c.url), host(c.initiator), `${c.url}: another site than ${c.initiator}`);
+    assert.ok(freed(c.initiator), `${c.initiator}: an excluded initiator, so no rule of 83 to 86 matches`);
+  }
+  for (const c of V.ipWorkers) {
+    assert.ok(res.some((re) => re.test(c.url)) && !freed(c.initiator), `${c.initiator}: the side effect that stays (C5)`);
+  }
+  // The fetched page's workers: a public initiator is never left out.
+  assert.ok(!freed("https://www.example.com") && !freed("https://localhost.example.com"));
 });
 
 test("the hello names the feature fetch, and fetch_end is an op of channel main", () => {
   assert.deepEqual(FEATURES, V.features);
   assert.ok(FEATURES.includes("fetch") && FEATURES.includes("act") && FEATURES.includes("scopes"));
   assert.deepEqual(A.features, V.features, "act.json and fetch.json name the same hello");
+});
+
+// ---- review-46: the fix round ----
+
+test("review-46 N1: no fetch window opens while Chrome still lists a cookie store other than the default one (after act_end the act's store can stay a moment); with none left it opens; the act window refuses the same way; a failed read refuses", async () => {
+  const s = await setup();
+  await s.openAct();
+  s.f.otrLingers = true;
+  assert.equal((await s.main(A.endReq)).ok, true, "act_end");
+  assert.ok(!s.f.tabs_.some((t) => t.incognito), "no incognito tab is open");
+  assert.ok(s.f.cookieStores_.some((x) => x.id === "1"), "Chrome still lists the act's store");
+  const before = s.f.callsTo("windows.create").length;
+  assert.equal((await s.answer({ ...V.fetchWindow.req, id: "n1-linger" })).error, "another private window is open");
+  assert.equal(s.f.callsTo("windows.create").length, before, "no window opens");
+  assert.ok(s.f.callsTo("cookies.getAllCookieStores").length > 0, "the receiver read the stores");
+  // Chrome drops the store: the fetch window opens.
+  s.f.cookieStores_ = [{ id: "0", tabIds: [7] }];
+  s.f.otrLingers = false;
+  await s.openFetch({ ...V.fetchWindow.req, id: "n1-open" });
+  // The act window the same way: the fetch's store left after fetch_end refuses it.
+  s.f.otrLingers = true;
+  assert.equal((await s.main(V.endReq)).ok, true, "fetch_end");
+  const acts = s.f.callsTo("windows.create").length;
+  assert.equal((await s.answer({ ...A.actWindow.req, id: "n1-act" })).error, "another private window is open");
+  assert.equal(s.f.callsTo("windows.create").length, acts, "no act window opens");
+  // A failed read of the stores refuses too (fail closed).
+  s.f.cookieStores_ = [{ id: "0", tabIds: [7] }];
+  s.f.impl["cookies.getAllCookieStores"] = async () => {
+    throw new Error("read failed (test)");
+  };
+  assert.equal((await s.answer({ ...V.fetchWindow.req, id: "n1-fail" })).error, "another private window is open");
+  assert.equal((await s.answer({ ...A.actWindow.req, id: "n1-act-fail" })).error, "another private window is open");
+});
+
+// A worker's start with left rules (the fetch's or the act's) and a left incognito tab 65 that does not
+// close: the start's sweep fails and stays owed. Then tab 65 closes, and set_scopes comes.
+async function stuckStart(rules) {
+  let closable = (id) => id !== 65;
+  const s = await setup({
+    tabs: [REGULAR, { id: 65, windowId: 67, incognito: true, url: "https://www.example.com/c" }],
+    scopes: null,
+    beforeStart: (f) => {
+      f.sessionRules_ = structuredClone(rules);
+      f.impl["debugger.sendCommand"] = async (target, method, params) => {
+        if (method !== "Target.closeTarget") return {};
+        const t = f.targets_.find((x) => x.id === params.targetId);
+        if (t && closable(t.tabId)) f.closeTab(t.tabId);
+        return { success: true };
+      };
+      f.impl["tabs.remove"] = async (id) => {
+        if (!closable(id)) throw new Error("No tab with id: " + id);
+        f.closeTab(id);
+      };
+    },
+  });
+  await flush(16);
+  for (let i = 0; i < 6; i++) await s.fire(2000);
+  assert.ok(s.f.tabs_.some((t) => t.id === 65), "the left tab stays: the sweep is owed");
+  closable = () => true;
+  s.f.closeTab(65);
+  await flush();
+  await s.set(V.setScopes);
+  await flush();
+  return s;
+}
+
+test("review-46 N3: a start's sweep that is still owed never ends the other kind: the fetch's owed sweep leaves an act tab, and the act's owed sweep leaves a fetch tab", async () => {
+  const s = await stuckStart(V.rules);
+  assert.equal(fetchRulesIn(s.f).length, V.rules.length, "the left fetch rules stay (fail closed)");
+  await s.openAct();
+  s.send({ ...V.fetchWindow.req, id: "n3-fetch" });
+  await flush(16);
+  for (let i = 0; i < 3; i++) await s.fire(2000);
+  assert.deepEqual(s.resOf("n3-fetch").map((r) => r.error), ["another private window is open"]);
+  assert.ok(s.f.tabs_.some((t) => t.id === ACT_TAB), "the act tab stays");
+  assert.deepEqual(fetchRulesIn(s.f), [], "the owed end removed the left fetch rules");
+  // The other way: the act's owed sweep leaves a fetch tab.
+  const t = await stuckStart(A.rules);
+  assert.equal(t.f.sessionRules_.filter(isActRule).length, A.rules.length, "the left act rules stay (fail closed)");
+  await t.openFetch({ ...V.fetchWindow.req, id: "n3-open" });
+  t.send({ ...A.actWindow.req, id: "n3-act" });
+  await flush(16);
+  for (let i = 0; i < 3; i++) await t.fire(2000);
+  assert.deepEqual(t.resOf("n3-act").map((r) => r.error), ["another private window is open"]);
+  assert.ok(t.f.tabs_.some((x) => x.id === FETCH_TAB), "the fetch tab stays");
+  assert.deepEqual(t.f.sessionRules_.filter(isActRule), [], "the owed end removed the left act rules");
+  assert.deepEqual(fetchRulesIn(t.f), V.rules, "the fetch window's rules stay");
 });
