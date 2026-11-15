@@ -18,10 +18,13 @@
 //
 // The act of the stored sign-ins (act.js): an incognito tab gets no mark and
 // no scope, except an act tab, which has its caller's scope for the list
-// rules (C10, the act window).
+// rules (C10, the act window). The fetch window of PageFetch
+// (fetch-window.js): a fetch tab has no scope and no mark (C10, the fetch
+// window). The act's work and the fetch's work run in one chain (serial).
 import { Act, NOT_AGENT_WINDOW } from "./act.js";
 import { attachments, call } from "./attach.js";
 import { SessionRules } from "./dnr.js";
+import { FetchWindow } from "./fetch-window.js";
 import { Guard } from "./guard.js";
 import { Popups } from "./popups.js";
 import { Removals } from "./removals.js";
@@ -54,6 +57,8 @@ export class Receiver {
   staleKeys = new Set();
   // Act tabs whose join of the act's rules runs: no scope rule names them yet (act.js).
   #joining = new Set();
+  // The one chain of the act's work and the fetch's work (act.js, fetch-window.js).
+  #private = Promise.resolve();
 
   constructor(chrome) {
     this.chrome = chrome;
@@ -72,11 +77,14 @@ export class Receiver {
     this.guard = new Guard(this);
     this.workers = new Workers(this);
     this.act = new Act(this);
+    this.fetchWindow = new FetchWindow(this);
     // The start's one read of the copy gives the record of workers.js back
-    // too, and the act windows of a worker before this one (they close).
+    // too, and the act windows and fetch windows of a worker before this one
+    // (they close).
     this.map.onCopy = (data) => {
       this.workers.restored(data);
       this.act.restored(data);
+      this.fetchWindow.restored(data);
     };
     this.att.holds.onKept = (tabId) => this.popups.paused(tabId);
     this.#listen();
@@ -107,10 +115,23 @@ export class Receiver {
   startup() {
     // The start keeps the act's rules (ids 10 to 77) of a worker before
     // this one until the act's end has closed the act windows and act tabs
-    // of the copy; that end then removes them (C10, the act window).
+    // of the copy; that end then removes them (C10, the act window). The
+    // fetch window's rules (ids 78 to 88) stay the same way until the
+    // fetch's end (C10, the fetch window).
     return this.map.restore(() => this.rules.start()).then(() => {
       if (this.act.open) void this.act.endAtStart().catch(() => {});
+      if (this.fetchWindow.open) void this.fetchWindow.endAtStart().catch(() => {});
     });
+  }
+
+  // The act's work and the fetch's work run one at a time, in one chain: a
+  // window's open, the act's rules and cookies, and each end. So an act
+  // window and a fetch window never both open: the second one's check of
+  // the incognito tabs comes after the first one's window.
+  serial(fn) {
+    const run = this.#private.then(fn);
+    this.#private = run.then(() => {}, () => {});
+    return run;
   }
 
   // The list of a tab's scope under the last set_scopes (for its two rules).
@@ -204,6 +225,18 @@ export class Receiver {
         throw e;
       });
       got.ruled.catch(() => {});
+    } else if (got && got.fetch) {
+      // A tab of a fetch tab is a fetch tab: no bridge.tabScope and no key
+      // tab:<id>, but a key fetchtab:<id>, so a worker that starts again
+      // closes it. It joins the tabIds of the fetch window's rules (the
+      // any-host rule and the blocks of the refused addresses) while they
+      // hold. A join that fails closes it.
+      this.fetchWindow.keepTab(tabId);
+      got.ruled = this.rules.addFetchTab(tabId).catch((e) => {
+        if (!this.map.isGone(tabId)) this.orphanClose(tabId);
+        throw e;
+      });
+      got.ruled.catch(() => {});
     } else if (got && got.mark) {
       got.ruled = this.rules.replaceLists([this.markList()]);
       got.ruled.catch(() => {});
@@ -220,6 +253,12 @@ export class Receiver {
   // windows.create with the mark "act" (C10, the act window): act.js.
   createAct(scope, data, op) {
     return this.act.create(scope, data, op, NO_LIST);
+  }
+
+  // windows.create with the mark "fetch" (C10, the fetch window):
+  // fetch-window.js. The scope needs no list.
+  createFetch(data, op) {
+    return this.fetchWindow.create(data, op);
   }
 
   // tabs.create and windows.create (C10, each tab's scope): the scope of the
@@ -388,6 +427,8 @@ export class Receiver {
     // worker removal's record and check (workers.js).
     c.webNavigation.onCommitted.addListener((d) => this.workers.committed(d));
     c.webNavigation.onErrorOccurred.addListener((d) => this.workers.errorOccurred(d));
+    // A download of a fetch window: the receiver cancels it (fetch-window.js; C10, the fetch window).
+    c.downloads.onCreated.addListener((item) => this.fetchWindow.downloadCreated(item));
   }
 }
 

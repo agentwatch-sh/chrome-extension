@@ -16,6 +16,7 @@
 // content and sign-in values.
 import { ACT_MARK, NOT_AGENT_DOWNLOAD, NOT_AGENT_WINDOW } from "./act.js";
 import { call } from "./attach.js";
+import { FETCH_MARK } from "./fetch-window.js";
 import { covers, normalizeEntry } from "./lib/domains.js";
 import { receiver } from "./receiver.js";
 import { NOT_AGENT_TAB } from "./removals.js";
@@ -82,13 +83,13 @@ const KINDS = {
     isObj(a) && onlyKeys(a, ["url", "active", "windowId", "index"]) && isNewUrl(a.url) &&
     optional(a, "active", isBool) && optional(a, "windowId", isId) && optional(a, "index", isId),
   tabUpdate: (a) => isObj(a) && onlyKeys(a, ["active"]) && isBool(a.active),
-  // An act window's createData has incognito true (the pair rule of windows.create).
+  // An act window's and a fetch window's createData has incognito true (the pair rule of windows.create).
   newWindow: (a) =>
     isObj(a) && onlyKeys(a, ["url", "focused", "left", "top", "width", "height", "state", "incognito"]) && isNewUrl(a.url) &&
     optional(a, "focused", isBool) && ["left", "top", "width", "height"].every((k) => optional(a, k, Number.isInteger)) &&
     optional(a, "incognito", (x) => x === true),
-  // The mark of an act window (C10, the act window).
-  mark: (a) => a === ACT_MARK,
+  // The mark of an act window (C10, the act window) or of a fetch window (C10, the fetch window).
+  mark: (a) => a === ACT_MARK || a === FETCH_MARK,
   windowUpdate: (a) =>
     isObj(a) && Object.keys(a).length > 0 && onlyKeys(a, ["left", "top", "width", "height", "state", "focused"]) &&
     optional(a, "focused", isBool) && ["left", "top", "width", "height"].every((k) => optional(a, k, Number.isInteger)),
@@ -112,27 +113,29 @@ const noSession = (c, tabId) => c.r.map.isOrphan(tabId) || c.r.map.isMarked(tabI
 // The ops by which a client acts on a tab (attach, select, close) refuse the
 // restore tab, a tab of the orphan set and a marked tab. debugger.detach,
 // tabs.get and bridge.release stay allowed. tabs.update and tabs.remove also
-// refuse every incognito tab: the operator's own, and an act tab, which only
-// act_end closes (review-ce44 B1).
+// refuse every incognito tab: the operator's own, an act tab, which only
+// act_end closes (review-ce44 B1), and a fetch tab, which only fetch_end
+// closes.
 const agentTab = (c, [tabId]) => (c.att.isRestoreTab(tabId) || noSession(c, tabId) || c.r.map.isIncognito(tabId) ? NOT_AGENT_TAB : null);
-// debugger.attach takes an act tab (the act's own session), never another incognito tab.
+// debugger.attach takes an act tab or a fetch tab (the service's own session), never another incognito tab.
 const attachTab = (c, [tabId]) => (c.att.isRestoreTab(tabId) || noSession(c, tabId) || c.r.map.isOtherIncognito(tabId) ? NOT_AGENT_TAB : null);
 // A command never goes to a tab of the orphan set or a marked tab, through
 // the import's attachment, or to a tab that the bridge did not attach: not an
 // agent tab first, then not attached (a marked tab is never a bridge tab, so
 // its check is one more layer).
 // A Page.close on the own session of an incognito tab is refused too: only
-// act_end closes an act tab (review-ce44 B1).
+// act_end closes an act tab (review-ce44 B1), and only fetch_end a fetch tab.
 const commandTab = (c, [target, method]) =>
   noSession(c, target.tabId) || (method === "Page.close" && target.sessionId === undefined && c.r.map.isIncognito(target.tabId))
     ? NOT_AGENT_TAB : c.att.isBridgeTab(target.tabId) ? null : "not attached";
-// No client tab goes into an act window, and no op moves or resizes one (the
-// service moves it outside the screen at the X level).
-const newTabWindow = (c, [props]) => (Object.hasOwn(props, "windowId") && c.r.act.isWindow(props.windowId) ? NOT_AGENT_WINDOW : null);
-const agentWindow = (c, [windowId]) => (c.r.act.isWindow(windowId) ? NOT_AGENT_WINDOW : null);
-// An incognito tab is no agent tab, except an act tab: all incognito tabs
-// share the act's context.
-const incognitoTab = (c, tabId, tab) => tab && tab.incognito === true && !c.r.map.isAct(tabId);
+// No client tab goes into an act window or a fetch window, and no op moves
+// or resizes one (the service moves it outside the screen at the X level).
+const serviceWindow = (c, windowId) => c.r.act.isWindow(windowId) || c.r.fetchWindow.isWindow(windowId);
+const newTabWindow = (c, [props]) => (Object.hasOwn(props, "windowId") && serviceWindow(c, props.windowId) ? NOT_AGENT_WINDOW : null);
+const agentWindow = (c, [windowId]) => (serviceWindow(c, windowId) ? NOT_AGENT_WINDOW : null);
+// An incognito tab is no agent tab, except an act tab or a fetch tab (the
+// service's own session attaches it): all incognito tabs share one context.
+const incognitoTab = (c, tabId, tab) => tab && tab.incognito === true && !c.r.map.isServiceTab(tabId);
 
 // A client's Fetch.enable or Fetch.disable on a tab's own session changes
 // the hold of the tab (C10): the hold counts it as it goes to Chrome.
@@ -216,11 +219,14 @@ export const OPS = Object.freeze({
   // Also of an act window: the service reads its place before the act's first key.
   "windows.get": op(["id", "object"], 1, (c, args) => c.chrome.windows.get(...args)),
   // The window's tab gets the scope, as for tabs.create. With the mark "act"
-  // (and incognito true, the pair rule): the act window (act.js).
+  // (and incognito true, the pair rule): the act window (act.js). With the
+  // mark "fetch" (and incognito true): the fetch window (fetch-window.js),
+  // whose tab gets no scope.
   "windows.create": op(["newWindow", "scope", "mark"], 2, (c, [data, scope, mark], o) =>
     (mark === ACT_MARK ? c.r.createAct(scope, data, o)
-      : c.r.createTab(scope, () => c.chrome.windows.create(data), (win) => (win && Array.isArray(win.tabs) && win.tabs[0] ? win.tabs[0].id : null))),
-  { pair: ([data, , mark]) => (mark === ACT_MARK) === Object.hasOwn(data, "incognito") }),
+      : mark === FETCH_MARK ? c.r.createFetch(data, o)
+        : c.r.createTab(scope, () => c.chrome.windows.create(data), (win) => (win && Array.isArray(win.tabs) && win.tabs[0] ? win.tabs[0].id : null))),
+  { pair: ([data, , mark]) => (mark === ACT_MARK || mark === FETCH_MARK) === Object.hasOwn(data, "incognito") }),
   // An incognito window that is no act window (an act popup's, the operator's) is refused too: the receiver reads it first.
   "windows.update": op(["id", "windowUpdate"], 2, (c, [windowId, info]) => call(() => c.chrome.windows.get(windowId)).then((w) => {
     if (w && w.incognito === true) throw new Error(NOT_AGENT_WINDOW);
@@ -244,9 +250,10 @@ export const OPS = Object.freeze({
   // Every entry of the tab-to-scope map at the moment of the answer.
   "bridge.tabScopes": op([], 0, (c) => c.r.map.list()),
   // The merge guard's floor (C5, board ab-v16.99): the hosts and the guarded
-  // tabs, of which only the bridge's own tabs count; it answers when the rule
-  // is in force.
-  "bridge.mergeGuard": op(["mergeGuard"], 1, (c, [g]) => c.r.rules.setGuard(g.hosts, g.tabs.filter((t) => c.att.isBridgeTab(t))), { nullResult: true }),
+  // tabs, of which only the bridge's own tabs count, never a fetch tab (it
+  // never leaves the floor: C5, the fetch window's rules); it answers when
+  // the rule is in force.
+  "bridge.mergeGuard": op(["mergeGuard"], 1, (c, [g]) => c.r.rules.setGuard(g.hosts, g.tabs.filter((t) => c.att.isBridgeTab(t) && !c.r.map.wasFetch(t))), { nullResult: true }),
 });
 
 function argsFit(spec, args, domains) {
@@ -329,6 +336,8 @@ export class Bridge {
     // The act ends at a link change: the service's session on the act tab
     // ended with the detaches (act.js; no chrome call when no act is open).
     void this.#r.act.linkChanged();
+    // And the fetch window (fetch-window.js; no chrome call when none is open).
+    void this.#r.fetchWindow.linkChanged();
     return detached;
   }
 

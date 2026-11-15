@@ -121,7 +121,8 @@ export class Popups {
   adopted(tabId, got) {
     const p = this.#popups.get(tabId);
     if (!p) return;
-    if (!got || got.orphan) {
+    // A popup of a fetch tab has no scope either (C10, the fetch window).
+    if (!got || got.orphan || got.fetch) {
       p.scope = null;
       return;
     }

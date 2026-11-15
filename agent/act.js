@@ -35,6 +35,31 @@ const KEY = /^act:(0|[1-9][0-9]{0,15})$/;
 const TAB_KEY = /^acttab:(0|[1-9][0-9]{0,15})$/;
 // The cookie store of the default context: act_cookies never reads it.
 const DEFAULT_STORE = "0";
+
+// The off-the-record cookie store's id, and Chrome's answer for it while no
+// off-the-record profile exists (extensions/browser/api/cookies: cookies_api.cc,
+// kInvalidStoreIdError and ParseStoreContext; cookies_helpers.cc,
+// ChooseBrowserContextFromStoreId, which asks HasOffTheRecordContext first and
+// so never creates the profile).
+const OTR_STORE = "1";
+export const NO_OTR_STORE = 'Invalid cookie store id: "1".';
+
+// Chrome still holds the off-the-record profile: after the last incognito tab
+// closes, ProfileDestroyer keeps it up to about 1 s, and a new incognito
+// window in that time would share its cookies (an act's sign-in session).
+// getAllCookieStores cannot see it (it lists a store only with an open tab),
+// so the receiver probes the store: an answer means the profile is there;
+// exactly NO_OTR_STORE means it is not; any other error means it may be
+// (fail closed). No act window and no fetch window opens while it is there
+// (review-46 N1, review-46b B1).
+export async function offTheRecordHeld(chrome) {
+  try {
+    await call(() => chrome.cookies.getAll({ storeId: OTR_STORE }));
+    return true;
+  } catch (e) {
+    return !(e && e.message === NO_OTR_STORE);
+  }
+}
 // The bridge's error texts of the act window (C10).
 export const ANOTHER_PRIVATE = "another private window is open";
 export const NO_INCOGNITO = "not allowed in incognito";
@@ -85,8 +110,7 @@ export function toPayloadCookie(c) {
 }
 
 export class Act {
-  #r; // the Receiver: chrome, map, rules, removals, listName
-  #chain = Promise.resolve();
+  #r; // the Receiver: chrome, map, rules, removals, listName, serial
   #windows = new Set(); // the act windows
   #tabs = new Set(); // the act popups and replaced act tabs with a key acttab:<id> (and those of the copy at the start)
   // From a start with an act's rules (or an act in the copy) to the end that
@@ -119,11 +143,11 @@ export class Act {
     void call(() => this.#chrome.storage.session.set({ [ACT_TAB_KEY + tabId]: true })).catch(() => {});
   }
 
-  // The act's work runs one at a time: the window, the rules, the cookies, the end.
+  // The act's work runs one at a time: the window, the rules, the cookies,
+  // the end; in one chain with the fetch window's work (Receiver.serial), so
+  // an act window and a fetch window never both open.
   #run(fn) {
-    const run = this.#chain.then(fn);
-    this.#chain = run.then(() => {}, () => {});
-    return run;
+    return this.#r.serial(fn);
   }
 
   // ---- the act window (C10 windows.create with the mark "act") ----
@@ -148,9 +172,11 @@ export class Act {
       } catch (e) {
         throw new Error(e && e.message === RULES_NOT_REMOVED ? RULES_NOT_REMOVED : ANOTHER_PRIVATE);
       }
-      // All incognito windows share one context: no other may be open.
+      // All incognito windows share one context: no other may be open (a fetch window neither).
       const tabs = await call(() => this.#chrome.tabs.query({}));
       if ((Array.isArray(tabs) ? tabs : []).some((t) => t && t.incognito === true)) throw new Error(ANOTHER_PRIVATE);
+      // Nor may Chrome still hold that context with no tab (review-46 N1, review-46b B1).
+      if (await offTheRecordHeld(this.#chrome)) throw new Error(ANOTHER_PRIVATE);
       if (op.stale()) throw new Error("detached");
       const win = await call(() => this.#chrome.windows.create(data));
       const tab = win && Array.isArray(win.tabs) ? win.tabs[0] : null;
@@ -272,8 +298,12 @@ export class Act {
     // acttab:<id>, and an incognito tab whose opener is one of them (a popup
     // whose navigation target has not come yet; review-ce44 N2).
     const known = (id) => r.map.isAct(id) || r.map.wasAct(id) || tabs.has(id);
+    // The start's sweep takes every incognito tab but a fetch tab of this
+    // worker and a popup of one: an act never ends a fetch window, also when
+    // a failed start's sweep is still owed (review-46 N3).
     const sweepAll = this.#sweepAll;
-    const ofAct = (t) => t && Number.isInteger(t.id) && (r.map.isAct(t.id) || (t.incognito === true && (sweepAll ||
+    const ofFetch = (t) => r.map.wasFetch(t.id) || (Number.isInteger(t.openerTabId) && r.map.wasFetch(t.openerTabId));
+    const ofAct = (t) => t && Number.isInteger(t.id) && (r.map.isAct(t.id) || (t.incognito === true && ((sweepAll && !ofFetch(t)) ||
       windows.has(t.windowId) || tabs.has(t.id) || (Number.isInteger(t.openerTabId) && known(t.openerTabId)))));
     let closed = 0;
     if (sweepAll || windows.size > 0 || tabs.size > 0 || r.map.acts().length > 0) {

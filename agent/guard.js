@@ -25,7 +25,9 @@
 // each see it.
 //
 // No log line holds a URL or a host, and no notice comes from an act tab or
-// from another incognito tab; the guard never acts on the latter.
+// from another incognito tab; the guard never acts on the latter. The guard
+// skips a fetch tab of PageFetch (C10, the fetch window): no about:blank and
+// no notice, because the scope's list does not apply to it (C5).
 import { call } from "./attach.js";
 import { covers } from "./lib/domains.js";
 import { BLOCKED } from "./popups.js";
@@ -150,6 +152,8 @@ export class Guard {
     // it, and no notice names its host; static rule 1 still blocks its main
     // frames (C5; review-ce44 B1).
     if (this.#r.map.isOtherIncognito(tabId)) return;
+    // A fetch tab (and one that closed a moment before): its main frame may load any host (C5).
+    if (this.#r.map.wasFetch(tabId)) return;
     // A tab that the map does not know (no entry, no mark, no orphan
     // membership, not the restore tab): Chrome can start the navigation of a
     // tab that it creates with a URL before its tabs.onCreated, so the guard
@@ -157,7 +161,7 @@ export class Guard {
     // (review-ce44b R2). A read that fails acts as before.
     if (this.#plain(tabId)) {
       void call(() => this.#r.chrome.tabs.get(tabId)).then((t) => t, () => null).then((t) => {
-        if (t && t.incognito === true && !this.#r.map.isAct(tabId)) {
+        if (t && t.incognito === true && !this.#r.map.isServiceTab(tabId)) {
           this.#r.map.noteTab(t);
           return;
         }
@@ -182,14 +186,15 @@ export class Guard {
 
   // Sends blocked (C4), at most once per navigation of the tab. An act tab
   // of the sign-in act (and one that closed a moment before) sends none: a
-  // host that its page chooses can carry the password (C5; act.js).
+  // host that its page chooses can carry the password (C5; act.js). A fetch
+  // tab sends none either: the scope's list does not apply to it.
   send(n) {
-    if (this.#r.map.wasAct(n.tab) || this.#r.map.isOtherIncognito(n.tab)) return;
+    if (this.#r.map.wasAct(n.tab) || this.#r.map.wasFetch(n.tab) || this.#r.map.isOtherIncognito(n.tab)) return;
     // A tab that the map does not know: the notice waits for a read of the
     // tab, and an incognito tab that is no act tab gets none (review-ce44b R2).
     if (this.#plain(n.tab)) {
       void call(() => this.#r.chrome.tabs.get(n.tab)).then((t) => t, () => null).then((t) => {
-        if (t && t.incognito === true && !this.#r.map.isAct(n.tab)) {
+        if (t && t.incognito === true && !this.#r.map.isServiceTab(n.tab)) {
           this.#r.map.noteTab(t);
           return;
         }
