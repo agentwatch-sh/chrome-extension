@@ -9,8 +9,8 @@
 // key tab:<id> (tabmap.js): the scope's list does not apply to it, so the
 // window opens also for a scope with no list. Its main frame may load any
 // host (C5, the fetch window's rules: rule 78, of rule 8's kind), the guard
-// skips it (guard.js), and rules 79 to 86 block every request to a refused
-// address. No connection sees it: bridge.tabScopes leaves it out, and no
+// skips it (guard.js), rules 79 to 86 block every request to a refused
+// address, and rules 87 and 88 block every WebSocket and WebTransport. No connection sees it: bridge.tabScopes leaves it out, and no
 // bridge.tabScope names it. A popup of a fetch tab is a fetch tab.
 //
 // - The fetch window: the receiver must be allowed in incognito; before it
@@ -24,9 +24,12 @@
 // - fetch_end (C4, channel main): every fetch tab closes first, then the
 //   fetch window's rules go.
 // - A link change ends the fetch window, and so does the worker's start.
+// - A download of a fetch window is cancelled by the receiver (review-168
+//   B2): Chrome's DownloadItem names no tab, and while a fetch window is open
+//   every incognito tab belongs to it, so each incognito download then goes.
 //
 // No log line holds a URL, a host or a value of the page.
-import { ANOTHER_PRIVATE, NO_INCOGNITO, RULES_NOT_HELD, RULES_NOT_REMOVED, otherCookieStore } from "./act.js";
+import { ANOTHER_PRIVATE, NO_INCOGNITO, RULES_NOT_HELD, RULES_NOT_REMOVED, offTheRecordHeld } from "./act.js";
 import { call } from "./attach.js";
 
 export const FETCH_MARK = "fetch";
@@ -98,8 +101,8 @@ export class FetchWindow {
       if ((Array.isArray(tabs) ? tabs : []).some((t) => t && t.incognito === true)) throw new Error(ANOTHER_PRIVATE);
       // Nor may Chrome still hold that context with no tab: right after an
       // act_end it can hold the act's cookies, the operator's sign-in session
-      // (review-46 N1).
-      if (await otherCookieStore(this.#chrome)) throw new Error(ANOTHER_PRIVATE);
+      // (review-46 N1, review-46b B1).
+      if (await offTheRecordHeld(this.#chrome)) throw new Error(ANOTHER_PRIVATE);
       if (op.stale()) throw new Error("detached");
       const win = await call(() => this.#chrome.windows.create(data));
       const tab = win && Array.isArray(win.tabs) ? win.tabs[0] : null;
@@ -203,6 +206,17 @@ export class FetchWindow {
       await call(() => this.#chrome.storage.session.remove(keys)).catch(() => {});
     }
     return { closed };
+  }
+
+  // ---- downloads ----
+
+  // downloads.onCreated: an incognito download while a fetch window, a fetch
+  // tab or the fetch window's rules are there is the fetch's (no act window
+  // is open then), and the receiver cancels it at once. A cancel that fails
+  // logs one line with no URL; the item's own state shows the rest.
+  downloadCreated(item) {
+    if (!item || item.incognito !== true || !Number.isInteger(item.id) || !this.open) return;
+    void call(() => this.#chrome.downloads.cancel(item.id)).catch(() => console.warn("agentwatch receiver: a download of the fetch window was not cancelled"));
   }
 
   // ---- the link and the worker ----

@@ -24,7 +24,8 @@
 //   address: a local or private IP literal, or a *.localhost, *.local or
 //   *.internal host. 79 to 82 in the fetch tabs, 83 to 86 in each request
 //   with no tab (a service worker or a shared worker) that goes to another
-//   site than its initiator. Priority 6 (block), above every allow rule.
+//   site than its initiator. Rules 87 and 88 block every WebSocket and
+//   WebTransport the same way. Priority 6 (block), above every allow rule.
 // - the merge guard's floor, rule 9 (C5; board ab-v16.99): it blocks every
 //   request to a guarded host (GitHub's, and the hosts that bridge.mergeGuard
 //   adds) whose method is not GET, HEAD or OPTIONS (a write), in every tab and
@@ -76,7 +77,8 @@ export const ACT_BLOCK_PRIORITY = 4;
 export const ACT_ALLOW_PRIORITY = 5;
 // The fetch window's rules (C5, PageFetch; board ab-v16.102): the any-host
 // rule 78, then for each pattern of REFUSED_ADDRESSES one rule in the fetch
-// tabs (79 to 82) and one for the requests with no tab (83 to 86).
+// tabs (79 to 82) and one for the requests with no tab (83 to 86), then the
+// socket blocks 87 and 88.
 export const FETCH_RULE_ID = 78;
 export const FETCH_BLOCK_FIRST = 79;
 export const FETCH_BLOCK_PRIORITY = 6;
@@ -102,7 +104,15 @@ export const REFUSED_ADDRESSES = Object.freeze([
   // localhost, local and internal, and every name under them.
   "^[a-z]+://([^/?#@]*@)?([^/?#@:]*\\.)?(localhost|local|internal)\\.?(:[0-9]+)?/",
 ]);
-export const FETCH_RULE_MAX = FETCH_BLOCK_FIRST + 2 * REFUSED_ADDRESSES.length - 1;
+// The socket blocks (review-168 B1): rule 87 blocks every WebSocket and
+// WebTransport of the fetch tabs, rule 88 each one with no tab as rules 83 to
+// 86 match (another site, no initiator of FETCH_WORKER_FREE). A WebSocket to a
+// public name that resolves to a private address gets no address check (the
+// patterns judge the host's text, and the service's request interception does
+// not see WebSockets), and a fetched page needs none.
+export const FETCH_SOCKET_RULE = FETCH_BLOCK_FIRST + 2 * REFUSED_ADDRESSES.length;
+export const FETCH_SOCKET_TYPES = Object.freeze(["websocket", "webtransport"]);
+export const FETCH_RULE_MAX = FETCH_SOCKET_RULE + 1;
 // The initiators that rules 83 to 86 (the requests with no tab) leave out,
 // with every name under them: a fetch window never has a worker there (its
 // documents on these hosts are blocked), so a worker of an agent's own local
@@ -197,6 +207,9 @@ export function fetchRules(tabIds) {
   });
   REFUSED_ADDRESSES.forEach((re, i) => rules.push(block(FETCH_BLOCK_FIRST + i, re, { tabIds: [...tabIds] })));
   REFUSED_ADDRESSES.forEach((re, i) => rules.push(block(FETCH_BLOCK_FIRST + REFUSED_ADDRESSES.length + i, re, { tabIds: [NO_TAB], domainType: "thirdParty", excludedInitiatorDomains: [...FETCH_WORKER_FREE] })));
+  const sockets = (id, more) => ({ id, priority: FETCH_BLOCK_PRIORITY, action: { type: "block" }, condition: { resourceTypes: [...FETCH_SOCKET_TYPES], ...more } });
+  rules.push(sockets(FETCH_SOCKET_RULE, { tabIds: [...tabIds] }));
+  rules.push(sockets(FETCH_SOCKET_RULE + 1, { tabIds: [NO_TAB], domainType: "thirdParty", excludedInitiatorDomains: [...FETCH_WORKER_FREE] }));
   return rules;
 }
 

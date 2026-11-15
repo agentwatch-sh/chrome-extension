@@ -164,14 +164,20 @@ test("an act window and a fetch window never both open: each refuses while the o
   assert.equal(t.f.tabs_.filter((x) => x.incognito).length, 1);
 });
 
-test("a left fetch window ends before the next one (a crash of the service left it): its tab closes by the receiver's close, its rules and its key go", async () => {
+test("a left fetch window ends before the next one (a crash of the service left it): its tab closes by the receiver's close, its rules and its key go; while Chrome still holds the off-the-record profile the window waits (review-46b B1)", async () => {
   const s = await setup();
   await s.openFetch();
   s.f.nextWindow = { ...WIN, id: 63, tabs: [{ ...WIN.tabs[0], id: 64, windowId: 63 }] };
-  const res = await s.answer({ ...V.fetchWindow.req, id: "second" });
-  assert.equal(res.ok, true, "the second fetch window");
+  s.f.otrLingerMs = 60000;
+  const wait = await s.answer({ ...V.fetchWindow.req, id: "second" });
+  assert.equal(wait.error, "another private window is open", "the left window's profile still lives: its cookies would be shared");
   assert.deepEqual(s.f.callsTo("debugger.sendCommand").filter(([, m]) => m === "Target.closeTarget").map(([t]) => t.tabId), [FETCH_TAB], "the left fetch tab closed, with no beforeunload");
   assert.ok(!s.f.tabs_.some((t) => t.id === FETCH_TAB));
+  assert.deepEqual(fetchRulesIn(s.f), [], "the left fetch window's rules went");
+  assert.deepEqual(s.f.storage_.session, {});
+  s.f.dropOtr();
+  const res = await s.answer({ ...V.fetchWindow.req, id: "third" });
+  assert.equal(res.ok, true, "the next fetch window, once Chrome dropped the profile");
   assert.deepEqual(fetchRulesIn(s.f), fetchRules([64]), "the rules name the new fetch tab only");
   assert.deepEqual(s.f.storage_.session, { "fetch:63": true });
   assert.equal(s.r.map.isFetch(64), true);
@@ -279,7 +285,7 @@ test("a link change ends the fetch window: its tab closes and its rules go; with
   assert.ok(!callsSince(s.f, mark).some(([p, a]) => p === "declarativeNetRequest.updateSessionRules" && (a.removeRuleIds ?? []).includes(FETCH_RULE_ID)), "no removal of fetch rules");
 });
 
-test("the worker's start keeps the fetch window's rules 78 to 86 until every incognito tab closed (the copy's fetch window and fetch popup, and a tab whose key never came), then removes them", async () => {
+test("the worker's start keeps the fetch window's rules 78 to 88 until every incognito tab closed (the copy's fetch window and fetch popup, and a tab whose key never came), then removes them", async () => {
   const left = { id: FETCH_TAB, windowId: WIN.id, incognito: true, url: "https://www.example.com/a" };
   const popup = { id: 62, windowId: 66, incognito: true, url: "https://www.example.com/b" };
   const nokey = { id: 65, windowId: 67, incognito: true, url: "https://www.example.com/c" };
@@ -337,7 +343,7 @@ test("a full replace after a failed start keeps the fetch window's rules until t
   const r2 = new SessionRules(g.chrome, () => new Map());
   await r2.start();
   assert.equal(r2.fetching, true);
-  assert.deepEqual(g.sessionRules_.filter(isFetchRule), V.rules, "the start's removal leaves ids 78 to 86");
+  assert.deepEqual(g.sessionRules_.filter(isFetchRule), V.rules, "the start's removal leaves ids 78 to 88");
 });
 
 // ---- the fetch tabs: popups, hiding, the guard, the sweep, the floor ----
@@ -352,7 +358,8 @@ test("a popup of a fetch tab is a fetch tab: no scope, no bridge.tabScope, its k
   assert.deepEqual(s.r.map.list(), []);
   assert.ok(!s.evs().some((e) => e.ev === "bridge.tabScope"));
   assert.deepEqual(s.f.storage_.session, { ...V.fetchWindow.copy, "fetchtab:62": true });
-  for (const r of fetchRulesIn(s.f)) assert.deepEqual(r.condition.tabIds, r.id >= FETCH_BLOCK_FIRST + REFUSED_ADDRESSES.length ? [-1] : [FETCH_TAB, 62], `rule ${r.id}`);
+  const noTab = (id) => (id >= FETCH_BLOCK_FIRST + REFUSED_ADDRESSES.length && id < FETCH_BLOCK_FIRST + 2 * REFUSED_ADDRESSES.length) || id === FETCH_RULE_MAX;
+  for (const r of fetchRulesIn(s.f)) assert.deepEqual(r.condition.tabIds, noTab(r.id) ? [-1] : [FETCH_TAB, 62], `rule ${r.id}`);
   // A popup of a fetch tab that closed a moment before is a fetch tab too.
   s.f.closeTab(62);
   await flush();
@@ -433,10 +440,16 @@ test("the merge guard's floor holds for a fetch tab: bridge.mergeGuard cannot ma
 
 test("the fetch window's rules: rule 78 is rule 8's kind with no host condition; each block refuses every URL of refused and none of allowed, in the fetch tabs and with no tab to another site", () => {
   assert.deepEqual(V.rules, fetchRules([FETCH_TAB]));
-  const [allow, ...blocks] = V.rules;
+  const [allow, ...rest] = V.rules;
+  const blocks = rest.slice(0, 8);
   assert.deepEqual(allow, { id: 78, priority: 2, action: { type: "allow" }, condition: { resourceTypes: ["main_frame", "sub_frame", "object"], tabIds: [FETCH_TAB] } });
   assert.deepEqual(blocks.map((r) => r.id), [79, 80, 81, 82, 83, 84, 85, 86]);
-  assert.equal(FETCH_RULE_MAX, 86);
+  assert.equal(FETCH_RULE_MAX, 88);
+  // The socket blocks (review-168 B1): every WebSocket and WebTransport of the fetch tabs, and each one with no tab as 83 to 86 match.
+  assert.deepEqual(rest.slice(8), [
+    { id: 87, priority: 6, action: { type: "block" }, condition: { resourceTypes: ["websocket", "webtransport"], tabIds: [FETCH_TAB] } },
+    { id: 88, priority: 6, action: { type: "block" }, condition: { resourceTypes: ["websocket", "webtransport"], tabIds: [-1], domainType: "thirdParty", excludedInitiatorDomains: ["localhost", "local", "internal"] } },
+  ]);
   for (const r of blocks) {
     assert.equal(r.priority, FETCH_BLOCK_PRIORITY);
     assert.equal(r.priority, 6, "above every allow rule");
@@ -494,34 +507,34 @@ test("the hello names the feature fetch, and fetch_end is an op of channel main"
 
 // ---- review-46: the fix round ----
 
-test("review-46 N1: no fetch window opens while Chrome still lists a cookie store other than the default one (after act_end the act's store can stay a moment); with none left it opens; the act window refuses the same way; a failed read refuses", async () => {
+test("review-46 N1 and 46b B1: no window opens while Chrome still holds the off-the-record profile (after act_end it lives a moment, with the act's cookies, and getAllCookieStores no longer lists it); the probe's exact error lets it open; the act window refuses the same way; any other error or answer refuses", async () => {
   const s = await setup();
   await s.openAct();
-  s.f.otrLingers = true;
+  s.f.cookies_ = [{ name: "aw_act_test", value: "test-act-value-1", domain: "staging.example.com", path: "/", storeId: "1" }];
+  s.f.otrLingerMs = 60000;
   assert.equal((await s.main(A.endReq)).ok, true, "act_end");
   assert.ok(!s.f.tabs_.some((t) => t.incognito), "no incognito tab is open");
-  assert.ok(s.f.cookieStores_.some((x) => x.id === "1"), "Chrome still lists the act's store");
+  assert.deepEqual(await s.f.chrome.cookies.getAllCookieStores(), [{ id: "0", tabIds: [7] }], "Chrome lists no other store: a list cannot see the profile");
   const before = s.f.callsTo("windows.create").length;
   assert.equal((await s.answer({ ...V.fetchWindow.req, id: "n1-linger" })).error, "another private window is open");
   assert.equal(s.f.callsTo("windows.create").length, before, "no window opens");
-  assert.ok(s.f.callsTo("cookies.getAllCookieStores").length > 0, "the receiver read the stores");
-  // Chrome drops the store: the fetch window opens.
-  s.f.cookieStores_ = [{ id: "0", tabIds: [7] }];
-  s.f.otrLingers = false;
+  assert.ok(s.f.callsTo("cookies.getAll").some(([f]) => f.storeId === "1" && !f.domain), "the receiver probed the off-the-record store");
+  // Chrome drops the profile: the probe gets Chrome's exact error, and the fetch window opens.
+  s.f.dropOtr();
   await s.openFetch({ ...V.fetchWindow.req, id: "n1-open" });
-  // The act window the same way: the fetch's store left after fetch_end refuses it.
-  s.f.otrLingers = true;
+  // The act window the same way: the fetch's profile right after fetch_end refuses it.
   assert.equal((await s.main(V.endReq)).ok, true, "fetch_end");
   const acts = s.f.callsTo("windows.create").length;
   assert.equal((await s.answer({ ...A.actWindow.req, id: "n1-act" })).error, "another private window is open");
   assert.equal(s.f.callsTo("windows.create").length, acts, "no act window opens");
-  // A failed read of the stores refuses too (fail closed).
-  s.f.cookieStores_ = [{ id: "0", tabIds: [7] }];
-  s.f.impl["cookies.getAllCookieStores"] = async () => {
-    throw new Error("read failed (test)");
-  };
-  assert.equal((await s.answer({ ...V.fetchWindow.req, id: "n1-fail" })).error, "another private window is open");
-  assert.equal((await s.answer({ ...A.actWindow.req, id: "n1-act-fail" })).error, "another private window is open");
+  s.f.dropOtr();
+  // Any other error of the probe refuses (fail closed); so does an answer of any form.
+  for (const [id, probe] of [["n1-other", async () => { throw new Error("Invalid cookie store id: \"2\"."); }], ["n1-plain", async () => { throw "no Error"; }], ["n1-null", async () => null], ["n1-obj", async () => ({})]]) {
+    s.f.impl["cookies.getAll"] = probe;
+    assert.equal((await s.answer({ ...V.fetchWindow.req, id })).error, "another private window is open", id);
+    assert.equal((await s.answer({ ...A.actWindow.req, id: id + "-act" })).error, "another private window is open", id + "-act");
+  }
+  assert.equal(s.f.callsTo("windows.create").length, acts, "no window opened");
 });
 
 // A worker's start with left rules (the fetch's or the act's) and a left incognito tab 65 that does not
@@ -577,4 +590,36 @@ test("review-46 N3: a start's sweep that is still owed never ends the other kind
   assert.ok(t.f.tabs_.some((x) => x.id === FETCH_TAB), "the fetch tab stays");
   assert.deepEqual(t.f.sessionRules_.filter(isActRule), [], "the owed end removed the left act rules");
   assert.deepEqual(fetchRulesIn(t.f), V.rules, "the fetch window's rules stay");
+});
+
+// ---- review-168: the downloads of a fetch window ----
+
+test("review-168 B2: the receiver cancels every incognito download while a fetch window is open (DownloadItem names no tab); no download of the default context, and none when no fetch window is there", async () => {
+  const s = await setup();
+  const fire = async (item) => {
+    s.f.chrome.downloads.onCreated.fire(item);
+    await flush();
+  };
+  // No fetch window: the operator's incognito download stays (the bridge still refuses a client's cancel of it).
+  await fire({ id: 41, incognito: true, state: "in_progress" });
+  assert.deepEqual(s.f.callsTo("downloads.cancel"), []);
+  await s.openFetch();
+  await fire({ id: 42, incognito: true, state: "in_progress" });
+  await fire({ id: 43, incognito: false, state: "in_progress" });
+  assert.deepEqual(s.f.callsTo("downloads.cancel"), [[42]], "the fetch window's download is cancelled, a download of the default context is not");
+  assert.ok(s.evs().some((e) => e.ev === "downloads.onCreated" && e.item.id === 42), "the event still reaches the relay");
+  assert.equal((await s.answer({ id: "dc", op: "downloads.cancel", args: [42] })).ok, true, "a client's cancel of a download that is no incognito one in the fake's search goes as before");
+  // A cancel that fails logs a line and changes nothing else.
+  s.f.impl["downloads.cancel"] = async () => {
+    throw new Error("Download must be in progress");
+  };
+  await fire({ id: 44, incognito: true, state: "in_progress" });
+  delete s.f.impl["downloads.cancel"];
+  // After fetch_end (and with an act window instead) no incognito download is the fetch's.
+  assert.equal((await s.main(V.endReq)).ok, true);
+  const n = s.f.callsTo("downloads.cancel").length;
+  await fire({ id: 45, incognito: true, state: "in_progress" });
+  await s.openAct();
+  await fire({ id: 46, incognito: true, state: "in_progress" });
+  assert.equal(s.f.callsTo("downloads.cancel").length, n, "no cancel after the fetch window's end, and none for an act");
 });

@@ -36,17 +36,28 @@ const TAB_KEY = /^acttab:(0|[1-9][0-9]{0,15})$/;
 // The cookie store of the default context: act_cookies never reads it.
 const DEFAULT_STORE = "0";
 
-// A cookie store other than the default context's is listed (or the read
-// fails): Chrome still holds an off-the-record profile, for example for a
-// moment after the last incognito tab of an act or a fetch closed, or for the
-// operator's private window. A new act window or fetch window would share
-// its cookies (an act's sign-in session), so neither opens (review-46 N1).
-export async function otherCookieStore(chrome) {
+// The off-the-record cookie store's id, and Chrome's answer for it while no
+// off-the-record profile exists (extensions/browser/api/cookies: cookies_api.cc,
+// kInvalidStoreIdError and ParseStoreContext; cookies_helpers.cc,
+// ChooseBrowserContextFromStoreId, which asks HasOffTheRecordContext first and
+// so never creates the profile).
+const OTR_STORE = "1";
+export const NO_OTR_STORE = 'Invalid cookie store id: "1".';
+
+// Chrome still holds the off-the-record profile: after the last incognito tab
+// closes, ProfileDestroyer keeps it up to about 1 s, and a new incognito
+// window in that time would share its cookies (an act's sign-in session).
+// getAllCookieStores cannot see it (it lists a store only with an open tab),
+// so the receiver probes the store: an answer means the profile is there;
+// exactly NO_OTR_STORE means it is not; any other error means it may be
+// (fail closed). No act window and no fetch window opens while it is there
+// (review-46 N1, review-46b B1).
+export async function offTheRecordHeld(chrome) {
   try {
-    const stores = await call(() => chrome.cookies.getAllCookieStores());
-    return (Array.isArray(stores) ? stores : []).some((s) => !s || s.id !== DEFAULT_STORE);
-  } catch {
+    await call(() => chrome.cookies.getAll({ storeId: OTR_STORE }));
     return true;
+  } catch (e) {
+    return !(e && e.message === NO_OTR_STORE);
   }
 }
 // The bridge's error texts of the act window (C10).
@@ -164,8 +175,8 @@ export class Act {
       // All incognito windows share one context: no other may be open (a fetch window neither).
       const tabs = await call(() => this.#chrome.tabs.query({}));
       if ((Array.isArray(tabs) ? tabs : []).some((t) => t && t.incognito === true)) throw new Error(ANOTHER_PRIVATE);
-      // Nor may Chrome still hold that context with no tab (review-46 N1).
-      if (await otherCookieStore(this.#chrome)) throw new Error(ANOTHER_PRIVATE);
+      // Nor may Chrome still hold that context with no tab (review-46 N1, review-46b B1).
+      if (await offTheRecordHeld(this.#chrome)) throw new Error(ANOTHER_PRIVATE);
       if (op.stale()) throw new Error("detached");
       const win = await call(() => this.#chrome.windows.create(data));
       const tab = win && Array.isArray(win.tabs) ? win.tabs[0] : null;

@@ -116,7 +116,7 @@ export class Receiver {
     // The start keeps the act's rules (ids 10 to 77) of a worker before
     // this one until the act's end has closed the act windows and act tabs
     // of the copy; that end then removes them (C10, the act window). The
-    // fetch window's rules (ids 78 to 86) stay the same way until the
+    // fetch window's rules (ids 78 to 88) stay the same way until the
     // fetch's end (C10, the fetch window).
     return this.map.restore(() => this.rules.start()).then(() => {
       if (this.act.open) void this.act.endAtStart().catch(() => {});
@@ -427,6 +427,8 @@ export class Receiver {
     // worker removal's record and check (workers.js).
     c.webNavigation.onCommitted.addListener((d) => this.workers.committed(d));
     c.webNavigation.onErrorOccurred.addListener((d) => this.workers.errorOccurred(d));
+    // A download of a fetch window: the receiver cancels it (fetch-window.js; C10, the fetch window).
+    c.downloads.onCreated.addListener((item) => this.fetchWindow.downloadCreated(item));
   }
 }
 

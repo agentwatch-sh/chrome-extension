@@ -1,5 +1,5 @@
 {
- "contract": "C4, C5 and C10 of docs/protocol.md: the receiver's part of PageFetch (board ab-v16.102; agent-browser's PageFetch design, sections 5.3 and 5.4). The fetch window (C10 windows.create with the mark fetch, for a scope that may have no list), the fetch window's rules (C5: rule 78 and the blocks of the refused addresses, 79 to 86), fetch_end (C4) and the hello's feature fetch. refused and allowed: the URLs that the blocks refuse and let pass, measured in Chromium 156's own DNR engine (C5). Every value is a sample.",
+ "contract": "C4, C5 and C10 of docs/protocol.md: the receiver's part of PageFetch (board ab-v16.102; agent-browser's PageFetch design, sections 5.3 and 5.4). The fetch window (C10 windows.create with the mark fetch, for a scope that may have no list), the fetch window's rules (C5: rule 78, the blocks of the refused addresses, 79 to 86, and the socket blocks 87 and 88), fetch_end (C4) and the hello's feature fetch. refused and allowed: the URLs that the blocks refuse and let pass, measured in Chromium 156's own DNR engine (C5). Every value is a sample.",
  "setScopes": {
   "lists": {
    "md": [
@@ -356,6 +356,44 @@
      "webtransport",
      "webbundle",
      "other"
+    ],
+    "tabIds": [
+     -1
+    ],
+    "domainType": "thirdParty",
+    "excludedInitiatorDomains": [
+     "localhost",
+     "local",
+     "internal"
+    ]
+   }
+  },
+  {
+   "id": 87,
+   "priority": 6,
+   "action": {
+    "type": "block"
+   },
+   "condition": {
+    "resourceTypes": [
+     "websocket",
+     "webtransport"
+    ],
+    "tabIds": [
+     61
+    ]
+   }
+  },
+  {
+   "id": 88,
+   "priority": 6,
+   "action": {
+    "type": "block"
+   },
+   "condition": {
+    "resourceTypes": [
+     "websocket",
+     "webtransport"
     ],
     "tabIds": [
      -1

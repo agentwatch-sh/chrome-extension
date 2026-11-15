@@ -2106,7 +2106,7 @@ test("C4 states PageFetch's fetch window: the feature fetch by membership, fetch
     "Else the fetch window's rules go (C5; a call that fails answers `rules not removed`, and they stay)",
     "The order of `fetch_end` is the order of `act_end`: first the tabs, then the rules.",
     "A link change and the worker's start end the fetch window too (C10, the fetch window).",
-    "while Chrome still lists its cookie store, a new fetch window or act window answers `another private window is open` (C10), and the caller tries again on its lock (review-46 N1).",
+    "while Chrome still holds the context, a new fetch window or act window answers `another private window is open` (C10, the receiver's probe), and the caller tries again on its lock (review-46 N1, review-46b B1).",
     "The shared vector: `test/vectors/fetch.json`",
   ]) assert.ok(says(part, s), `C4 says: ${s}`);
   for (const e of fetchV.errors.main) assert.ok(part.includes("`" + e + "`"), `C4 names the error ${e}`);
@@ -2119,7 +2119,7 @@ test("C4 states PageFetch's fetch window: the feature fetch by membership, fetch
 test("C5 states the fetch window's rules with the code's ids, priorities, patterns and ranges, their life, the guard's skip, the floor, the limits and the measure", async () => {
   const { FETCH_RULE_ID, FETCH_BLOCK_FIRST, FETCH_BLOCK_PRIORITY, FETCH_RULE_MAX, REFUSED_ADDRESSES, fetchRules } = await import("../agent/dnr.js");
   assert.deepEqual(fetchV.rules, fetchRules([fetchV.fetchWindow.res.data.tabs[0].id]));
-  assert.deepEqual([FETCH_RULE_ID, FETCH_BLOCK_FIRST, FETCH_BLOCK_PRIORITY, FETCH_RULE_MAX, REFUSED_ADDRESSES.length], [78, 79, 6, 86, 4]);
+  assert.deepEqual([FETCH_RULE_ID, FETCH_BLOCK_FIRST, FETCH_BLOCK_PRIORITY, FETCH_RULE_MAX, REFUSED_ADDRESSES.length], [78, 79, 6, 88, 4]);
   for (const s of [
     "Rule 78, of the marked-tab rule 8's kind: priority 2, `{\"type\":\"allow\"}`, `resourceTypes` `[\"main_frame\", \"sub_frame\", \"object\"]`, `tabIds` F, no host condition.",
     "a rule with priority 6, `{\"type\":\"block\"}`, `regexFilter` P, `isUrlFilterCaseSensitive` `true`, every resource type (the main frame among them) and `tabIds` F (ids 79 to 82); and for each P the same rule with `tabIds` `[-1]`, `domainType` `\"thirdParty\"` and `excludedInitiatorDomains` `[\"localhost\",\"local\",\"internal\"]` (ids 83 to 86).",
@@ -2128,7 +2128,7 @@ test("C5 states the fetch window's rules with the code's ids, priorities, patter
     "the IPv4-mapped form (`::ffff:0:0/96`) of each IPv4 range above;",
     "`localhost`, `local` and `internal`, and every name under them.",
     "Priority 6 is above every allow rule (the scope rules' 2, the import's rules' 2, rule 8's 2, rule 78's 2, the act's rules' 5)",
-    "At the worker's start they stay (the start's removal of every session rule leaves the ids 78 to 86) until the start's end of the fetch has closed every incognito tab that is open; then that end removes them.",
+    "At the worker's start they stay (the start's removal of every session rule leaves the ids 78 to 88) until the start's end of the fetch has closed every incognito tab that is open; then that end removes them.",
     "The guard skips a fetch tab (the guard and `blocked`, below), and the merge guard's floor (rule 9, below) still blocks every write to a guarded host from it.",
     "What they do not stop, stated plainly: a name that resolves to a refused address",
     "A fetch tab of PageFetch (C10, the fetch window) has no scope, no mark and no list",
@@ -2138,6 +2138,9 @@ test("C5 states the fetch window's rules with the code's ids, priorities, patter
     `each allowed URL (${fetchV.allowed.length}: public hosts, the edges of the ranges, and two userinfo parts that look like a refused host) matched no block`,
     "unless the initiator is `localhost`, `local`, `internal` or a name under them.",
     "The side effect that stays: while a fetch window is open, a worker whose initiator is an IP literal (for example `http://127.0.0.1:8000`) cannot reach a refused address on another site.",
+    "The socket blocks (review-168 B1): rule 87, priority 6, `{\"type\":\"block\"}`, `resourceTypes` `[\"websocket\", \"webtransport\"]`, `tabIds` F: every WebSocket and WebTransport of a fetch tab, to any host; and rule 88, the same with `tabIds` `[-1]`, `domainType` `\"thirdParty\"` and `excludedInitiatorDomains` `[\"localhost\",\"local\",\"internal\"]`: each one with no tab, as rules 83 to 86 match.",
+    "The side effect, stated plainly: while a fetch window is open, a service worker or a shared worker of the default context whose initiator is not a local name cannot open a WebSocket or a WebTransport to another site.",
+    "The ids are 78 to 88, between the act's rules (10 to 77) and the scope rules (100 and up). They count in the 5000 session rules (11 rules)",
     "needs the end of the host (a port of digits or the path) right after the address or the name",
   ]) assert.ok(says(C5, s), `C5 says: ${s}`);
 });
@@ -2154,8 +2157,12 @@ test("C10 states the fetch window: the mark and the pair rule, the steps of wind
     "ends a left fetch window, as `fetch_end` does (C4)",
     "One private window at a time: the act's work (its window, `act_rules`, `act_cookies` and `act_end`) and the fetch's work (its window and `fetch_end`) run one at a time, in one chain of the receiver.",
     "Neither ends the other: a fetch window ends only a left fetch window, and an act window only a left act; the start's sweep of one kind leaves each tab of the other kind that this worker opened and each popup of one, also when the sweep is still owed after a failure (review-46 N3).",
-    "then reads the cookie stores, as the act window's step 4 does: while a store other than `\"0\"` is listed, or the read fails, `another private window is open` too (review-46 N1);",
-    "then reads the cookie stores (`cookies.getAllCookieStores`): while a store other than the default context's (`\"0\"`) is listed, or the read fails, `another private window is open` too, and no window opens.",
+    "then probes the off-the-record profile, as the act window's step 4 does: while Chrome still holds it, or the probe fails with another error than `Invalid cookie store id: \"1\".`, `another private window is open` too (review-46 N1, review-46b B1);",
+    "then probes the off-the-record profile (`cookies.getAll({storeId: \"1\"})`, review-46 N1 and review-46b B1).",
+    "Exactly Chrome's error `Invalid cookie store id: \"1\".` means that no such profile exists, and the receiver goes on.",
+    "Any other error also answers `another private window is open` (fail closed).",
+    "`cookies.getAllCookieStores` cannot see such a profile, because it lists a store only while the store has an open tab;",
+    "- A download of a fetch window is cancelled by the receiver (review-168 B2): at each `downloads.onCreated` of an incognito download (`incognito` `true`) while a fetch window, a fetch tab or the fetch window's rules are there, the receiver calls `downloads.cancel` for it itself.",
     "The fetch tab has no scope, no operator mark and no key `tab:<id>`.",
     "Only `fetch_end` closes a fetch tab.",
     "The vector: `test/vectors/fetch.json`, with C4's `fetch_end` and C5's rules.",

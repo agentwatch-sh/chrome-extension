@@ -591,9 +591,10 @@ is on, agent-browser's service. The daemon never sends it.
 - The order of `fetch_end` is the order of `act_end`: first the tabs, then the rules. So no page of the fetch is left
   when rule 78 and the blocks of the refused addresses go (C5).
 - The fetch's caller sends `fetch_end` at the end of each fetch, also after an error (the PageFetch design, section
-  5.3). Chrome then drops the incognito context with its cookies, storage, cache and workers when it has closed its
-  last incognito tab; while Chrome still lists its cookie store, a new fetch window or act window answers `another
-  private window is open` (C10), and the caller tries again on its lock (review-46 N1).
+  5.3). Chrome then drops the incognito context with its cookies, storage, cache and workers, a moment after its last
+  incognito tab closed (Chrome's ProfileDestroyer waits up to about 1 s for the context's renderer processes); while
+  Chrome still holds the context, a new fetch window or act window answers `another private window is open` (C10, the
+  receiver's probe), and the caller tries again on its lock (review-46 N1, review-46b B1).
 - A link change and the worker's start end the fetch window too (C10, the fetch window).
 - `fetch_end` runs in channel `main`'s one queue (above), as the act's requests do. The fetch's caller waits 10 s for
   it from its send.
@@ -819,16 +820,25 @@ is on, agent-browser's service. The daemon never sends it.
       another site. They hold only while a fetch window is open. The PageFetch design names this rule (section 5.4: "a
       receiver rule that blocks every request to a refused IP literal from the fetch window"); DNR has no condition
       for a browser context, so "from the fetch window" is the fetch tabs and the requests with no tab.
+    - The socket blocks (review-168 B1): rule 87, priority 6, `{"type":"block"}`, `resourceTypes` `["websocket",
+      "webtransport"]`, `tabIds` F: every WebSocket and WebTransport of a fetch tab, to any host; and rule 88, the
+      same with `tabIds` `[-1]`, `domainType` `"thirdParty"` and `excludedInitiatorDomains`
+      `["localhost","local","internal"]`: each one with no tab, as rules 83 to 86 match. A WebSocket to a public name
+      that resolves to a private address gets no address check (the patterns judge the host's text, and the fetch's
+      caller's request interception does not see WebSockets), and a fetched page needs none (PageFetch fetches the
+      page and keeps no live connection). The side effect, stated plainly: while a fetch window is open, a service
+      worker or a shared worker of the default context whose initiator is not a local name cannot open a WebSocket or
+      a WebTransport to another site.
     - Priority 6 is above every allow rule (the scope rules' 2, the import's rules' 2, rule 8's 2, rule 78's 2, the
-      act's rules' 5), so no allow rule opens a refused address in a fetch tab. The ids are 78 to 86, between the
-      act's rules (10 to 77) and the scope rules (100 and up). They count in the 5000 session rules (9 rules), and
+      act's rules' 5), so no allow rule opens a refused address in a fetch tab. The ids are 78 to 88, between the
+      act's rules (10 to 77) and the scope rules (100 and up). They count in the 5000 session rules (11 rules), and
       their 8 `regexFilter`s in Chrome's 1000 regex rules.
     - The receiver writes them at the fetch window's open (C10, the fetch window) in one `updateSessionRules` call
       that replaces them all, and reads the session rules back (`getSessionRules`): the window's answer comes only
       when the read holds each of them. A fetch popup or a replaced fetch tab joins F when it appears: one call
       replaces them all, in the receiver's one chain of rule changes. A join that fails closes the tab (the receiver's
       close). They go at `fetch_end` after each tab of the fetch closed, and at each link change (C10, the fetch
-      window). At the worker's start they stay (the start's removal of every session rule leaves the ids 78 to 86)
+      window). At the worker's start they stay (the start's removal of every session rule leaves the ids 78 to 88)
       until the start's end of the fetch has closed every incognito tab that is open; then that end removes them. A
       full replace of the scope rules keeps them while they are or may be in force, and the remove-only call of a
       failed scope update never removes them, as for the act's rules.
@@ -841,8 +851,8 @@ is on, agent-browser's service. The daemon never sends it.
       main frame until rule 78 names it, but a request that its opener's page writes into it is not held); a request
       with no tab to a refused address on the site of its initiator, or from an initiator on a local name; DNS
       prefetch and preconnect, and WebRTC.
-    - Measured on Chromium 156.0.8078.79 (board ab-v16.102: an unpacked extension with these 9 rules for one fetch
-      tab, `chrome.declarativeNetRequest.isRegexSupported` and `testMatchOutcome`; no request was sent and no name
+    - Measured on Chromium 156.0.8078.79 (board ab-v16.102: an unpacked extension with these rules for one fetch tab,
+      `chrome.declarativeNetRequest.isRegexSupported` and `testMatchOutcome`; no request was sent and no name
       resolved): each pattern passes `isRegexSupported`; each refused URL of `test/vectors/fetch.json` (42) matched a
       block in the fetch tab as `xmlhttprequest`, its first six also as `main_frame` and `sub_frame`, and with no tab
       from a public initiator; each allowed URL (36: public hosts, the edges of the ranges, and two userinfo parts
@@ -2495,10 +2505,14 @@ Chrome drops it when its last incognito window closes.
      (review-ce44 N6);
   4. reads every tab (`tabs.query` with `{}`): while any incognito tab is open (for example one that the operator
      opened in the live view; all incognito windows of a profile share one context), `another private window is open`,
-     and no window opens; then reads the cookie stores (`cookies.getAllCookieStores`): while a store other than the
-     default context's (`"0"`) is listed, or the read fails, `another private window is open` too, and no window
-     opens. Chrome can hold the off-the-record profile, with its cookies, for a moment after its last incognito tab
-     closed (for example right after an `act_end` or a `fetch_end`), and a new window would share them (review-46 N1);
+     and no window opens; then probes the off-the-record profile (`cookies.getAll({storeId: "1"})`, review-46 N1 and
+     review-46b B1). An answer means that Chrome still holds it: Chrome keeps it up to about 1 s after its last
+     incognito tab closed (for example right after an `act_end` or a `fetch_end`), and a new window would share its
+     cookies. So `another private window is open`, and no window opens. Exactly Chrome's error `Invalid cookie store
+     id: "1".` means that no such profile exists, and the receiver goes on. Any other error also answers `another
+     private window is open` (fail closed). The probe creates no profile: Chrome asks `HasOffTheRecordContext` before
+     it takes the store (`cookies_helpers.cc`, `ChooseBrowserContextFromStoreId`). `cookies.getAllCookieStores` cannot
+     see such a profile, because it lists a store only while the store has an open tab;
   5. calls `chrome.windows.create(createData)`. A result that is no incognito window with a tab (Chrome gives
      an extension that it does not allow in incognito no window) gets `not allowed in incognito`;
   6. keeps the window as an act window, with the key `act:<windowId>` in the copy (each tab's scope, above:
@@ -2586,9 +2600,9 @@ is an incognito window: its off-the-record context shares no cookie, storage, Ca
      stop of the fetch's caller, or a fetch that did not end) and each fetch tab close, and the fetch window's rules
      go. When a tab of it stays open: `another private window is open`; when its rules do not go: `rules not removed`;
   3. reads every tab (`tabs.query` with `{}`): while any incognito tab is open (an act tab, or one that the operator
-     opened in the live view), `another private window is open`, and no window opens; then reads the cookie stores, as
-     the act window's step 4 does: while a store other than `"0"` is listed, or the read fails, `another private
-     window is open` too (review-46 N1);
+     opened in the live view), `another private window is open`, and no window opens; then probes the off-the-record
+     profile, as the act window's step 4 does: while Chrome still holds it, or the probe fails with another error than
+     `Invalid cookie store id: "1".`, `another private window is open` too (review-46 N1, review-46b B1);
   4. calls `chrome.windows.create(createData)`. A result that is no incognito window with a tab gets `not allowed in
      incognito`;
   5. keeps the window as a fetch window, with the key `fetch:<windowId>` in the copy, makes the window's tab the fetch
@@ -2618,17 +2632,22 @@ is an incognito window: its off-the-record context shares no cookie, storage, Ca
   session, get `not an agent tab`; `windows.update` of a fetch window or of a fetch popup's window, and a
   `tabs.create` with its `windowId`, get `not an agent window` (the tab checks, above). Only `fetch_end` closes a
   fetch tab. `bridge.mergeGuard` never makes a fetch tab a guarded tab (C5, the merge guard's floor).
+- A download of a fetch window is cancelled by the receiver (review-168 B2): at each `downloads.onCreated` of an
+  incognito download (`incognito` `true`) while a fetch window, a fetch tab or the fetch window's rules are there, the
+  receiver calls `downloads.cancel` for it itself. Chrome's `DownloadItem` names no tab, and while a fetch window is
+  open every incognito tab belongs to the fetch (no act window opens then). The event still reaches the relay. A
+  client's `downloads.cancel` of an incognito download still gets `not an agent download`.
 - What the receiver still gives the relay of a fetch tab is what it gives of an act tab (the act window, above): its
   events and the answers of the reads. The fetch's caller is the layer that hides them.
 - The fetch window's end: `fetch_end` (C4) closes each tab of the fetch, then removes the fetch window's rules (C5).
   The receiver also ends the fetch window itself at each disconnect and each new daemon connection ("What stops a
   handler", above). At the worker's start, when the fetch window's rules are or may be in force (the start found ids
-  78 to 86, or its removal of the session rules failed or came late) or the copy names a fetch window or a fetch tab,
+  78 to 88, or its removal of the session rules failed or came late) or the copy names a fetch window or a fetch tab,
   the receiver closes every incognito tab that is open, in one item of the removal queue, and only then removes the
   fetch window's rules, as the act's start's sweep does. When a tab does not close, the rules stay (fail closed), and
   the next link change or fetch window tries again, with the same rule (every incognito tab but an act tab of this
-  worker and a popup of one: review-46 N3). While no fetch window, fetch tab or fetch rule is there, a link
-  change makes no chrome call for the fetch.
+  worker and a popup of one: review-46 N3). While no fetch window, fetch tab or fetch rule is there, a link change
+  makes no chrome call for the fetch.
 - The vector: `test/vectors/fetch.json`, with C4's `fetch_end` and C5's rules.
 
 **Removals and the last window (board ab-v16.41).** In the per-scope build the receiver keeps the

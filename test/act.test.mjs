@@ -124,16 +124,21 @@ test("Chrome's result must be an incognito window with a tab: a window of the de
   assert.deepEqual(s.f.storage_.session, {});
 });
 
-test("a left act ends before the next act window: its tab closes by the receiver's close, its rules and its key go", async () => {
+test("a left act ends before the next act window: its tab closes by the receiver's close, its rules and its key go; while Chrome still holds the off-the-record profile the window waits (review-46b B1)", async () => {
   const s = await setup();
   await s.openAct();
   assert.equal((await s.main(V.rulesReq)).ok, true);
   incognitoWindows(s.f, { ...WIN, id: 32, tabs: [{ ...WIN.tabs[0], id: 33, windowId: 32 }] });
-  const res = await s.answer({ ...V.actWindow.req, id: "second" });
-  assert.equal(res.ok, true, "the second act window");
+  s.f.otrLingerMs = 60000;
+  const wait = await s.answer({ ...V.actWindow.req, id: "second" });
+  assert.equal(wait.error, "another private window is open", "the left act's profile still lives: its cookies would be shared");
   assert.deepEqual(s.f.callsTo("debugger.sendCommand").filter(([, m]) => m === "Target.closeTarget").map(([t]) => t.tabId), [ACT_TAB], "the left act tab closed, with no beforeunload");
   assert.ok(!s.f.tabs_.some((t) => t.id === ACT_TAB));
   assert.deepEqual(s.f.sessionRules_.filter(isActRule), [], "the left act's rules went");
+  assert.deepEqual(s.f.storage_.session, {});
+  s.f.dropOtr();
+  const res = await s.answer({ ...V.actWindow.req, id: "third" });
+  assert.equal(res.ok, true, "the next act window, once Chrome dropped the profile");
   assert.deepEqual(s.f.storage_.session, { "act:32": true });
   assert.equal(s.r.map.isAct(33), true);
 });
@@ -294,7 +299,8 @@ test("act_cookies: the cookies of the host in the act tab's store, in C2's form;
   s.f.cookieStores_ = structuredClone(V.cookieStores);
   s.f.cookies_ = structuredClone(V.cookies);
   assert.deepEqual(await s.main(V.cookiesReq), V.cookiesRes);
-  assert.deepEqual(s.f.callsTo("cookies.getAll"), [[{ domain: "staging.example.com", storeId: "1" }], [{ domain: "staging.example.com", storeId: "1", partitionKey: {} }]]);
+  // The reads of act_cookies (the window's probe of the off-the-record store has no domain).
+  assert.deepEqual(s.f.callsTo("cookies.getAll").filter(([f]) => f.domain), [[{ domain: "staging.example.com", storeId: "1" }], [{ domain: "staging.example.com", storeId: "1", partitionKey: {} }]]);
   for (const v of V.badCookies) assert.deepEqual(await s.main(v.req), { t: "res", id: v.req.id, ok: false, error: v.error }, v.req.id);
   s.f.cookieStores_ = [{ id: "0", tabIds: [7] }];
   assert.deepEqual(await s.main({ ...V.cookiesReq, id: "ns" }), { t: "res", id: "ns", ok: false, error: "no cookie store" });
@@ -661,7 +667,7 @@ test("N10: act_cookies never reads the store of the default context", async () =
   s.f.cookieStores_ = [{ id: "0", tabIds: [7, ACT_TAB] }];
   s.f.cookies_ = structuredClone(V.cookies);
   assert.deepEqual(await s.main(V.cookiesReq), { t: "res", id: V.cookiesReq.id, ok: false, error: "no cookie store" });
-  assert.equal(s.f.callsTo("cookies.getAll").length, 0);
+  assert.equal(s.f.callsTo("cookies.getAll").filter(([f]) => f.domain).length, 0);
 });
 
 test("B1, each layer alone: the removal queue's own check, both checks of debugger.attach, and a replaced incognito tab", async () => {

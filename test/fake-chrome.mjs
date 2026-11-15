@@ -22,9 +22,13 @@
 // For the act of the stored sign-ins (C4, C10; act.js): extension.isAllowedIncognitoAccess
 // gives fake.incognitoAllowed, cookies.getAllCookieStores gives fake.cookieStores_, and
 // cookies.getAll with a storeId gives the cookies of that store (a cookie with no storeId is of
-// the default store "0", which a getAll with no storeId reads). When the last incognito tab of
-// fake.tabs_ closes, Chrome drops the off-the-record profile: every store but "0" leaves
-// fake.cookieStores_, unless fake.otrLingers is true (Chrome still holds it; review-46 N1).
+// the default store "0", which a getAll with no storeId reads). As real Chrome does
+// (review-46b B1), getAllCookieStores lists a store other than "0" only while an incognito tab
+// is open, and the last incognito tab's close drops it from fake.cookieStores_. The
+// off-the-record profile itself lives while an incognito tab of fake.tabs_ is open and then
+// fake.otrLingerMs longer (real Chrome: up to about 1 s; fake.dropOtr() ends it at once): while
+// it lives, cookies.getAll({storeId: "1"}) answers its cookies; else it rejects with Chrome's
+// 'Invalid cookie store id: "1".'.
 //
 // For the worker removal of the recorded origins (C5): webNavigation.getAllFrames
 // gives fake.frames_.get(tabId) when the test set it, else the main frame of a
@@ -83,7 +87,8 @@ export function makeFakeChrome() {
     sessionRules_: [],
     incognitoAllowed: true,
     cookieStores_: [{ id: "0", tabIds: [] }],
-    otrLingers: false,
+    otrLingerMs: 0,
+    otrLingering_: null, // the off-the-record profile after its last incognito tab closed (a token), or null
     dynamicRules_: [],
     trackNewTabs: false,
     frames_: new Map(), // tabId -> the frames that webNavigation.getAllFrames gives
@@ -245,9 +250,14 @@ export function makeFakeChrome() {
       // Without partitionKey: unpartitioned cookies only. With partitionKey {}:
       // every cookie, so the two reads overlap (as in Chrome). Without storeId:
       // the default store's.
-      getAll: rec("cookies.getAll", async (filter) =>
-        fake.cookies_.filter((c) => (filter.partitionKey ? true : !c.partitionKey) && (c.storeId ?? "0") === (filter.storeId ?? "0")).map((c) => ({ ...c }))),
-      getAllCookieStores: rec("cookies.getAllCookieStores", async () => structuredClone(fake.cookieStores_)),
+      getAll: rec("cookies.getAll", async (filter) => {
+        if ((filter.storeId ?? "0") === "1" && !fake.tabs_.some((t) => t.incognito === true) && fake.otrLingering_ === null) {
+          throw new Error('Invalid cookie store id: "1".');
+        }
+        return fake.cookies_.filter((c) => (filter.partitionKey ? true : !c.partitionKey) && (c.storeId ?? "0") === (filter.storeId ?? "0")).map((c) => ({ ...c }));
+      }),
+      getAllCookieStores: rec("cookies.getAllCookieStores", async () =>
+        structuredClone(fake.cookieStores_.filter((x) => x.id === "0" || fake.tabs_.some((t) => t.incognito === true)))),
       getPartitionKey: rec("cookies.getPartitionKey", async () =>
         fake.partitionKey ? { partitionKey: fake.partitionKey } : {}),
       set: rec("cookies.set", async (details) => ({ ...details })),
@@ -354,6 +364,10 @@ export function makeFakeChrome() {
       }));
     return requestId;
   };
+  // The off-the-record profile that lingers after its last incognito tab goes now.
+  fake.dropOtr = () => {
+    fake.otrLingering_ = null;
+  };
   fake.callsTo = (path) => calls.filter(([p]) => p === path).map(([, a]) => a);
   // A tab of fake.tabs_ closes: it goes, with its targets, and tabs.onRemoved fires.
   fake.closeTab = (tabId) => {
@@ -362,8 +376,15 @@ export function makeFakeChrome() {
     fake.tabs_ = fake.tabs_.filter((x) => x.id !== tabId);
     fake.created_.delete(tabId);
     fake.targets_ = fake.targets_.filter((x) => x.tabId !== tabId);
-    if (t.incognito === true && !fake.otrLingers && !fake.tabs_.some((x) => x.incognito === true)) {
+    if (t.incognito === true && !fake.tabs_.some((x) => x.incognito === true)) {
       fake.cookieStores_ = fake.cookieStores_.filter((x) => x.id === "0");
+      // The off-the-record profile lives a moment longer (Chrome's ProfileDestroyer).
+      const token = {};
+      fake.otrLingering_ = token;
+      const timer = setTimeout(() => {
+        if (fake.otrLingering_ === token) fake.otrLingering_ = null;
+      }, fake.otrLingerMs);
+      if (timer && timer.unref) timer.unref();
     }
     chrome.tabs.onRemoved.fire(tabId, { windowId: t.windowId, isWindowClosing: false });
   };
