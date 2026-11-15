@@ -17,13 +17,21 @@
 //   except a top-level GET. Ids 10 to 13 (A to D) and from 14 (E, two for
 //   each origin of send_to), priorities 4 (block) and 5 (allow), above the
 //   scope rules (2) and rule 5 (3).
+// - the fetch window's rules (PageFetch, C5; fetch-window.js): from the
+//   fetch window's open to its end, rule 78 allows every main frame, frame
+//   and <object>/<embed> document in the fetch tabs (as rule 8 does in the
+//   marked tabs), and rules 79 to 86 block every request to a refused
+//   address: a local or private IP literal, or a *.localhost, *.local or
+//   *.internal host. 79 to 82 in the fetch tabs, 83 to 86 in each request
+//   with no tab (a service worker or a shared worker) that goes to another
+//   site than its initiator. Priority 6 (block), above every allow rule.
 // - the merge guard's floor, rule 9 (C5; board ab-v16.99): it blocks every
 //   request to a guarded host (GitHub's, and the hosts that bridge.mergeGuard
 //   adds) whose method is not GET, HEAD or OPTIONS (a write), in every tab and
 //   in each request with no tab, except the tabs where agent-browser's model
 //   judges each request itself (the guarded tabs of bridge.mergeGuard, while
 //   the bridge holds them), the marked tabs (the operator's own) and the act
-//   tabs. Priority 6, above every allow rule.
+//   tabs. A fetch tab never leaves it. Priority 6, above every allow rule.
 // Dynamic rule 5 sets Sec-Fetch-Site: none on the receiver's own top-level
 // requests. Dynamic rules 2 and 4 (one list for every tab, before part 1a)
 // are gone: the worker removes them at its start and at each set_scopes.
@@ -66,6 +74,36 @@ export const ACT_RULE_MAX = ACT_RULE_E + 2 * MAX_SEND_TO - 1;
 const ACT_IDS = Array.from({ length: ACT_RULE_MAX - ACT_RULE_A + 1 }, (_, i) => ACT_RULE_A + i);
 export const ACT_BLOCK_PRIORITY = 4;
 export const ACT_ALLOW_PRIORITY = 5;
+// The fetch window's rules (C5, PageFetch; board ab-v16.102): the any-host
+// rule 78, then for each pattern of REFUSED_ADDRESSES one rule in the fetch
+// tabs (79 to 82) and one for the requests with no tab (83 to 86).
+export const FETCH_RULE_ID = 78;
+export const FETCH_BLOCK_FIRST = 79;
+export const FETCH_BLOCK_PRIORITY = 6;
+// The refused addresses of a fetch window (the PageFetch design, section
+// 5.4), as Chrome's URL parser writes the host: IPv4 in dotted decimal (also
+// for 0x7f.1, 2130706433 and 127.1), IPv6 in lowercase hex with :: (an
+// IPv4-mapped address as ::ffff:7f00:1, never ::ffff:127.0.0.1), a name with
+// its trailing dot. Each pattern starts at the scheme and allows a userinfo
+// part, and its host ends at the port or the path. One regexFilter each:
+// Chrome refuses one above its compiled size limit (2 KB), and these four
+// pass (measured on Chromium 156 with isRegexSupported).
+export const REFUSED_ADDRESSES = Object.freeze([
+  // 0.0.0.0/8, 10/8, 127/8 (loopback), 224/4 (multicast), 100.64/10 (CGNAT),
+  // 172.16/12, 192.168/16, 169.254/16 (link-local, with 169.254.169.254).
+  "^[a-z]+://([^/?#@]*@)?((0|10|127|22[4-9]|23[0-9])\\.[0-9]+|100\\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])|172\\.(1[6-9]|2[0-9]|3[01])|192\\.168|169\\.254)\\.[0-9.]+[:/]",
+  // :: and ::1, fc00::/7 (unique local), fe80::/10 (link-local), ff00::/8 (multicast).
+  "^[a-z]+://([^/?#@]*@)?\\[(::1?|(f[cdf][0-9a-f]|fe[89ab])[0-9a-f]:[0-9a-f:.]*)\\]",
+  // ::ffff:0:0/96 with an IPv4 address of the first pattern: its first hex
+  // group is the address's first two bytes.
+  "^[a-z]+://([^/?#@]*@)?\\[::ffff:(7f[0-9a-f]{2}|a[0-9a-f]{2}|ac1[0-9a-f]|e[0-9a-f]{3}|[0-9a-f]{1,2}|c0a8|a9fe|64[4-7][0-9a-f]):[0-9a-f]{1,4}\\]",
+  // localhost, local and internal, and every name under them.
+  "^[a-z]+://([^/?#@]*@)?([^/?#@:]*\\.)?(localhost|local|internal)\\.?[:/]",
+]);
+export const FETCH_RULE_MAX = FETCH_BLOCK_FIRST + 2 * REFUSED_ADDRESSES.length - 1;
+const FETCH_IDS = Array.from({ length: FETCH_RULE_MAX - FETCH_RULE_ID + 1 }, (_, i) => FETCH_RULE_ID + i);
+// chrome.tabs.TAB_ID_NONE: a request with no tab.
+const NO_TAB = -1;
 // Chrome's MAX_NUMBER_OF_SESSION_RULES (measured: the 5001st is refused).
 const MAX_SESSION_RULES = 5000;
 // The potentially trustworthy URLs, to which Chrome sends Sec-Fetch-*
@@ -135,6 +173,25 @@ export function actRules({ tabIds, sendTo }) {
   return rules;
 }
 
+// C5, the fetch window's rules (PageFetch): tabIds are the fetch tabs (the
+// fetch tab and each popup or replaced tab of one). Rule 78 is rule 8's kind:
+// no host condition, so the fetch tabs load any host, and the scope's list
+// does not apply to them. Each block rule matches every resource type (the
+// main frame among them). The rules with no tab match only a request to
+// another site than its initiator: the fetched page is on a public host, so
+// its workers' requests to a refused address always are, and a worker of the
+// default context keeps its own local site while a fetch runs.
+export function fetchRules(tabIds) {
+  const rules = [{ id: FETCH_RULE_ID, priority: 2, action: { type: "allow" }, condition: { resourceTypes: [...MAIN, ...FRAMES], tabIds: [...tabIds] } }];
+  const block = (id, regexFilter, more) => ({
+    id, priority: FETCH_BLOCK_PRIORITY, action: { type: "block" },
+    condition: { regexFilter, isUrlFilterCaseSensitive: true, resourceTypes: [...ALL_TYPES], ...more },
+  });
+  REFUSED_ADDRESSES.forEach((re, i) => rules.push(block(FETCH_BLOCK_FIRST + i, re, { tabIds: [...tabIds] })));
+  REFUSED_ADDRESSES.forEach((re, i) => rules.push(block(FETCH_BLOCK_FIRST + REFUSED_ADDRESSES.length + i, re, { tabIds: [NO_TAB], domainType: "thirdParty" })));
+  return rules;
+}
+
 // C5, the merge guard's floor: each write to a host of hosts (and its
 // subdomains), of any resource type, in every tab but the excluded ones, and
 // in each request with no tab (a shared or a service worker).
@@ -175,6 +232,8 @@ export class SessionRules {
   #importing = false; // rules 6 and 7 of a running import are (or may be) in force
   #acting = false; // the act's rules are (or may be) in force
   #actSpec = null; // {tabIds, sendTo} of the act's rules in force
+  #fetching = false; // the fetch window's rules are (or may be) in force
+  #fetchTabs = null; // the tabIds of the fetch window's rules in force
   #floorMarked; // () => every marked tab (the operator's own), whatever the operator value is
   #guardHosts = [...FLOOR_HOSTS]; // the floor's hosts: GitHub's and those that bridge.mergeGuard added
   #guarded = new Set(); // the tabs that agent-browser's model guards (bridge.mergeGuard), while the bridge holds them
@@ -190,10 +249,12 @@ export class SessionRules {
   }
 
   // The floor rule now: its hosts, and the tabs that it leaves out (the
-  // guarded tabs, the marked tabs and the act tabs), in order.
+  // guarded tabs, the marked tabs and the act tabs), in order. A fetch tab
+  // never leaves it (C5, the fetch window's rules).
   floorRule() {
     const out = new Set([...this.#guarded, ...this.#floorMarked(), ...(this.#actSpec ? this.#actSpec.tabIds : [])]);
-    return floorRule(this.#guardHosts, [...out].filter(Number.isInteger).sort((a, b) => a - b));
+    const fetchTabs = new Set(this.#fetchTabs ?? []);
+    return floorRule(this.#guardHosts, [...out].filter((id) => Number.isInteger(id) && !fetchTabs.has(id)).sort((a, b) => a - b));
   }
 
   // The floor rule again when it changed (inside the chain). A call that fails
@@ -265,9 +326,12 @@ export class SessionRules {
         if (over) return;
         const all = (Array.isArray(rules) ? rules : []).map((r) => r.id);
         // The act's rules of a worker before this one stay until the act's
-        // end has closed that act's tabs (C10, the act window; review-ce44 N1).
+        // end has closed that act's tabs (C10, the act window; review-ce44 N1),
+        // and so do the fetch window's rules until the fetch's end (C10, the
+        // fetch window).
         if (all.some((id) => ACT_IDS.includes(id))) this.#acting = true;
-        const ids = all.filter((id) => !ACT_IDS.includes(id));
+        if (all.some((id) => FETCH_IDS.includes(id))) this.#fetching = true;
+        const ids = all.filter((id) => !ACT_IDS.includes(id) && !FETCH_IDS.includes(id));
         // The floor in the same call as the removal: a worker that starts again leaves no moment without it.
         this.#guarded.clear();
         const floor = this.floorRule();
@@ -288,8 +352,9 @@ export class SessionRules {
         this.#floorStarted = true;
         void this.#syncFloor().catch(() => console.warn("agentwatch receiver: the merge guard's floor was not written at the worker's start"));
         this.#unknown = true;
-        // Act rules of a worker before this one can be there: the act's end removes them.
+        // Act rules (and fetch rules) of a worker before this one can be there: the act's end (and the fetch's) removes them.
         this.#acting = true;
+        this.#fetching = true;
         console.warn("agentwatch receiver: the session rules of the worker's start were not removed in time");
       }
     });
@@ -340,13 +405,14 @@ export class SessionRules {
       } catch {
         rules = null;
       }
-      // Rules 6 and 7 go too when no import of this worker runs, and the
-      // act's rules when no act of this worker holds them.
-      const keep = [FLOOR_RULE_ID, ...(this.#importing ? IMPORT_IDS : []), ...(this.#acting ? ACT_IDS : [])];
+      // Rules 6 and 7 go too when no import of this worker runs, the act's
+      // rules when no act of this worker holds them, and the fetch window's
+      // rules when no fetch window of this worker holds them.
+      const keep = [FLOOR_RULE_ID, ...(this.#importing ? IMPORT_IDS : []), ...(this.#acting ? ACT_IDS : []), ...(this.#fetching ? FETCH_IDS : [])];
       if (Array.isArray(rules)) {
         for (const r of rules) if (!keep.includes(r.id)) remove.add(r.id);
       } else {
-        for (const i of [...IMPORT_IDS, MARKED_RULE_ID, ...ACT_IDS]) if (!keep.includes(i)) remove.add(i);
+        for (const i of [...IMPORT_IDS, MARKED_RULE_ID, ...ACT_IDS, ...FETCH_IDS]) if (!keep.includes(i)) remove.add(i);
         for (let i = FIRST_SCOPE_RULE_ID; i < FIRST_SCOPE_RULE_ID + 2 * MAX_SESSION_RULES; i++) remove.add(i);
       }
     }
@@ -479,6 +545,59 @@ export class SessionRules {
     return this.#run(() => this.#dnr.updateSessionRules({ removeRuleIds: ACT_IDS }).then(() => {
       this.#acting = false;
       this.#actSpec = null;
+      return this.#syncFloor();
+    }));
+  }
+
+  // ---- the fetch window's rules (C5, PageFetch; fetch-window.js) ----
+
+  // The fetch window's rules held now: true from their add (or a start that
+  // found them or whose removal failed) to their removal.
+  get fetching() {
+    return this.#fetching;
+  }
+
+  // The fetch window's rules for tabIds (the fetch tab first): one call that
+  // replaces them all, then the confirmation, a read of the session rules
+  // that must hold each rule of the call. #fetching is true before the call:
+  // a call that Chrome took but whose answer failed leaves rules that only
+  // the fetch's end removes. The floor is written again: a fetch tab that
+  // bridge.mergeGuard named leaves the guarded tabs. Gives their ids; throws
+  // when the call fails or a rule is not there.
+  setFetch(tabIds) {
+    return this.#run(async () => {
+      const rules = fetchRules(tabIds);
+      this.#fetching = true;
+      await this.#dnr.updateSessionRules({ removeRuleIds: FETCH_IDS, addRules: rules });
+      this.#fetchTabs = [...tabIds];
+      await this.#syncFloor();
+      const held = await this.#dnr.getSessionRules();
+      const ids = new Set((Array.isArray(held) ? held : []).map((r) => r && r.id));
+      if (!rules.every((r) => ids.has(r.id))) throw new Error("a rule is not held");
+      return rules.map((r) => r.id);
+    });
+  }
+
+  // A popup or a replaced tab of a fetch tab joins the tabIds of the fetch
+  // window's rules while they hold: one call that replaces them all. With no
+  // fetch rules in force it does nothing. A call that fails rejects (the
+  // caller closes the tab), and the rules before it stay.
+  addFetchTab(tabId) {
+    return this.#run(async () => {
+      const tabs = this.#fetchTabs;
+      if (!this.#fetching || tabs === null || tabs.includes(tabId)) return;
+      const next = [...tabs, tabId];
+      await this.#dnr.updateSessionRules({ removeRuleIds: FETCH_IDS, addRules: fetchRules(next) });
+      this.#fetchTabs = next;
+      await this.#syncFloor();
+    });
+  }
+
+  // The fetch's end (and the cleanup of a left fetch window): every id of the fetch window's rules goes.
+  removeFetch() {
+    return this.#run(() => this.#dnr.updateSessionRules({ removeRuleIds: FETCH_IDS }).then(() => {
+      this.#fetching = false;
+      this.#fetchTabs = null;
       return this.#syncFloor();
     }));
   }

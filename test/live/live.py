@@ -214,7 +214,7 @@ class Live:
         st = self.ctl(op="daemon_state")
         self.r.add("receiver links up and says hello", bool(ok), "stub daemon socket: link event, then hello",
                    version=st.get("hello"))
-        self.r.add('the hello says features ["scopes", "act"]', st.get("features") == ["scopes", "act"],
+        self.r.add('the hello says features ["scopes", "act", "fetch"]', st.get("features") == ["scopes", "act", "fetch"],
                    "stub daemon socket: the hello's features", features=st.get("features"))
         self.agent_tab()
         ping = self.ctl(op="ping")

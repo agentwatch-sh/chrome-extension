@@ -85,8 +85,7 @@ export function toPayloadCookie(c) {
 }
 
 export class Act {
-  #r; // the Receiver: chrome, map, rules, removals, listName
-  #chain = Promise.resolve();
+  #r; // the Receiver: chrome, map, rules, removals, listName, serial
   #windows = new Set(); // the act windows
   #tabs = new Set(); // the act popups and replaced act tabs with a key acttab:<id> (and those of the copy at the start)
   // From a start with an act's rules (or an act in the copy) to the end that
@@ -119,11 +118,11 @@ export class Act {
     void call(() => this.#chrome.storage.session.set({ [ACT_TAB_KEY + tabId]: true })).catch(() => {});
   }
 
-  // The act's work runs one at a time: the window, the rules, the cookies, the end.
+  // The act's work runs one at a time: the window, the rules, the cookies,
+  // the end; in one chain with the fetch window's work (Receiver.serial), so
+  // an act window and a fetch window never both open.
   #run(fn) {
-    const run = this.#chain.then(fn);
-    this.#chain = run.then(() => {}, () => {});
-    return run;
+    return this.#r.serial(fn);
   }
 
   // ---- the act window (C10 windows.create with the mark "act") ----
@@ -148,7 +147,7 @@ export class Act {
       } catch (e) {
         throw new Error(e && e.message === RULES_NOT_REMOVED ? RULES_NOT_REMOVED : ANOTHER_PRIVATE);
       }
-      // All incognito windows share one context: no other may be open.
+      // All incognito windows share one context: no other may be open (a fetch window neither).
       const tabs = await call(() => this.#chrome.tabs.query({}));
       if ((Array.isArray(tabs) ? tabs : []).some((t) => t && t.incognito === true)) throw new Error(ANOTHER_PRIVATE);
       if (op.stale()) throw new Error("detached");

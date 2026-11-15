@@ -35,7 +35,7 @@
     "newTab": "an object with url (about:blank) and at most active (boolean), windowId and index (ids)",
     "tabUpdate": "exactly {\"active\": <boolean>}",
     "newWindow": "an object with url (about:blank, a string) and at most focused (boolean), left, top, width, height (integers), state and incognito (true, only with the mark act: the pair rule of windows.create); no tabId",
-    "mark": "the string act: the mark of an act window of the stored sign-ins (board ab-v16.97.3; test/vectors/act.json)",
+    "mark": "the string act: the mark of an act window of the stored sign-ins (board ab-v16.97.3; test/vectors/act.json); or the string fetch: the mark of a fetch window of PageFetch (board ab-v16.102; test/vectors/fetch.json)",
     "windowUpdate": "an object with at least one of left, top, width, height, state and focused, and no other key",
     "contentDetails": "exactly primaryPattern (<scheme>://<host>/* or <scheme>://<host>:<port>/*, scheme http, https or *, host covered by the allowlist, with or without *.) and setting (allow or block)",
     "mergeGuard": "exactly hosts (a list of at most 16 normalized C5 hosts) and tabs (a list of at most 1024 ids): the merge guard's floor (board ab-v16.99)"
@@ -152,7 +152,10 @@
     {"note": "incognito is true or absent.", "req": {"t": "req", "id": "b54", "op": "windows.create", "args": [{"url": "about:blank", "incognito": false}, "my-repo", "act"]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b54", "ok": false, "error": "bad args"}},
     {"note": "The mark is the string act.", "req": {"t": "req", "id": "b55", "op": "windows.create", "args": [{"url": "about:blank", "incognito": true}, "my-repo", "Act"]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b55", "ok": false, "error": "bad args"}},
     {"note": "bridge.mergeGuard takes only normalized C5 hosts (board ab-v16.99): a URL is no host.", "req": {"t": "req", "id": "b56", "op": "bridge.mergeGuard", "args": [{"hosts": ["https://github.com"], "tabs": []}]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b56", "ok": false, "error": "bad args"}},
-    {"note": "bridge.mergeGuard: a tab id is an integer, and no other key goes (board ab-v16.99).", "req": {"t": "req", "id": "b57", "op": "bridge.mergeGuard", "args": [{"hosts": ["github.com"], "tabs": ["9"], "all": true}]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b57", "ok": false, "error": "bad args"}}
+    {"note": "bridge.mergeGuard: a tab id is an integer, and no other key goes (board ab-v16.99).", "req": {"t": "req", "id": "b57", "op": "bridge.mergeGuard", "args": [{"hosts": ["github.com"], "tabs": ["9"], "all": true}]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b57", "ok": false, "error": "bad args"}},
+    {"note": "The pair rule (board ab-v16.102): the mark fetch only with incognito true.", "req": {"t": "req", "id": "b58", "op": "windows.create", "args": [{"url": "about:blank", "focused": false}, "my-repo", "fetch"]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b58", "ok": false, "error": "bad args"}},
+    {"note": "The mark is the string act or fetch (board ab-v16.102): no other case.", "req": {"t": "req", "id": "b59", "op": "windows.create", "args": [{"url": "about:blank", "incognito": true}, "my-repo", "Fetch"]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b59", "ok": false, "error": "bad args"}},
+    {"note": "A fetch window opens at about:blank only, as any new window (board ab-v16.102).", "req": {"t": "req", "id": "b60", "op": "windows.create", "args": [{"url": "https://www.example.com/", "incognito": true}, "my-repo", "fetch"]}, "error": "bad args", "res": {"t": "res", "ch": "bridge", "id": "b60", "ok": false, "error": "bad args"}}
   ],
   "events": [
     {"ev": "debugger.onEvent", "fields": ["source", "method", "params"], "optional": []},

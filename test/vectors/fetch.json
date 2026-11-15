@@ -1,0 +1,569 @@
+{
+ "contract": "C4, C5 and C10 of docs/protocol.md: the receiver's part of PageFetch (board ab-v16.102; agent-browser's PageFetch design, sections 5.3 and 5.4). The fetch window (C10 windows.create with the mark fetch, for a scope that may have no list), the fetch window's rules (C5: rule 78 and the blocks of the refused addresses, 79 to 86), fetch_end (C4) and the hello's feature fetch. refused and allowed: the URLs that the blocks refuse and let pass, measured in Chromium 156's own DNR engine (C5). Every value is a sample.",
+ "setScopes": {
+  "lists": {
+   "md": [
+    "example.com"
+   ]
+  },
+  "scopes": {
+   "my-repo": "md",
+   "md-gone": null
+  },
+  "default": null
+ },
+ "features": [
+  "scopes",
+  "act",
+  "fetch"
+ ],
+ "fetchWindow": {
+  "note": "The fetch window: incognito true and the mark fetch. The scope md-gone has no list: the window opens all the same, and the fetch tab (61) gets no scope. The receiver checks its incognito access first, ends a left fetch window, refuses while another incognito tab is open, opens the window, writes the fetch window's rules for tab 61 and confirms them by a read. The copy holds fetch:60, not tab:61.",
+  "req": {
+   "t": "req",
+   "id": "7c1d2e03-10",
+   "op": "windows.create",
+   "args": [
+    {
+     "url": "about:blank",
+     "focused": false,
+     "incognito": true
+    },
+    "md-gone",
+    "fetch"
+   ]
+  },
+  "chrome": [
+   "windows.create",
+   [
+    {
+     "url": "about:blank",
+     "focused": false,
+     "incognito": true
+    }
+   ]
+  ],
+  "res": {
+   "t": "res",
+   "ch": "bridge",
+   "id": "7c1d2e03-10",
+   "ok": true,
+   "data": {
+    "id": 60,
+    "incognito": true,
+    "focused": false,
+    "alwaysOnTop": false,
+    "left": 0,
+    "top": 0,
+    "width": 1280,
+    "height": 800,
+    "state": "normal",
+    "type": "normal",
+    "tabs": [
+     {
+      "id": 61,
+      "windowId": 60,
+      "index": 0,
+      "active": true,
+      "incognito": true,
+      "url": "",
+      "pendingUrl": "about:blank",
+      "title": "",
+      "status": "loading"
+     }
+    ]
+   }
+  },
+  "copy": {
+   "fetch:60": true
+  }
+ },
+ "rules": [
+  {
+   "id": 78,
+   "priority": 2,
+   "action": {
+    "type": "allow"
+   },
+   "condition": {
+    "resourceTypes": [
+     "main_frame",
+     "sub_frame",
+     "object"
+    ],
+    "tabIds": [
+     61
+    ]
+   }
+  },
+  {
+   "id": 79,
+   "priority": 6,
+   "action": {
+    "type": "block"
+   },
+   "condition": {
+    "regexFilter": "^[a-z]+://([^/?#@]*@)?((0|10|127|22[4-9]|23[0-9])\\.[0-9]+|100\\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])|172\\.(1[6-9]|2[0-9]|3[01])|192\\.168|169\\.254)\\.[0-9.]+[:/]",
+    "isUrlFilterCaseSensitive": true,
+    "resourceTypes": [
+     "main_frame",
+     "sub_frame",
+     "stylesheet",
+     "script",
+     "image",
+     "font",
+     "object",
+     "xmlhttprequest",
+     "ping",
+     "csp_report",
+     "media",
+     "websocket",
+     "webtransport",
+     "webbundle",
+     "other"
+    ],
+    "tabIds": [
+     61
+    ]
+   }
+  },
+  {
+   "id": 80,
+   "priority": 6,
+   "action": {
+    "type": "block"
+   },
+   "condition": {
+    "regexFilter": "^[a-z]+://([^/?#@]*@)?\\[(::1?|(f[cdf][0-9a-f]|fe[89ab])[0-9a-f]:[0-9a-f:.]*)\\]",
+    "isUrlFilterCaseSensitive": true,
+    "resourceTypes": [
+     "main_frame",
+     "sub_frame",
+     "stylesheet",
+     "script",
+     "image",
+     "font",
+     "object",
+     "xmlhttprequest",
+     "ping",
+     "csp_report",
+     "media",
+     "websocket",
+     "webtransport",
+     "webbundle",
+     "other"
+    ],
+    "tabIds": [
+     61
+    ]
+   }
+  },
+  {
+   "id": 81,
+   "priority": 6,
+   "action": {
+    "type": "block"
+   },
+   "condition": {
+    "regexFilter": "^[a-z]+://([^/?#@]*@)?\\[::ffff:(7f[0-9a-f]{2}|a[0-9a-f]{2}|ac1[0-9a-f]|e[0-9a-f]{3}|[0-9a-f]{1,2}|c0a8|a9fe|64[4-7][0-9a-f]):[0-9a-f]{1,4}\\]",
+    "isUrlFilterCaseSensitive": true,
+    "resourceTypes": [
+     "main_frame",
+     "sub_frame",
+     "stylesheet",
+     "script",
+     "image",
+     "font",
+     "object",
+     "xmlhttprequest",
+     "ping",
+     "csp_report",
+     "media",
+     "websocket",
+     "webtransport",
+     "webbundle",
+     "other"
+    ],
+    "tabIds": [
+     61
+    ]
+   }
+  },
+  {
+   "id": 82,
+   "priority": 6,
+   "action": {
+    "type": "block"
+   },
+   "condition": {
+    "regexFilter": "^[a-z]+://([^/?#@]*@)?([^/?#@:]*\\.)?(localhost|local|internal)\\.?[:/]",
+    "isUrlFilterCaseSensitive": true,
+    "resourceTypes": [
+     "main_frame",
+     "sub_frame",
+     "stylesheet",
+     "script",
+     "image",
+     "font",
+     "object",
+     "xmlhttprequest",
+     "ping",
+     "csp_report",
+     "media",
+     "websocket",
+     "webtransport",
+     "webbundle",
+     "other"
+    ],
+    "tabIds": [
+     61
+    ]
+   }
+  },
+  {
+   "id": 83,
+   "priority": 6,
+   "action": {
+    "type": "block"
+   },
+   "condition": {
+    "regexFilter": "^[a-z]+://([^/?#@]*@)?((0|10|127|22[4-9]|23[0-9])\\.[0-9]+|100\\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])|172\\.(1[6-9]|2[0-9]|3[01])|192\\.168|169\\.254)\\.[0-9.]+[:/]",
+    "isUrlFilterCaseSensitive": true,
+    "resourceTypes": [
+     "main_frame",
+     "sub_frame",
+     "stylesheet",
+     "script",
+     "image",
+     "font",
+     "object",
+     "xmlhttprequest",
+     "ping",
+     "csp_report",
+     "media",
+     "websocket",
+     "webtransport",
+     "webbundle",
+     "other"
+    ],
+    "tabIds": [
+     -1
+    ],
+    "domainType": "thirdParty"
+   }
+  },
+  {
+   "id": 84,
+   "priority": 6,
+   "action": {
+    "type": "block"
+   },
+   "condition": {
+    "regexFilter": "^[a-z]+://([^/?#@]*@)?\\[(::1?|(f[cdf][0-9a-f]|fe[89ab])[0-9a-f]:[0-9a-f:.]*)\\]",
+    "isUrlFilterCaseSensitive": true,
+    "resourceTypes": [
+     "main_frame",
+     "sub_frame",
+     "stylesheet",
+     "script",
+     "image",
+     "font",
+     "object",
+     "xmlhttprequest",
+     "ping",
+     "csp_report",
+     "media",
+     "websocket",
+     "webtransport",
+     "webbundle",
+     "other"
+    ],
+    "tabIds": [
+     -1
+    ],
+    "domainType": "thirdParty"
+   }
+  },
+  {
+   "id": 85,
+   "priority": 6,
+   "action": {
+    "type": "block"
+   },
+   "condition": {
+    "regexFilter": "^[a-z]+://([^/?#@]*@)?\\[::ffff:(7f[0-9a-f]{2}|a[0-9a-f]{2}|ac1[0-9a-f]|e[0-9a-f]{3}|[0-9a-f]{1,2}|c0a8|a9fe|64[4-7][0-9a-f]):[0-9a-f]{1,4}\\]",
+    "isUrlFilterCaseSensitive": true,
+    "resourceTypes": [
+     "main_frame",
+     "sub_frame",
+     "stylesheet",
+     "script",
+     "image",
+     "font",
+     "object",
+     "xmlhttprequest",
+     "ping",
+     "csp_report",
+     "media",
+     "websocket",
+     "webtransport",
+     "webbundle",
+     "other"
+    ],
+    "tabIds": [
+     -1
+    ],
+    "domainType": "thirdParty"
+   }
+  },
+  {
+   "id": 86,
+   "priority": 6,
+   "action": {
+    "type": "block"
+   },
+   "condition": {
+    "regexFilter": "^[a-z]+://([^/?#@]*@)?([^/?#@:]*\\.)?(localhost|local|internal)\\.?[:/]",
+    "isUrlFilterCaseSensitive": true,
+    "resourceTypes": [
+     "main_frame",
+     "sub_frame",
+     "stylesheet",
+     "script",
+     "image",
+     "font",
+     "object",
+     "xmlhttprequest",
+     "ping",
+     "csp_report",
+     "media",
+     "websocket",
+     "webtransport",
+     "webbundle",
+     "other"
+    ],
+    "tabIds": [
+     -1
+    ],
+    "domainType": "thirdParty"
+   }
+  }
+ ],
+ "windowErrors": [
+  {
+   "note": "The receiver is not allowed in incognito: no window opens.",
+   "setup": "no incognito access",
+   "req": {
+    "t": "req",
+    "id": "f1",
+    "op": "windows.create",
+    "args": [
+     {
+      "url": "about:blank",
+      "focused": false,
+      "incognito": true
+     },
+     "my-repo",
+     "fetch"
+    ]
+   },
+   "error": "not allowed in incognito"
+  },
+  {
+   "note": "Chrome gives no window: the same text.",
+   "setup": "no window",
+   "req": {
+    "t": "req",
+    "id": "f2",
+    "op": "windows.create",
+    "args": [
+     {
+      "url": "about:blank",
+      "focused": false,
+      "incognito": true
+     },
+     "my-repo",
+     "fetch"
+    ]
+   },
+   "error": "not allowed in incognito"
+  },
+  {
+   "note": "Another incognito tab is open (the operator's own): all incognito windows share one context.",
+   "setup": "another incognito tab",
+   "req": {
+    "t": "req",
+    "id": "f3",
+    "op": "windows.create",
+    "args": [
+     {
+      "url": "about:blank",
+      "focused": false,
+      "incognito": true
+     },
+     "my-repo",
+     "fetch"
+    ]
+   },
+   "error": "another private window is open"
+  },
+  {
+   "note": "An act window is open: an act window and a fetch window never both open.",
+   "setup": "act window",
+   "req": {
+    "t": "req",
+    "id": "f4",
+    "op": "windows.create",
+    "args": [
+     {
+      "url": "about:blank",
+      "focused": false,
+      "incognito": true
+     },
+     "my-repo",
+     "fetch"
+    ]
+   },
+   "error": "another private window is open"
+  },
+  {
+   "note": "The fetch window's rules are not held (the call fails): the window ends.",
+   "setup": "rules fail",
+   "req": {
+    "t": "req",
+    "id": "f5",
+    "op": "windows.create",
+    "args": [
+     {
+      "url": "about:blank",
+      "focused": false,
+      "incognito": true
+     },
+     "my-repo",
+     "fetch"
+    ]
+   },
+   "error": "rules not held"
+  }
+ ],
+ "endReq": {
+  "t": "req",
+  "id": "7c1d2e03-11",
+  "op": "fetch_end"
+ },
+ "endRes": {
+  "t": "res",
+  "id": "7c1d2e03-11",
+  "ok": true,
+  "data": {
+   "closed": 1
+  }
+ },
+ "errors": {
+  "bridge": [
+   "not allowed in incognito",
+   "another private window is open",
+   "rules not held",
+   "rules not removed"
+  ],
+  "main": [
+   "fetch not closed",
+   "rules not removed"
+  ]
+ },
+ "refused": [
+  "http://127.0.0.1/",
+  "https://127.255.0.9:8443/x?y",
+  "http://0.0.0.0/",
+  "http://0.1.2.3/",
+  "http://10.0.0.1/",
+  "http://10.255.255.255/a",
+  "http://100.64.0.1/",
+  "http://100.127.255.255/",
+  "http://172.16.0.1/",
+  "http://172.31.9.9/",
+  "http://192.168.1.1/",
+  "http://169.254.169.254/latest/meta-data/",
+  "http://224.0.0.1/",
+  "http://239.255.255.250:1900/",
+  "ws://10.0.0.1/ws",
+  "wss://192.168.0.2/",
+  "http://user:pw@127.0.0.1/",
+  "http://u@10.1.1.1:81/",
+  "http://[::1]/",
+  "http://[::]/",
+  "http://[fc00::1]/",
+  "http://[fdff:ffff::1]:8080/",
+  "http://[fe80::1]/",
+  "http://[febf::1]/",
+  "http://[ff02::1]/",
+  "http://[::ffff:7f00:1]/",
+  "http://[::ffff:a01:203]:8080/x",
+  "http://[::ffff:c0a8:101]/",
+  "http://[::ffff:a9fe:a9fe]/",
+  "http://[::ffff:0:0]/",
+  "http://[::ffff:6440:1]/",
+  "http://[::ffff:ac1f:1]/",
+  "http://[::ffff:e000:1]/",
+  "http://localhost/",
+  "http://localhost:3000/",
+  "http://app.localhost/",
+  "http://foo.localhost./",
+  "http://printer.local/",
+  "http://x.y.internal:8080/",
+  "http://local/",
+  "http://internal/",
+  "http://user@localhost:8080/"
+ ],
+ "allowed": [
+  "https://example.com/",
+  "http://8.8.8.8/",
+  "http://1.10.0.1/",
+  "http://11.0.0.1/",
+  "http://126.0.0.1/",
+  "http://128.0.0.1/",
+  "http://100.63.255.255/",
+  "http://100.128.0.1/",
+  "http://172.15.0.1/",
+  "http://172.32.0.1/",
+  "http://192.169.0.1/",
+  "http://169.253.0.1/",
+  "http://223.255.255.255/",
+  "http://240.0.0.1/",
+  "http://[2001:db8::1]/",
+  "http://[2606:4700::1111]/",
+  "http://[::2]/",
+  "http://[fec0::1]/",
+  "http://[fb00::1]/",
+  "http://[::ffff:808:808]/",
+  "http://[::ffff:6380:1]/",
+  "http://[::ffff:ac20:1]/",
+  "http://[::ffff:f000:1]/",
+  "http://[::7f00:1]/",
+  "http://localhost.example.com/",
+  "http://notlocalhost/",
+  "http://example.com/localhost/",
+  "http://localhost@example.com/",
+  "http://example.com/?a=@127.0.0.1/",
+  "http://www.plain.test/",
+  "http://10.0.0.1.example.com/",
+  "http://local.example/",
+  "http://internal.example/",
+  "http://example.com/http://127.0.0.1/"
+ ],
+ "sameSite": [
+  {
+   "note": "A request with no tab to its own local site: no block (domainType thirdParty).",
+   "url": "http://localhost:3000/api",
+   "initiator": "http://localhost:3000"
+  },
+  {
+   "url": "http://app.localhost/api",
+   "initiator": "http://app.localhost"
+  },
+  {
+   "url": "http://127.0.0.1:8000/x",
+   "initiator": "http://127.0.0.1:8000"
+  }
+ ]
+}

@@ -22,6 +22,12 @@
 // again gives no act tab a scope). A popup or a replaced tab of an act tab is
 // an act tab. An act tab that closed or was replaced stays one for
 // TOMBSTONE_MS (wasAct), as a mark does.
+//
+// The fetch tabs of PageFetch (C10, the fetch window; fetch-window.js) are
+// not in the map: they have no scope, no mark and no key tab:<id>, and the
+// scope's list does not apply to them (C5, the fetch window's rules). A
+// popup or a replaced tab of a fetch tab is a fetch tab. A fetch tab that
+// closed or was replaced stays one for TOMBSTONE_MS (wasFetch).
 import { NO_SCOPES, isName } from "./scopes.js";
 
 export const TOMBSTONE_MS = 10000;
@@ -42,6 +48,8 @@ export class TabMap {
   #acts = new Set(); // the act tabs of the sign-in act (act.js)
   #incognito = new Set(); // the incognito tabs that the receiver knows (tabs.onCreated, the start's read, tabs.onReplaced)
   #keptActs = new Map(); // tabId -> until: act tabs that closed or were replaced
+  #fetches = new Set(); // the fetch tabs of PageFetch (fetch-window.js)
+  #keptFetches = new Map(); // tabId -> until: fetch tabs that closed or were replaced
   #restored = false;
   #restoring = null;
   // The object of the last set_scopes (it applies now), and the last applied one.
@@ -144,7 +152,7 @@ export class TabMap {
 
   #prune() {
     const now = this.#clock.now();
-    for (const m of [this.#kept, this.#keptOrphans, this.#gone, this.#keptMarks, this.#keptActs]) {
+    for (const m of [this.#kept, this.#keptOrphans, this.#gone, this.#keptMarks, this.#keptActs, this.#keptFetches]) {
       for (const [k, v] of m) if ((typeof v === "number" ? v : v.until) <= now) m.delete(k);
     }
   }
@@ -250,21 +258,27 @@ export class TabMap {
     if (tab && Number.isInteger(tab.id) && tab.incognito === true) this.#incognito.add(tab.id);
   }
 
-  // An incognito tab: one that the receiver knows (an act tab is one). A tab
-  // that the start's read missed (it failed) counts as a tab of the default
-  // context.
+  // An incognito tab: one that the receiver knows (an act tab and a fetch
+  // tab are). A tab that the start's read missed (it failed) counts as a tab
+  // of the default context.
   isIncognito(tabId) {
-    return this.#incognito.has(tabId) || this.#acts.has(tabId);
+    return this.#incognito.has(tabId) || this.#acts.has(tabId) || this.#fetches.has(tabId);
   }
 
-  // An incognito tab that is no act tab: the operator's own (C5, C10).
+  // An incognito tab that is no act tab and no fetch tab: the operator's own (C5, C10).
   isOtherIncognito(tabId) {
-    return this.#incognito.has(tabId) && !this.#acts.has(tabId);
+    return this.#incognito.has(tabId) && !this.#acts.has(tabId) && !this.#fetches.has(tabId);
+  }
+
+  // An act tab or a fetch tab: the incognito tabs of agent-browser's service,
+  // which its own session attaches (C10).
+  isServiceTab(tabId) {
+    return this.#acts.has(tabId) || this.#fetches.has(tabId);
   }
 
   // Some incognito tab is open.
   hasIncognito() {
-    return this.#incognito.size > 0 || this.#acts.size > 0;
+    return this.#incognito.size > 0 || this.#acts.size > 0 || this.#fetches.size > 0;
   }
 
   // ---- the act tabs ----
@@ -295,6 +309,34 @@ export class TabMap {
     return true;
   }
 
+  // ---- the fetch tabs ----
+
+  // A fetch tab now (not one that closed).
+  isFetch(tabId) {
+    return this.#fetches.has(tabId);
+  }
+
+  // A fetch tab now, or one that closed or was replaced in the last TOMBSTONE_MS.
+  wasFetch(tabId) {
+    this.#prune();
+    return this.#fetches.has(tabId) || this.#keptFetches.has(tabId);
+  }
+
+  addFetch(tabId) {
+    this.#fetches.add(tabId);
+  }
+
+  fetches() {
+    return [...this.#fetches];
+  }
+
+  #leaveFetches(tabId) {
+    if (!this.#fetches.delete(tabId)) return false;
+    this.#prune();
+    this.#keptFetches.set(tabId, this.#clock.now() + TOMBSTONE_MS);
+    return true;
+  }
+
   // ---- the events ----
 
   // tabs.onRemoved: the entry, the orphan membership and the mark leave, and
@@ -306,6 +348,7 @@ export class TabMap {
     this.#leaveOrphans(tabId);
     this.#leaveMarks(tabId);
     this.#leaveActs(tabId);
+    this.#leaveFetches(tabId);
     this.#gone.set(tabId, this.#clock.now() + TOMBSTONE_MS);
     return scope;
   }
@@ -315,9 +358,11 @@ export class TabMap {
   // or a kept membership of one (the set spreads as the mark does), else its
   // entry, {mark: true} for a marked tab, else its kept entry or kept mark,
   // else null (no scope). The entry of an act tab (or a kept one) gives
-  // {scope, act: true}: the new tab is an act tab too.
+  // {scope, act: true}: the new tab is an act tab too. A fetch tab (or a
+  // kept one) gives {fetch: true}: the new tab is a fetch tab too.
   opener(tabId) {
     this.#prune();
+    if (this.#fetches.has(tabId) || this.#keptFetches.has(tabId)) return { fetch: true };
     const act = this.#acts.has(tabId) || this.#keptActs.has(tabId) ? { act: true } : {};
     if (this.#orphans.has(tabId) || this.#keptOrphans.has(tabId)) return { orphan: true };
     if (this.#entries.has(tabId)) return { scope: this.#entries.get(tabId), ...act };
@@ -331,11 +376,16 @@ export class TabMap {
   // the first applied set_scopes after the worker's start on, a scope with no
   // list never enters the map: its tab joins the orphan set. Before it, such
   // a tab enters the map with its scope (that set_scopes sweeps it). A tab of
-  // a marked tab is marked, and a tab of an act tab is an act tab. Gives
-  // {orphan: true}, {mark: true}, {scope} or {scope, act: true} (the tab
+  // a marked tab is marked, a tab of an act tab is an act tab, and a tab of
+  // a fetch tab is a fetch tab (not in the map). Gives {orphan: true},
+  // {mark: true}, {fetch: true}, {scope} or {scope, act: true} (the tab
   // entered the map) or null.
   adopt(tabId, from) {
     if (from === null) return null;
+    if (from.fetch) {
+      this.#fetches.add(tabId);
+      return { fetch: true };
+    }
     if (from.mark) {
       this.#marks.add(tabId);
       return { mark: true };
@@ -361,6 +411,7 @@ export class TabMap {
     this.#leaveOrphans(tabId);
     this.#leaveMarks(tabId);
     this.#leaveActs(tabId);
+    this.#leaveFetches(tabId);
   }
 
   // ---- set_scopes ----

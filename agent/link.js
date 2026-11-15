@@ -23,8 +23,11 @@ const MAX_WAITING = 100;
 // The hello's features (C4): "scopes" says that the receiver speaks
 // set_scopes, so a new daemon never sends it the old set_allowlist; "act"
 // says that it has the act of the stored sign-ins (the act window, act_rules,
-// act_cookies and act_end), so the service starts an act only with it.
-export const FEATURES = Object.freeze(["scopes", "act"]);
+// act_cookies and act_end), so the service starts an act only with it;
+// "fetch" says that it has PageFetch's fetch window (the mark fetch of
+// windows.create, its rules and fetch_end), so the service fetches only with
+// it. A reader tests each feature for membership.
+export const FEATURES = Object.freeze(["scopes", "act", "fetch"]);
 
 // The daemon drops the link at a message over MAX_TO_DAEMON (wire.js). So a
 // bridge res over it goes in parts up to maxResult (C10), any other res over

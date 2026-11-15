@@ -138,8 +138,8 @@ test("C4 states the set_scopes request and answer, and the receiver's hello with
   assert.ok(C4.includes('`{"rules":<scope rules in force>,"closed":<tabs closed>,"refused":<entries, list names and scopes refused>}`'));
   assert.ok(C4.includes("The daemon waits 10 s for `ping` and `set_scopes`"));
   assert.ok(C4.includes("`" + JSON.stringify({ ...helloV.hello, version: "<manifest version>" }) + "`"), "C4 shows the hello");
-  // The feature act: the act of the stored sign-ins (board ab-v16.97.3).
-  assert.deepEqual(helloV.hello.features, ["scopes", "act"]);
+  // The feature act: the act of the stored sign-ins (board ab-v16.97.3); the feature fetch: PageFetch's fetch window (board ab-v16.102).
+  assert.deepEqual(helloV.hello.features, ["scopes", "act", "fetch"]);
   assert.deepEqual(helloV.hello.channels, CHANNELS);
   assert.ok(C4.includes("`test/vectors/hello.json`") && C4.includes("`test/vectors/scopes.json`"), "C4 names the vectors");
 });
@@ -531,7 +531,7 @@ function kindFits(kind, a) {
         ["left", "top", "width", "height"].every((k) => !Object.hasOwn(a, k) || int(a[k])) &&
         (!Object.hasOwn(a, "incognito") || a.incognito === true);
     // The mark of an act window (board ab-v16.97.3).
-    case "mark": return a === "act";
+    case "mark": return a === "act" || a === "fetch";
     case "windowUpdate":
       return isObj(a) && Object.keys(a).length > 0 && onlyKeys(a, ["left", "top", "width", "height", "state", "focused"]) &&
         (!Object.hasOwn(a, "focused") || typeof a.focused === "boolean") &&
@@ -546,9 +546,9 @@ function kindFits(kind, a) {
     default: return false;
   }
 }
-// The pair rule of windows.create (C10, board ab-v16.97.3): incognito only with the mark act, and the
-// mark act only with incognito true.
-const pairFits = (o, args) => o.op !== "windows.create" || (args[2] === "act") === Object.hasOwn(args[0], "incognito");
+// The pair rule of windows.create (C10, board ab-v16.97.3; the mark fetch since board ab-v16.102): incognito only
+// with a mark (act or fetch), and a mark only with incognito true.
+const pairFits = (o, args) => o.op !== "windows.create" || (args[2] === "act" || args[2] === "fetch") === Object.hasOwn(args[0], "incognito");
 function argsFit(o, args) {
   if (!Array.isArray(args) || args.length < o.required || args.length > o.args.length) return false;
   return args.every((a, i) => kindFits(o.kinds[i], a)) && pairFits(o, args);
@@ -1462,7 +1462,7 @@ test("the pointer vectors cover each check, each bound and each order of C10 (bo
 
 // Board ab-v16.71's measure of `xdotool sleep` (the design's section 7.1 at agent-browser 4400370) in C10, by board ab-v16.77.
 test("C10 states board ab-v16.71's measure of xdotool sleep (board ab-v16.77)", () => {
-  assert.ok(says(C10, "Board ab-v16.71's live check measured how well `xdotool sleep` keeps `dt` (taylor, Chromium 156 in the live test's own Xvfb, six runs; the agent pointer design, section 7.1): the times of the moves that the leaving page saw kept the planned `dt` to within 1 ms (median 0 ms, p90 1 ms over 5132 pairs of moves; at most 5 ms, except once 116 ms under the load of the whole live suite), and one script's start on `xdotool -` costs 20 to 26 ms (median). Standard input works: no argv is needed."), "C10: the measure");
+  assert.ok(says(C10, "Board ab-v16.71's live check measured how well `xdotool sleep` keeps `dt` (the Linux server, Chromium 156 in the live test's own Xvfb, six runs; the agent pointer design, section 7.1): the times of the moves that the leaving page saw kept the planned `dt` to within 1 ms (median 0 ms, p90 1 ms over 5132 pairs of moves; at most 5 ms, except once 116 ms under the load of the whole live suite), and one script's start on `xdotool -` costs 20 to 26 ms (median). Standard input works: no argv is needed."), "C10: the measure");
   assert.ok(!says(protocol, "its numbers come here"), "docs/protocol.md: the numbers are in");
 });
 
@@ -1853,7 +1853,7 @@ test("C4 states the act's three requests with their shapes, their checks in orde
     "The shared vector: `test/vectors/act.json`",
   ]) assert.ok(says(act, s), `C4 says: ${s}`);
   assert.ok(says(C4, "The act's caller waits 10 s for `act_rules`, `act_cookies` and `act_end`."));
-  assert.ok(says(C4, "(`features`: the allowlists, below, and the act of the stored sign-ins, below)"));
+  assert.ok(says(C4, "(`features`: the allowlists, below, the act of the stored sign-ins, below, and PageFetch's fetch window, below)"));
   for (const e of actV.errors.main) assert.ok(act.includes("`" + e + "`"), `C4 names the error ${e}`);
   assert.deepEqual(actV.features, helloV.hello.features);
 });
@@ -1947,7 +1947,7 @@ test("C10 states the act window: the mark and the pair rule, the steps of window
     "The eager attach skips every incognito tab (the hold, above), so only the act's caller attaches the act tab.",
     "`windows.get` of an act window answers as for any window.",
     "No op moves, resizes, selects, closes or fills an act tab or an act window: `tabs.update` and `tabs.remove` of an act tab, and a client's `Page.close` on its own session, get `not an agent tab`; `windows.update` of an act window or of an act popup's window, and a `tabs.create` with its `windowId`, get `not an agent window` (the tab checks, above). Only `act_end` closes an act tab.",
-    "Every other incognito tab is no agent tab (review-ce44 B1).",
+    "Every other incognito tab (no act tab and no fetch tab: the fetch window, below) is no agent tab (review-ce44 B1).",
     "It gets no scope and no operator mark, so it fails closed: no rule allows it, and static rule 1 blocks its main frames (C5).",
     "The eager attach skips it; `debugger.attach`, `tabs.update` and `tabs.remove` of it, and a `Page.close` on its own session, get `not an agent tab`, with no attach for a close; `windows.update` of its window and a `tabs.create` into its window get `not an agent window`; `downloads.search` leaves its downloads out, and `downloads.cancel` of one gets `not an agent download`; C5's guard sends it no `about:blank` and no `blocked`, also before the map knows it (the guard reads the tab: C5, `blocked`); and C5's closing rule and sweep never close it.",
     "A client's tab never goes into an incognito window (review-ce44 N9).",
@@ -1966,9 +1966,9 @@ test("C10 states the act window: the mark and the pair rule, the steps of window
   ]) assert.ok(says(part, s), `C10 says: ${s}`);
   for (const s of [
     "`mark` (`windows.create`): the string `act`, the mark of an act window",
-    "The pair rule of `windows.create`: `incognito` comes only with the mark `act`, and the mark `act` only with `incognito` `true`; else `bad args`.",
+    "The pair rule of `windows.create`: `incognito` comes only with a mark, and a mark only with `incognito` `true`; else `bad args`.",
     "2. The args: their count, then the kind of each arg, then the pair rule of `windows.create` (below); else `bad args`.",
-    "`debugger.attach` of an incognito tab that is no act tab gets `not an agent tab`",
+    "`debugger.attach` of an incognito tab that is no act tab and no fetch tab (the fetch window, below) gets `not an agent tab`",
     "`tabs.update` and `tabs.remove` of any incognito tab (an act tab, and the operator's own) get `not an agent tab`, with no attach for a close and no change of the tab",
     "A client's `Page.close` on the own session of an incognito tab gets `not an agent tab` too: only `act_end` (C4) closes an act tab.",
     "for any other window the receiver reads the window first (`windows.get`), and an incognito window (an act popup's, the operator's) gets `not an agent window` too, with no `windows.update` and no `tabs.create`.",
@@ -2052,9 +2052,9 @@ test("review-ce44b and the daemon lead's P1: C5 and C10 state R1's item, the exa
 // ---- the merge guard's floor (C5, C10; board ab-v16.99; agent-browser C11, the merge guard) ----
 // C5's item holds exactly these sentences; C10's op row, its kind and the changed row of debugger.detach (old, then new).
 const FLOOR_ITEMS = [
-  "The merge guard's floor (board ab-v16.99; agent-browser C11, the merge guard; the operator's rule of 2026-11-12: no agent merges a PR of agentwatch's issue triage): session rule id 9, priority 6, `{\"type\":\"block\"}`, `requestDomains` = the guarded hosts, `excludedRequestMethods` `[\"get\",\"head\",\"options\"]`, `resourceTypes` every resource type (the main frame among them), and `excludedTabIds` = the guarded tabs, the marked tabs and the act tabs (no `excludedTabIds` while none is). It blocks each write (a request whose method is not `GET`, `HEAD` or `OPTIONS`) to a guarded host or its subdomains from every other tab, and from each request with no tab (a shared worker, a service worker). The guarded hosts are GitHub's, `github.com`, always, and the hosts that `bridge.mergeGuard` adds (C10). The guarded tabs are the tabs of the last `bridge.mergeGuard` that are bridge tabs: the tabs where agent-browser's model judges each request itself with its own `Fetch`. Its priority is above every allow rule (the scope rules' 2, the import's rules' 2, rule 8's 2, the act's rules' 5), so no allow rule lets a write through.",
+  "The merge guard's floor (board ab-v16.99; agent-browser C11, the merge guard; the operator's rule of 2026-11-12: no agent merges a PR of agentwatch's issue triage): session rule id 9, priority 6, `{\"type\":\"block\"}`, `requestDomains` = the guarded hosts, `excludedRequestMethods` `[\"get\",\"head\",\"options\"]`, `resourceTypes` every resource type (the main frame among them), and `excludedTabIds` = the guarded tabs, the marked tabs and the act tabs (no `excludedTabIds` while none is). It blocks each write (a request whose method is not `GET`, `HEAD` or `OPTIONS`) to a guarded host or its subdomains from every other tab, and from each request with no tab (a shared worker, a service worker). The guarded hosts are GitHub's, `github.com`, always, and the hosts that `bridge.mergeGuard` adds (C10). The guarded tabs are the tabs of the last `bridge.mergeGuard` that are bridge tabs: the tabs where agent-browser's model judges each request itself with its own `Fetch`. A fetch tab is never a guarded tab (C10, the fetch window): the receiver leaves it out of `bridge.mergeGuard`'s tabs and out of `excludedTabIds`, so the floor blocks every write to a guarded host from the fetch window (the PageFetch design, section 5.3). Its priority is above every allow rule (the scope rules' 2, the import's rules' 2, rule 8's 2, the act's rules' 5), so no allow rule lets a write through.",
   "The receiver writes it at its worker's start, in the same `updateSessionRules` call that removes the session rules of a worker before it (with no guarded tab), so a worker that starts again leaves no moment without it; when that removal fails or has not ended in time, it writes the floor in a call of its own.",
-  "It writes it again in the receiver's one chain of rule changes, when it changes: at each `bridge.mergeGuard`, at each change of the marks, and when the act's rules come, change or go (the act tabs leave the floor: the act's sign-in posts to its site, and the act's own guard judges it).",
+  "It writes it again in the receiver's one chain of rule changes, when it changes: at each `bridge.mergeGuard`, at each change of the marks, and when the act's rules come, change or go (the act tabs leave the floor: the act's sign-in posts to its site, and the act's own guard judges it), and when the fetch window's rules come, change or go.",
   "A tab leaves the guarded tabs before its debugger goes: at the bridge's `debugger.detach` the receiver writes the floor first, then detaches (Chrome lets a paused request go at a detach); at a link change and at the worker's start every tab leaves them before any detach. After Chrome's own detach (`chrome.debugger.onDetach`) the tab leaves them too, a moment after the detach.",
   "What it does not stop, stated plainly: a write of a guarded tab (agent-browser's model judges those); a write of an operator's marked tab or of an act tab; a request to a host that is not guarded; a message on a WebSocket; and a write in the moment after Chrome's own detach, before the floor is written again."
 ];
@@ -2069,7 +2069,7 @@ const FLOOR_C10 = [
   { old: "| `debugger.detach` | `[tabId]` | `null` | `WAIT_DEFAULT_MS` | Releases a hold of the tab, then `chrome.debugger.detach({tabId})`. A tab that is not a bridge tab also answers `null`. |",
     text: "| `debugger.detach` | `[tabId]` | `null` | `WAIT_DEFAULT_MS` | Takes the tab out of the merge guard's guarded tabs and writes the floor (C5, the merge guard's floor), releases a hold of the tab, then `chrome.debugger.detach({tabId})`. A tab that is not a bridge tab also answers `null`. |" },
   { old: "(a new row after the row of bridge.tabScopes)",
-    text: "| `bridge.mergeGuard` | `[guard]` | `null` | `WAIT_DEFAULT_MS` | The receiver's own op (board ab-v16.99): the merge guard's floor (C5). `guard` gives the hosts that the floor adds to GitHub's and the tabs where agent-browser's model guards each request itself, a full replace of both; of the tabs only the bridge tabs count. It answers `null` when the floor rule is in force. agent-browser's model sends it at each link up and after each tab that it guards. |" },
+    text: "| `bridge.mergeGuard` | `[guard]` | `null` | `WAIT_DEFAULT_MS` | The receiver's own op (board ab-v16.99): the merge guard's floor (C5). `guard` gives the hosts that the floor adds to GitHub's and the tabs where agent-browser's model guards each request itself, a full replace of both; of the tabs only the bridge tabs that are no fetch tab count (C5, the fetch window's rules). It answers `null` when the floor rule is in force. agent-browser's model sends it at each link up and after each tab that it guards. |" },
   { old: "(a new kind before the kind contentDetails)",
     text: "- `mergeGuard` (`bridge.mergeGuard`, board ab-v16.99): exactly `hosts` and `tabs`. `hosts` is a list of at most 16 hosts, each a normalized C5 entry. `tabs` is a list of at most 1024 ids." },
 ];
@@ -2088,4 +2088,77 @@ test("the receiver's floor is the code's: rule 9, priority 6, GitHub's host, the
   assert.ok(c5.includes(`The guarded hosts are GitHub's, \`${FLOOR_HOSTS[0]}\`, always`));
   assert.ok(c5.includes(`\`excludedRequestMethods\` \`${JSON.stringify(FLOOR_FREE_METHODS)}\``));
   assert.ok(flat(C10).includes(`a list of at most ${MAX_GUARD_HOSTS} hosts`) && flat(C10).includes(`a list of at most ${MAX_GUARD_TABS} ids`));
+});
+
+// ---- PageFetch's fetch window (C4, C5, C10; board ab-v16.102; agent-browser's PageFetch design, sections 5.3 and 5.4) ----
+
+const fetchV = JSON.parse(read("test/vectors/fetch.json"));
+
+test("C4 states PageFetch's fetch window: the feature fetch by membership, fetch_end with its order, its errors and its wait, and the vector", () => {
+  const at = flat(C4).indexOf("**PageFetch's fetch window (board ab-v16.102).**");
+  assert.ok(at > 0, "C4 has the part");
+  const part = flat(C4).slice(at);
+  for (const s of [
+    "The hello's `features` holds `\"fetch\"` when the receiver has the fetch window and `fetch_end`.",
+    "`features` is a list: a reader tests it for membership, never for its order or its length.",
+    '`{"t":"req","id":"<id>","op":"fetch_end"}` -> `{"closed":<tabs closed>}`',
+    "While a tab of the fetch is open, the fetch window's rules stay, and the answer is `fetch not closed`.",
+    "Else the fetch window's rules go (C5; a call that fails answers `rules not removed`, and they stay)",
+    "The order of `fetch_end` is the order of `act_end`: first the tabs, then the rules.",
+    "A link change and the worker's start end the fetch window too (C10, the fetch window).",
+    "The shared vector: `test/vectors/fetch.json`",
+  ]) assert.ok(says(part, s), `C4 says: ${s}`);
+  for (const e of fetchV.errors.main) assert.ok(part.includes("`" + e + "`"), `C4 names the error ${e}`);
+  assert.ok(says(C4, "The fetch's caller waits 10 s for `fetch_end`."));
+  assert.ok(says(C4, "and the request of PageFetch's fetch window (below): `fetch_end`."));
+  assert.deepEqual(fetchV.features, helloV.hello.features);
+  assert.ok(says(protocol, "A receiver without it answers `fetch_end` `unknown op` (channel `main`) and the mark `fetch` of `windows.create` `bad args`."));
+});
+
+test("C5 states the fetch window's rules with the code's ids, priorities, patterns and ranges, their life, the guard's skip, the floor, the limits and the measure", async () => {
+  const { FETCH_RULE_ID, FETCH_BLOCK_FIRST, FETCH_BLOCK_PRIORITY, FETCH_RULE_MAX, REFUSED_ADDRESSES, fetchRules } = await import("../agent/dnr.js");
+  assert.deepEqual(fetchV.rules, fetchRules([fetchV.fetchWindow.res.data.tabs[0].id]));
+  assert.deepEqual([FETCH_RULE_ID, FETCH_BLOCK_FIRST, FETCH_BLOCK_PRIORITY, FETCH_RULE_MAX, REFUSED_ADDRESSES.length], [78, 79, 6, 86, 4]);
+  for (const s of [
+    "Rule 78, of the marked-tab rule 8's kind: priority 2, `{\"type\":\"allow\"}`, `resourceTypes` `[\"main_frame\", \"sub_frame\", \"object\"]`, `tabIds` F, no host condition.",
+    "a rule with priority 6, `{\"type\":\"block\"}`, `regexFilter` P, `isUrlFilterCaseSensitive` `true`, every resource type (the main frame among them) and `tabIds` F (ids 79 to 82); and for each P the same rule with `tabIds` `[-1]` and `domainType` `\"thirdParty\"` (ids 83 to 86).",
+    "IPv4 `0.0.0.0/8` (with `0.0.0.0`), `10.0.0.0/8`, `127.0.0.0/8` (loopback), `224.0.0.0/4` (multicast), `100.64.0.0/10` (carrier-grade NAT), `172.16.0.0/12`, `192.168.0.0/16` and `169.254.0.0/16` (link-local, with `169.254.169.254`);",
+    "IPv6 `::` and `::1`, `fc00::/7` (unique local), `fe80::/10` (link-local) and `ff00::/8` (multicast);",
+    "the IPv4-mapped form (`::ffff:0:0/96`) of each IPv4 range above;",
+    "`localhost`, `local` and `internal`, and every name under them.",
+    "Priority 6 is above every allow rule (the scope rules' 2, the import's rules' 2, rule 8's 2, rule 78's 2, the act's rules' 5)",
+    "At the worker's start they stay (the start's removal of every session rule leaves the ids 78 to 86) until the start's end of the fetch has closed every incognito tab that is open; then that end removes them.",
+    "The guard skips a fetch tab (the guard and `blocked`, below), and the merge guard's floor (rule 9, below) still blocks every write to a guarded host from it.",
+    "What they do not stop, stated plainly: a name that resolves to a refused address",
+    "A fetch tab of PageFetch (C10, the fetch window) has no scope, no mark and no list",
+    "A fetch tab is never a guarded tab (C10, the fetch window)",
+    "A fetch tab of PageFetch sends no `blocked`, and neither does one that closed or was replaced in the last `TOMBSTONE_MS` (C10, the fetch window; board ab-v16.102).",
+    `each refused URL of \`test/vectors/fetch.json\` (${fetchV.refused.length}) matched a block in the fetch tab`,
+    `each allowed URL (${fetchV.allowed.length}: public hosts and the edges of the ranges) matched no block`,
+  ]) assert.ok(says(C5, s), `C5 says: ${s}`);
+});
+
+test("C10 states the fetch window: the mark and the pair rule, the steps of windows.create, one private window at a time, the fetch tab's state, the exclusions, the end and the vector", () => {
+  for (const s of [
+    "or the string `fetch`, the mark of a fetch window (the fetch window, below; board ab-v16.102).",
+    "The pair rule of `windows.create`: `incognito` comes only with a mark, and a mark only with `incognito` `true`; else `bad args`.",
+    "With the mark `fetch` and `incognito` `true` (the pair rule): the fetch window (below); its scope needs no list, and its tab gets no scope.",
+    "Never for a fetch tab (the fetch window, below).",
+    "6. ends PageFetch's fetch window (the fetch window, below; board ab-v16.102)",
+    "**The fetch window (board ab-v16.102).**",
+    "`windows.create` with `[createData, scope, \"fetch\"]`",
+    "ends a left fetch window, as `fetch_end` does (C4)",
+    "One private window at a time: the act's work (its window, `act_rules`, `act_cookies` and `act_end`) and the fetch's work (its window and `fetch_end`) run one at a time, in one chain of the receiver.",
+    "Neither ends the other: a fetch window ends only a left fetch window, and an act window only a left act.",
+    "The fetch tab has no scope, no operator mark and no key `tab:<id>`.",
+    "Only `fetch_end` closes a fetch tab.",
+    "The vector: `test/vectors/fetch.json`, with C4's `fetch_end` and C5's rules.",
+  ]) assert.ok(says(C10, s), `C10 says: ${s}`);
+  for (const e of fetchV.errors.bridge) assert.ok(C10.includes("`" + e + "`"), `C10 names the error ${e}`);
+  for (const v of fetchV.windowErrors) assert.ok(fetchV.errors.bridge.includes(v.error), v.req.id);
+  // The vector's window request fits C10's kinds and the pair rule.
+  const req = fetchV.fetchWindow.req;
+  assert.deepEqual([req.op, req.args.length, req.args[0].incognito, req.args[2]], ["windows.create", 3, true, "fetch"]);
+  assert.ok(argsFit(opByName.get("windows.create"), req.args));
+  assert.ok(!argsFit(opByName.get("windows.create"), [{ url: "about:blank" }, "my-repo", "fetch"]), "the pair rule: the mark fetch only with incognito");
 });

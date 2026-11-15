@@ -53,6 +53,8 @@ export function mainOps(chrome) {
     act_rules: (req) => receiver(chrome).act.rules(req),
     act_cookies: (req) => receiver(chrome).act.cookies(req),
     act_end: () => receiver(chrome).act.end(),
+    // The end of PageFetch's fetch window (C4, C5; fetch-window.js).
+    fetch_end: () => receiver(chrome).fetchWindow.end(),
   };
 }
 
@@ -69,7 +71,8 @@ export function setScopes(chrome, msg) {
 
 // The closing rule and the sweep: does the item close tab t? swept collects
 // the tabs of the sweep. They leave every incognito tab out, except an act
-// tab of the sign-in act (C5, C10). The closing rule judges each tab by the last applied
+// tab of the sign-in act (C5, C10): also a fetch tab of PageFetch, which has
+// no scope (only fetch_end closes it). The closing rule judges each tab by the last applied
 // set_scopes: at one that is not applied (its scopes or lists is not an
 // object) the receiver sweeps nothing, and one bad message closes no live
 // session's page; with no applied one since the worker's start it closes
