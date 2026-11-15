@@ -851,8 +851,8 @@ is on, agent-browser's service. The daemon never sends it.
       main frame until rule 78 names it, but a request that its opener's page writes into it is not held); a request
       with no tab to a refused address on the site of its initiator, or from an initiator on a local name; DNS
       prefetch and preconnect, and WebRTC.
-    - Measured on Chromium 156.0.8078.79 (board ab-v16.102: an unpacked extension with these rules for one fetch tab,
-      `chrome.declarativeNetRequest.isRegexSupported` and `testMatchOutcome`; no request was sent and no name
+    - Measured on Chromium 156.0.8078.79 (board ab-v16.102: an unpacked extension with rules 78 to 86 for one fetch
+      tab, `chrome.declarativeNetRequest.isRegexSupported` and `testMatchOutcome`; no request was sent and no name
       resolved): each pattern passes `isRegexSupported`; each refused URL of `test/vectors/fetch.json` (42) matched a
       block in the fetch tab as `xmlhttprequest`, its first six also as `main_frame` and `sub_frame`, and with no tab
       from a public initiator; each allowed URL (36: public hosts, the edges of the ranges, and two userinfo parts
@@ -862,9 +862,9 @@ is on, agent-browser's service. The daemon never sends it.
       name to another local site (4 cases); one from `http://127.0.0.1:8000` to `localhost:3000` matched a block (the
       side effect that stays); `updateSessionRules` took `excludedInitiatorDomains` with the names `local` and
       `internal`. Chromium's URL parser writes `[::ffff:127.0.0.1]` as `[::ffff:7f00:1]` and keeps the dot of
-      `foo.localhost.`. Not measured: the rules with real requests in a real fetch window (stage 2's live tests; a
-      test site there needs a name that Chrome maps to the loopback server, as `www.plain.test` here, because the
-      rules judge the URL's host).
+      `foo.localhost.`. Not measured: rules 87 and 88, and the rules with real requests in a real fetch window (stage
+      2's live tests; a test site there needs a name that Chrome maps to the loopback server, as `www.plain.test`
+      here, because the rules judge the URL's host).
   - The merge guard's floor (board ab-v16.99; agent-browser C11, the merge guard; the operator's rule of 2026-11-12: no
     agent merges a PR of agentwatch's issue triage): session rule id 9, priority 6, `{"type":"block"}`, `requestDomains`
     = the guarded hosts, `excludedRequestMethods` `["get","head","options"]`, `resourceTypes` every resource type (the
