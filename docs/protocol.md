@@ -319,8 +319,8 @@ held one list for the whole agent browser. The request is above. Its fields and 
   counts 1 in `refused` and applies as `null`.
 - `scopes` maps a scope to a list name or `null`. A scope with `null`, or whose list is not in
   `lists` (also a list that applies as absent), has no list: it does not fall back to `default`, and
-  it counts nothing. A scope that does not match the scope pattern applies as absent and counts 1
-  in `refused` (no connection can name it: C11's 404). A scope that matches the pattern but whose
+  it counts nothing. A scope that matches neither of C11's two patterns applies as absent and counts
+  1 in `refused` (no connection can name it: C11's 404). A scope that matches one of them but whose
   value is neither a valid name nor `null` applies as `null` and counts 1 in `refused`: it has no
   list and does not fall back to `default`, so a broken entry never gives a session another list.
 - Each scope in `scopes` is the scope that agentwatch fixed at the session's launch (C11, the
@@ -329,7 +329,8 @@ held one list for the whole agent browser. The request is above. Its fields and 
   tab to another scope at a rename.
 - `default` is a list name or `null`: the list of a scope that `scopes` does not name. With `null`,
   or a valid name that is not in `lists`, such a scope has no list. A `default` that is neither a
-  valid name nor `null` (also a missing one) counts 1 in `refused` and applies as `null`.
+  valid name nor `null` (also a missing one) counts 1 in `refused` and applies as `null`. A remote
+  scope that `scopes` does not name has no list: `default` applies only to a local scope.
 - A `lists` or `scopes` that is not an object (also a missing one) applies as an empty object and
   counts 1 in `refused`. A `scopes` that is not an object also makes `default` apply as `null`
   (with no more count): no scope gets the `default` list while the daemon's scopes are not known.
@@ -1552,7 +1553,7 @@ first document request of a new tab (below).
   - `target`: `{"tabId":<id>}` or `{"tabId":<id>,"sessionId":"<child session>"}`, with no other key.
   - `contentType`: one of `location`, `notifications`, `camera`, `microphone`, `clipboard`,
     `automaticDownloads`.
-  - `scope`: a scope of C11, a string that matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`.
+  - `scope`: a scope of C11, local or remote (C11's two patterns).
   - `newTab` (`tabs.create`): an object with `url`, and at most `active` (a boolean), `windowId` and
     `index` (ids). `url` is `about:blank`.
   - `tabUpdate` (`tabs.update`): exactly `{"active":<boolean>}`. A navigation is `Page.navigate`.
@@ -2888,7 +2889,7 @@ self-contained agent browser. Its text moved there from this file (main `66078cd
 and its tests moved with it. C11 binds agent-browser (the relay, and the service, which stage 1 builds and
 which serves from stage 3) and agentwatch (the daemon). This repository builds no part of C11: the receiver's own rules stay in C4, C5 and C10, which
 name C11 where the relay or the endpoint is the other side. C4 and C11 share the scope pattern
-`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, so a change of it changes both files; from stage 5 it gains an optional
-`<box>/` part for a session of another box (the self-contained design, section 9), with a small change of
-`agent/scopes.js`. C11's vectors moved too: agent-browser's `test/vectors/endpoint.json` is their master, and
+`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, so a change of it changes both files; a scope has an optional `<box>/`
+part for a session of another box (a remote scope, stage 5; the self-contained design, section 9), which
+`agent/scopes.js` takes, and a list name has none. C11's vectors moved too: agent-browser's `test/vectors/endpoint.json` is their master, and
 this repository holds no copy of them.

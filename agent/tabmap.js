@@ -28,7 +28,7 @@
 // scope's list does not apply to them (C5, the fetch window's rules). A
 // popup or a replaced tab of a fetch tab is a fetch tab. A fetch tab that
 // closed or was replaced stays one for TOMBSTONE_MS (wasFetch).
-import { NO_SCOPES, isName } from "./scopes.js";
+import { NO_SCOPES, isScope } from "./scopes.js";
 
 export const TOMBSTONE_MS = 10000;
 export const RESTORE_MAX_MS = 2000;
@@ -118,7 +118,7 @@ export class TabMap {
       const m = KEY.exec(k);
       if (!m) continue;
       const tabId = Number(m[1]);
-      if (open.has(tabId) && isName(v)) this.#entries.set(tabId, v);
+      if (open.has(tabId) && isScope(v)) this.#entries.set(tabId, v);
       else drop.push(k);
     }
     await this.#within(this.#removeKeys(drop), RESTORE_MAX_MS);

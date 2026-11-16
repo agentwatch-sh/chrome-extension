@@ -170,7 +170,8 @@ test("bridge.tabScopes is C10's op, and its request vector gets the vector's res
   await requestVectors(s, V.requests.filter(newOp));
 });
 
-// tabs.create of tab 8 and windows.create of tab 9 (scope my-repo); tabs.remove of tab 8 by the
+// tabs.create of tab 8 and windows.create of tab 9 (scope my-repo), tabs.create of tab 10 (the remote
+// scope linux/web-1, stage 5); tabs.remove of tab 8 by the
 // receiver's close (debugger.getTargets gives target D8E9F0 for tab 8; tab 8 is open with tab 7, so
 // the window rule opens no about:blank; a tabs.onRemoved of tab 8 comes, as the fake timers never
 // fire); debugger.detach, tabs.get and bridge.release of tab 13 of the orphan set.
@@ -187,8 +188,8 @@ test("each request vector of the per-scope build: tabs.create and windows.create
     },
   });
   assert.ok(!s.f.callsTo("tabs.remove").some(([id]) => id === 8), "no chrome.tabs.remove of tab 8: the receiver's close");
-  assert.deepEqual(s.r.map.list(), [{ tabId: 9, scope: "my-repo" }], "tab 8 left the map at its close; tab 9 has its scope");
-  assert.deepEqual(s.f.storage_.session, { "tab:9": "my-repo" }, "the copy");
+  assert.deepEqual(s.r.map.list(), [{ tabId: 9, scope: "my-repo" }, { tabId: 10, scope: V.remoteScope }], "tab 8 left the map at its close; tabs 9 and 10 have their scopes");
+  assert.deepEqual(s.f.storage_.session, { "tab:9": "my-repo", "tab:10": V.remoteScope }, "the copy");
 });
 
 async function badRequestVectors(s, vectors) {

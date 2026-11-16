@@ -4,9 +4,15 @@
 // test/vectors/scopes.json checks both sides.
 import { normalizeEntry } from "./lib/domains.js";
 
-// C11's scope pattern: list names and scopes share it.
+// C11's scope pattern: list names and local scopes share it.
 export const SCOPE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// C11's remote scope (stage 5, board ab-v16.94.7.2): <box>/<session>, two names
+// of SCOPE_PATTERN with one "/". A local scope has no "/", so the two never meet.
+export const REMOTE_SCOPE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// A list name (in lists, a scope's value, default and operator): local only.
 export const isName = (v) => typeof v === "string" && SCOPE_PATTERN.test(v);
+// A scope (of set_scopes, of the tab map and of the bridge): local or remote.
+export const isScope = (v) => typeof v === "string" && (SCOPE_PATTERN.test(v) || REMOTE_SCOPE_PATTERN.test(v));
 // The operator value "*" (C4): the marked tabs may open any site. As a tab's
 // list it covers every host; no list name can be "*" (the scope pattern).
 export const ANY = "*";
@@ -35,10 +41,18 @@ export class ScopeSet {
   }
 
   // A scope's list: its scopes entry when it has one (no fall-back to
-  // default), else default; null when that name is not in lists.
+  // default), else default for a local scope only; null when that name is not
+  // in lists. A remote scope that scopes does not name has no list (C4; fail
+  // closed, board ab-v16.94.7.2).
   listOf(scope) {
-    const name = Object.hasOwn(this.scopes, scope) ? this.scopes[scope] : this.default;
+    const name = Object.hasOwn(this.scopes, scope) ? this.scopes[scope] : isName(scope) ? this.default : null;
     return name !== null && Object.hasOwn(this.lists, name) ? name : null;
+  }
+
+  // The entries of the default list: the list of a local scope that scopes
+  // does not name; null when there is none.
+  defaultEntries() {
+    return this.default !== null && Object.hasOwn(this.lists, this.default) ? this.lists[this.default] : null;
   }
 
   // The entries of a scope's list, or null for a scope with no list.
@@ -86,7 +100,7 @@ export function parseScopes(msg) {
   const scopes = {};
   if (isObj(m.scopes)) {
     for (const [scope, v] of Object.entries(m.scopes)) {
-      if (!isName(scope)) {
+      if (!isScope(scope)) {
         refused += 1; // applies as absent: no connection can name it
       } else if (v === null || isName(v)) {
         scopes[scope] = v;
@@ -114,15 +128,16 @@ export function parseScopes(msg) {
 }
 
 // C5's worker removal: true when some scope has a list in last and in next,
-// and next's list lacks an entry of last's. A scope that neither object names
-// has the default list in each. The operator value counts as one more
+// and next's list lacks an entry of last's. A local scope that neither object
+// names has the default list in each. The operator value counts as one more
 // scope's list: a change from "*" to a list, or a list that loses an entry.
 // No last (the first set_scopes after the worker's start): true.
 export function shrinks(last, next) {
   if (!last) return true;
   const lost = (a, b) => a !== null && b !== null && a.some((e) => !b.includes(e));
-  const names = new Set([...Object.keys(last.scopes), ...Object.keys(next.scopes), ""]); // "" names no scope: the default
+  const names = new Set([...Object.keys(last.scopes), ...Object.keys(next.scopes)]);
   for (const s of names) if (lost(last.entriesOf(s), next.entriesOf(s))) return true;
+  if (lost(last.defaultEntries(), next.defaultEntries())) return true;
   const a = last.markEntries();
   const b = next.markEntries();
   if (a === ANY) return b !== ANY && b !== null;
