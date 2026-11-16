@@ -1,7 +1,7 @@
 #!/bin/sh
 # Live test of the operator and agent packages (the sender and the receiver)
 # in real Chromium on a Linux box with Xvfb, xdotool and ffmpeg (written on
-# taylor). See README.md here.
+# the Linux server). See README.md here.
 #
 #   test/live/run.sh             start everything, run every case, stop everything
 #   test/live/run.sh up          start everything; print the run folder
@@ -44,8 +44,8 @@ say() { echo "run.sh: $*" >&2; }
 ext_id() { sed -n "s/^- $1 extension ID: \`\([a-p]\{32\}\)\`$/\1/p" "$REPO/docs/protocol.md"; }
 
 # The displays that run.sh never takes, whatever LIVE_DISPLAY is: 0 (a
-# desktop), 90 (agentwatch's agent browser on taylor, the operator's), 147, 190,
-# 191, 192 (other programs' displays on taylor). When such a display stops, its
+# desktop), 90 (agentwatch's agent browser on the Linux server, the operator's), 147, 190,
+# 191, 192 (other programs' displays on the Linux server). When such a display stops, its
 # socket and lock file go, so the free test alone would take it. The same list
 # as RESERVED_DISPLAYS in harness_guard.py (a test compares them).
 RESERVED_DISPLAYS="0 90 147 190 191 192"

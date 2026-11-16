@@ -257,7 +257,7 @@ test("a late beforeunload accept keeps the last window after a receiver close of
 });
 
 // Board ab-v16.90 (review-81 note 1): pageClose ends the record of a client's Page.close at any Chrome error. Measured
-// on taylor (Chromium 156.0.8078.79, a page with a beforeunload handler; C10, "Measured"): Chrome answers Page.close
+// on the Linux server (Chromium 156.0.8078.79, a page with a beforeunload handler; C10, "Measured"): Chrome answers Page.close
 // with {} in 0.2 to 1.8 ms, before its dialog opens, also through chrome.debugger as the receiver sends it, and sends no
 // second answer at the accept, at a dismiss, or at a detach while the dialog is open (the dialog stays open). A
 // Page.close and a detach in the same task, in that order, answered {} and the close started (20 of 20); in the other

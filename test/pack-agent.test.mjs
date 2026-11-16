@@ -110,7 +110,7 @@ function compareVersions(a, b) {
 const raise = (version) =>
   `agent/ changed, but agent/manifest.json still has version ${version}, and release/versions.json holds another ` +
   `content for ${version}. Chrome installs an external CRX again only for a higher version, so the boxes would keep ` +
-  `the old code. On taylor: raise "version" in agent/manifest.json, run npm run pack:agent -- --out release, and add ` +
+  `the old code. On the Linux server: raise "version" in agent/manifest.json, run npm run pack:agent -- --out release, and add ` +
   `the entry of the new version to release/versions.json (npm test then prints it)`;
 
 // Throws when the table refuses a package of `version` (agent/manifest.json's) with content `sha`.
@@ -121,7 +121,7 @@ function checkVersion(table, version, sha) {
     assert.ok(/^[0-9a-f]{64}$/.test(h), `release/versions.json: the entry of ${v} is not a SHA-256 in lowercase hex`);
   }
   assert.ok(Object.hasOwn(table, version),
-    `release/versions.json has no entry for version ${version} of agent/manifest.json: after the repack on taylor, add "${version}": "${sha}"`);
+    `release/versions.json has no entry for version ${version} of agent/manifest.json: after the repack on the Linux server, add "${version}": "${sha}"`);
   assert.ok(table[version] === sha, raise(version));
   for (const v of Object.keys(table)) {
     if (v !== version) {
@@ -848,7 +848,7 @@ test("the command's temp file (.agent.crx.<pid>.tmp) is git-ignored in release/ 
 // agentwatch pins a commit of this repository and installs release/agent.crx from it, so the
 // CRX at every commit must be the agent/ folder of that commit, signed with the agent key.
 const releaseCrx = fileURLToPath(new URL("release/agent.crx", root));
-const STALE = "release/agent.crx does not hold the files that git tracks in agent/: on taylor, raise the version in agent/manifest.json, run npm run pack:agent -- --out release, add the entry of the new version to release/versions.json (npm test prints it), and commit release/agent.crx and release/versions.json";
+const STALE = "release/agent.crx does not hold the files that git tracks in agent/: on the Linux server, raise the version in agent/manifest.json, run npm run pack:agent -- --out release, add the entry of the new version to release/versions.json (npm test prints it), and commit release/agent.crx and release/versions.json";
 
 test("release/agent.crx is tracked by git, and other CRX files stay ignored", () => {
   const tracked = execFileSync("git", ["ls-files", "--error-unmatch", "release/agent.crx"], { cwd: fileURLToPath(root), encoding: "utf8" });
@@ -893,7 +893,7 @@ test("checkVersion accepts the entry of the manifest version when it is the high
   checkVersion({ "0.2.0": A, 1: B }, "1", B);
 });
 
-test("checkVersion refuses a changed agent/ at the same version: raise the version, repack on taylor, add the entry", () => {
+test("checkVersion refuses a changed agent/ at the same version: raise the version, repack on the Linux server, add the entry", () => {
   withTemp((dir) => {
     const src = agentCopy(dir);
     const { version } = JSON.parse(readFileSync(join(src, "manifest.json"), "utf8"));
@@ -903,7 +903,7 @@ test("checkVersion refuses a changed agent/ at the same version: raise the versi
     appendFileSync(join(src, "sw.js"), "// one more line\n");
     assert.throws(() => checkVersion(table, version, contentSha256(trackedContent(src))), (e) =>
       e.message.includes(`still has version ${version}`) && e.message.includes('raise "version" in agent/manifest.json') &&
-      e.message.includes("On taylor") && e.message.includes("npm run pack:agent -- --out release") && e.message.includes("release/versions.json"));
+      e.message.includes("On the Linux server") && e.message.includes("npm run pack:agent -- --out release") && e.message.includes("release/versions.json"));
   });
 });
 

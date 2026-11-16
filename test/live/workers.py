@@ -88,7 +88,7 @@ RECEIVER = os.environ.get("RECEIVER", os.path.join(REPO, "agent"))
 DISPLAY_N = int(os.environ.get("DISPLAY_N", "142"))
 if DISPLAY_N in RESERVED_DISPLAYS:
     # Before the run folder: a reserved display is refused even while it is free (README.md, "Two rules").
-    sys.stderr.write("DISPLAY_N names :%d, a reserved display (%s: :90 is agentwatch's agent browser, the others are other programs' on taylor): "
+    sys.stderr.write("DISPLAY_N names :%d, a reserved display (%s: :90 is agentwatch's agent browser, the others are other programs' on the Linux server): "
                      "no harness takes it, even while it is free; pass another one\n" % (DISPLAY_N, ", ".join(map(str, RESERVED_DISPLAYS))))
     sys.exit(2)
 with open(os.path.join(REPO, "docs", "protocol.md")) as _f:

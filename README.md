@@ -136,7 +136,7 @@ and writes `_metadata/` there (measured).
 
 Chrome's external extensions file takes a packed extension (a CRX) that a
 private key signs, and that key fixes the extension's ID. Build the CRX on
-taylor, where the key lives:
+the Linux server, where the key lives:
 
 ```sh
 npm run pack:agent                  # writes dist/agent.crx (git-ignored); prints the ID and the version
@@ -180,13 +180,13 @@ npm run pack:agent -- --out release # writes release/agent.crx, the committed co
   Each path is printable ASCII (the script refuses other paths), so each ZIP
   reader (for example Python's `zipfile`) reads the same names.
 - **A change of `agent/`** fails `npm test` until the key holder repacks on
-  taylor: raise `version` in `agent/manifest.json` (Chrome installs an
+  the Linux server: raise `version` in `agent/manifest.json` (Chrome installs an
   external CRX again only when its version is higher), run `npm run
   pack:agent -- --out release`, add the entry of the new version to
   `release/versions.json` (`npm test` prints it), and commit the three
   changes together.
 
-- **The key:** its working copy lives only on taylor, in
+- **The key:** its working copy lives only on the Linux server, in
   `~/.config/agentwatch/browser/agent-extension.pem` (mode 0600, in a 0700
   folder). It was generated once there (board task ab-v16.18). It never goes
   into this repository, a commit, a log, an argv or a mail. The script reads
@@ -207,7 +207,7 @@ npm run pack:agent -- --out release # writes release/agent.crx, the committed co
 
 Chrome reads `<the folder of the Chrome binary>/extensions/<ID>.json` at its
 start, with `{"external_crx": "<path of agent.crx>", "external_version":
-"<manifest version>"}`; the script prints that line. Measured on taylor on
+"<manifest version>"}`; the script prints that line. Measured on the Linux server on
 2026-11-04 (Chromium 156.0.8078.79, a private copy of `/usr/lib/chromium`, a
 private Xvfb display, a new profile): Chromium installed the CRX with the ID
 `ifhfjdmdbgbnmllffiadajepajbcdnai`, location 2 (external file), enabled with
