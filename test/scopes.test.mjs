@@ -42,6 +42,50 @@ test("each set_scopes vector applies in the receiver by C4's rules, with its cou
   assert.equal(parseScopes(null).refused, 3, "a request with none of the fields");
 });
 
+// Board ab-v16.94.7.2 (stage 5 C1): a scope is local or remote, <box>/<session> (C11's two patterns, scopes.json's
+// pattern and remotePattern); a list name keeps the local pattern only.
+test("a scope is local or remote (C11's two patterns, scopes.json); a list name keeps the local pattern", async () => {
+  const m = await import("../agent/scopes.js");
+  assert.equal(m.SCOPE_PATTERN.source, new RegExp(S.pattern).source, "the local pattern");
+  assert.ok(m.REMOTE_SCOPE_PATTERN instanceof RegExp && typeof m.isScope === "function", "scopes.js has REMOTE_SCOPE_PATTERN and isScope");
+  assert.equal(m.REMOTE_SCOPE_PATTERN.source, new RegExp(S.remotePattern).source, "the remote pattern");
+  const n64 = "a".repeat(64), n65 = "a".repeat(65);
+  for (const s of ["linux/web-1", "b.x_1/S-2", "0/0", `${n64}/${n64}`]) {
+    assert.ok(m.isScope(s) && !m.isName(s), `${s}: a remote scope, not a list name`);
+  }
+  for (const s of ["web-1", "md-lead", n64]) assert.ok(m.isScope(s) && m.isName(s), `${s}: a local scope and a list name`);
+  for (const s of ["", "/", "a/b/c", "/a", "a/", "a//b", ".a/b", "a/-b", "a /b", "a/b 1", `${n65}/b`, `a/${n65}`, "a\\b", "a/b\n", "a/wéb", "a:b", "a/b+c"]) {
+    assert.ok(!m.isScope(s) && !m.isName(s), `${JSON.stringify(s)}: no scope and no list name`);
+  }
+  for (const x of [null, undefined, 1, ["a/b"], { scope: "a/b" }]) assert.ok(!m.isScope(x) && !m.isName(x), `${JSON.stringify(x)}: not a string`);
+});
+
+test("a tab of a remote scope: its copy comes back at the worker's start, set_scopes gives it its list's rules, the bridge opens tabs in it; a bad form goes or gets bad args", async () => {
+  const s = await startReceiver({
+    tabs: [blank(7), blank(8), blank(9), blank(10), blank(11)],
+    copy: { "tab:7": "linux/web-1", "tab:8": "a/b/c", "tab:9": "/a", "tab:10": "md-lead", "tab:11": "a/" },
+  });
+  assert.deepEqual(s.r.map.list(), [{ tabId: 7, scope: "linux/web-1" }, { tabId: 10, scope: "md-lead" }], "the map: the remote scope and the local one");
+  assert.deepEqual(s.f.storage_.session, { "tab:7": "linux/web-1", "tab:10": "md-lead" }, "the copy: the keys of a bad form go");
+  s.sendMain({ t: "req", id: "m1", op: "set_scopes", lists: { grant: ["b.example"], md: ["a.example"] }, scopes: { "linux/web-1": "grant", "md-lead": "md", "a/b/c": "md" }, default: null });
+  await flush();
+  assert.deepEqual(s.resOf("m1"), [{ t: "res", id: "m1", ok: true, data: { rules: 4, closed: 0, refused: 1 } }], "a/b/c counts 1");
+  assert.deepEqual(noFloor(s.f.sessionRules_).slice(0, 2), scopeRules(100, ["b.example"], [7]), "the remote scope's tab gets its list's rules");
+  assert.deepEqual(noFloor(s.f.sessionRules_).slice(2), scopeRules(102, ["a.example"], [10]));
+  assert.deepEqual((await s.answer({ id: "ts", op: "bridge.tabScopes", args: [] })).data, [{ tabId: 7, scope: "linux/web-1" }, { tabId: 10, scope: "md-lead" }]);
+  const tab = await s.answer({ id: "c1", op: "tabs.create", args: [{ url: "about:blank" }, "linux/web-1"] });
+  assert.equal(tab.ok, true, "tabs.create takes a remote scope");
+  assert.equal(s.r.map.scopeOf(tab.data.id), "linux/web-1");
+  s.f.impl["windows.create"] = async () => ({ id: 900, tabs: [{ id: 901, windowId: 900, url: "about:blank" }] });
+  const win = await s.answer({ id: "c2", op: "windows.create", args: [{ url: "about:blank" }, "linux/web-1"] });
+  assert.equal(win.ok, true, "windows.create takes a remote scope");
+  assert.equal(s.r.map.scopeOf(win.data.tabs[0].id), "linux/web-1");
+  assert.equal((await s.answer({ id: "c3", op: "tabs.create", args: [{ url: "about:blank" }, "linux/web-2"] })).error, "no list for this scope", "a remote scope with no list");
+  for (const bad of ["a/b/c", "/a", "a/"]) {
+    assert.equal((await s.answer({ id: `c4 ${bad}`, op: "tabs.create", args: [{ url: "about:blank" }, bad] })).error, "bad args", bad);
+  }
+});
+
 test("the hello names the feature scopes (hello.json), and an old daemon's set_allowlist gets the vector's ok:false and applies nothing", async () => {
   const f = makeFakeChrome();
   f.manifest = { version: H.hello.version };

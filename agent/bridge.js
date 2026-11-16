@@ -20,7 +20,7 @@ import { FETCH_MARK } from "./fetch-window.js";
 import { covers, normalizeEntry } from "./lib/domains.js";
 import { receiver } from "./receiver.js";
 import { NOT_AGENT_TAB } from "./removals.js";
-import { isName } from "./scopes.js";
+import { isScope } from "./scopes.js";
 
 export const BRIDGE_VERSION = 1;
 export const WAIT_DEFAULT_MS = 30000;
@@ -78,7 +78,7 @@ const KINDS = {
     isObj(a) && isId(a.tabId) && onlyKeys(a, ["tabId", "sessionId"]) &&
     optional(a, "sessionId", (s) => typeof s === "string" && s.length > 0),
   contentType: (a) => CONTENT_TYPES.includes(a),
-  scope: isName,
+  scope: isScope,
   newTab: (a) =>
     isObj(a) && onlyKeys(a, ["url", "active", "windowId", "index"]) && isNewUrl(a.url) &&
     optional(a, "active", isBool) && optional(a, "windowId", isId) && optional(a, "index", isId),

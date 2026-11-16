@@ -4,9 +4,15 @@
 // test/vectors/scopes.json checks both sides.
 import { normalizeEntry } from "./lib/domains.js";
 
-// C11's scope pattern: list names and scopes share it.
+// C11's scope pattern: list names and local scopes share it.
 export const SCOPE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// C11's remote scope (stage 5, board ab-v16.94.7.2): <box>/<session>, two names
+// of SCOPE_PATTERN with one "/". A local scope has no "/", so the two never meet.
+export const REMOTE_SCOPE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// A list name (in lists, a scope's value, default and operator): local only.
 export const isName = (v) => typeof v === "string" && SCOPE_PATTERN.test(v);
+// A scope (of set_scopes, of the tab map and of the bridge): local or remote.
+export const isScope = (v) => typeof v === "string" && (SCOPE_PATTERN.test(v) || REMOTE_SCOPE_PATTERN.test(v));
 // The operator value "*" (C4): the marked tabs may open any site. As a tab's
 // list it covers every host; no list name can be "*" (the scope pattern).
 export const ANY = "*";
@@ -86,7 +92,7 @@ export function parseScopes(msg) {
   const scopes = {};
   if (isObj(m.scopes)) {
     for (const [scope, v] of Object.entries(m.scopes)) {
-      if (!isName(scope)) {
+      if (!isScope(scope)) {
         refused += 1; // applies as absent: no connection can name it
       } else if (v === null || isName(v)) {
         scopes[scope] = v;

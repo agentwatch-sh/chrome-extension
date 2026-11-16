@@ -1552,7 +1552,7 @@ first document request of a new tab (below).
   - `target`: `{"tabId":<id>}` or `{"tabId":<id>,"sessionId":"<child session>"}`, with no other key.
   - `contentType`: one of `location`, `notifications`, `camera`, `microphone`, `clipboard`,
     `automaticDownloads`.
-  - `scope`: a scope of C11, a string that matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`.
+  - `scope`: a scope of C11, local or remote (C11's two patterns).
   - `newTab` (`tabs.create`): an object with `url`, and at most `active` (a boolean), `windowId` and
     `index` (ids). `url` is `about:blank`.
   - `tabUpdate` (`tabs.update`): exactly `{"active":<boolean>}`. A navigation is `Page.navigate`.
@@ -2888,7 +2888,7 @@ self-contained agent browser. Its text moved there from this file (main `66078cd
 and its tests moved with it. C11 binds agent-browser (the relay, and the service, which stage 1 builds and
 which serves from stage 3) and agentwatch (the daemon). This repository builds no part of C11: the receiver's own rules stay in C4, C5 and C10, which
 name C11 where the relay or the endpoint is the other side. C4 and C11 share the scope pattern
-`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, so a change of it changes both files; from stage 5 it gains an optional
-`<box>/` part for a session of another box (the self-contained design, section 9), with a small change of
-`agent/scopes.js`. C11's vectors moved too: agent-browser's `test/vectors/endpoint.json` is their master, and
+`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, so a change of it changes both files; a scope has an optional `<box>/`
+part for a session of another box (a remote scope, stage 5; the self-contained design, section 9), which
+`agent/scopes.js` takes, and a list name has none. C11's vectors moved too: agent-browser's `test/vectors/endpoint.json` is their master, and
 this repository holds no copy of them.
