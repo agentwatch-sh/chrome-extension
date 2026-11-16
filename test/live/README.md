@@ -240,7 +240,7 @@ DISPLAY_N=142 test/live/workers.py            # run folder test/live/.run/worker
 test/live/workers.py <run folder> <port>      # or name them (PORT_B: the second port, default port + 1)
 ```
 
-The cases: `before` (two marked tabs stay on the two hosts: the worker's page commits, the residue),
+The cases: `floor` (the merge guard's floor, below), `before` (two marked tabs stay on the two hosts: the worker's page commits, the residue),
 `after` (both marked tabs leave: no commit, no script, no read, no request), `frame` (a second marked
 tab shows the host in a sub-frame: the worker stays; after that page leaves: no commit), `race` (a
 client's `Page.navigate` 0, 100 or 300 ms after the leave's request), `error` (a leave for the error
@@ -257,7 +257,7 @@ environment: `TRIALS` (20), `CACHE_TRIALS` (10), `CTRL_TRIALS` (5), `AFTER_TRIAL
 `FLOOD_FRAMES` (600 per tab; 0: no flood), `FLOOD_TRIALS` (5), `FLOOD_NOTICE_MS` (250: the limit
 of the blocked notice during the flood), `FLOOD_BLANK_MS` (150: the limit of the worker's page from
 commit to `about:blank` during the flood), `CASES` (`flood`: the setup and the case flood only, for
-example a timing run of another receiver with `RECEIVER`),
+example a timing run of another receiver with `RECEIVER`; `floor`: the case floor only, below),
 `RESTORE_TRIALS` (0), `READERS` (1: every reader of ab-v16.73; 0: only `Page.enable`), `EAGER`,
 `PORT_B`, `CHROMIUM`, `RECEIVER`. The run folder holds `results.json`, `summary.json`, the rows of
 each case, the logs, the screenshots and the screencast frames. The script deletes nothing.
@@ -296,6 +296,24 @@ flood, 29 to 38 ms and 20 to 30 ms (limits 250 ms and 150 ms). With only `Page.e
 (`READERS=0 CASES=flood`, review-30c's method), one run after the other, during the flood: this
 head 26 to 41 ms and 25 to 59 ms; receiver 0.3.4 (`RECEIVER` = main 8a3b66f's `agent/`) 25 to 34 ms
 and 27 to 60 ms. After the leave, the marked tab's next navigation to the host was a network request (no worker).
+
+### The merge guard's floor: the case `floor`
+
+The case `floor` (C5, the merge guard's floor, rule 89; board ab-v16.100) runs first, before the
+worker setup; `CASES=floor` runs it alone. A tab of scope F (list `sitef.localhost` and
+`github-standin.localhost`) is a bridge tab, and `bridge.mergeGuard` guards it with the stand-in
+guarded host `github-standin.localhost` (no real GitHub). The tab opens a page of
+`www.sitef.localhost` with a frame of `www.framef.localhost`, and the frame posts to the stand-in
+(`fetch` with `POST`, `no-cors`): rule 89 blocks it, so the frame's `fetch` fails and the server
+sees no post. Then the stand-in's own page in that tab posts to its host: it passes. Then the
+operator's marked tab (Ctrl+T) opens the same page: the frame's post passes, because rules 9 and 89
+leave the marked tabs out. At the end the case sends `bridge.mergeGuard` with no host and no tab,
+and closes its two tabs.
+
+Result on the Linux server (2026-11-16, Chromium 156.0.8078.79, receiver 0.3.11 of the branch
+`ab-v16.100-floor-initiator`, `DISPLAY_N=169 CASES=floor`): 7 of 7 checks passed. The guarded
+tab's frame: its `fetch` failed, 0 posts at the stand-in; the stand-in's own page: 1 post; the
+marked tab's frame: 1 post.
 
 ## What the run sets up
 

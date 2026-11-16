@@ -49,6 +49,12 @@ The cases, in order:
   the flood pages leave, the first tab leaves its host, and scope A's tab gets no worker's page
   there.
 - gone: the marked tab's next navigation to the host goes to the network (no worker).
+- floor (C5, the merge guard's floor; board ab-v16.100), first, before the worker setup: a tab of
+  scope F that bridge.mergeGuard guards with a stand-in guarded host (github-standin.localhost; no
+  real GitHub) opens a page of www.sitef.localhost with a frame of www.framef.localhost, and the
+  frame posts to the stand-in: rule 89 blocks it (the frame's fetch fails, the server sees no
+  post). The stand-in's own page in that tab posts to its host: it passes. The operator's marked
+  tab opens the same page: the frame's post passes (the floor leaves the marked tabs out).
 - restore (RESTORE_TRIALS, default 0): C6's restore tab whose site redirects to the host.
 
 Usage: test/live/workers.py [run folder] [port]
@@ -59,7 +65,7 @@ CACHE_TRIALS (10), CTRL_TRIALS (5), AFTER_TRIALS (20), FRAME_TRIALS (5), RACE_RE
 ERROR_TRIALS (5), SITE_REPS (3), SESSION_TRIALS (5), FLOOD_FRAMES (600; 0: no flood),
 FLOOD_TRIALS (5), FLOOD_NOTICE_MS (250), FLOOD_BLANK_MS (150), RESTORE_TRIALS (0), READERS (1),
 EAGER (0), CASES (default all; "flood": the setup and the case flood only, for example the timing
-run of another receiver with RECEIVER).
+run of another receiver with RECEIVER; "floor": the case floor only, with no worker setup).
 """
 
 import base64
@@ -202,6 +208,14 @@ class Site(BaseHTTPRequestHandler):
             sub = q.get("sub", "b.localhost").replace('"', "")
             data = ("<!doctype html><title>burst</title>" + "".join(
                 f'<iframe src="http://f{i}.{sub}:{PORT}/tiny" width="2" height="2"></iframe>' for i in range(n))).encode()
+        elif path == "/floor-post":
+            # The floor's case: the page posts to q "to" (URL-encoded) with no CORS preflight, then
+            # tells its own host whether the post went out or failed (a DNR block fails the fetch).
+            to, tag = json.dumps(unquote(q.get("to", ""))), json.dumps(unquote(q.get("tag", "x")))
+            data = ('<!doctype html><title>floor post</title><p>floor post<script>'
+                    'fetch(%s, {method: "POST", mode: "no-cors", body: "floor"}).then('
+                    '() => fetch("/beacon/floor-sent/" + %s), () => fetch("/beacon/floor-refused/" + %s));</script>'
+                    % (to.replace("<", "\\u003c"), tag.replace("<", "\\u003c"), tag.replace("<", "\\u003c"))).encode()
         elif path == "/tiny":
             data = b"<!doctype html><title>t</title>"
         elif path == "/redir":
@@ -626,8 +640,11 @@ def pct(xs):
 
 # ---- the cases ----
 
-LISTS = {"la": ["sitea.localhost"], "lb": ["siteb.localhost"]}
-SCOPES = {"scope-a": "la", "scope-b": "lb"}
+LISTS = {"la": ["sitea.localhost"], "lb": ["siteb.localhost"], "lf": ["sitef.localhost", "github-standin.localhost"]}
+SCOPES = {"scope-a": "la", "scope-b": "lb", "scope-f": "lf"}
+SITEF = "www.sitef.localhost"  # the case floor: the page of site A, on scope F's list
+FRAMEF = "www.framef.localhost"  # the case floor: the frame of another site, on no list (scope F's frame rule allows it by its top)
+STANDIN = "github-standin.localhost"  # the case floor: the stand-in guarded host (bridge.mergeGuard), on scope F's list
 FREE = "www.nolist.localhost"  # on no list; the marked tab registers its own-page worker
 FREE_C = "app.nolist2.localhost"  # on no list; the marked tab signs in and registers its cache worker
 NOWORKER = "www.noworker.localhost"  # on no list, no worker: the control
@@ -652,7 +669,7 @@ NFLOOD = int(os.environ.get("FLOOD_FRAMES", "600"))
 NFLOOD_T = int(os.environ.get("FLOOD_TRIALS", "5"))
 FLOOD_NOTICE_MS = float(os.environ.get("FLOOD_NOTICE_MS", "250"))
 FLOOD_BLANK_MS = float(os.environ.get("FLOOD_BLANK_MS", "150"))
-CASES = set((os.environ.get("CASES") or "before,after,frame,race,error,site,session,flood").split(","))
+CASES = set((os.environ.get("CASES") or "floor,before,after,frame,race,error,site,session,flood").split(","))
 READ = "location.href + '\\n' + document.title"
 READERS = os.environ.get("READERS", "1") == "1"  # 0: only Page.enable (the commit's time), no reader
 
@@ -927,9 +944,73 @@ def report(label, rows):
     return agg
 
 
+def floor_posts(host, path):
+    with req_lock:
+        return [r for r in posts_seen if r["host"] == host and r["path"] == path]
+
+
+def floor_outcome(host, tag, timeout=8):
+    """The floor page's own report: "sent", "refused" or None (no report in time)."""
+    got = wait_for(lambda: reqs(host, "/beacon/floor-sent/" + tag) or reqs(host, "/beacon/floor-refused/" + tag), timeout)
+    return None if not got else got[0]["path"].split("/")[2].replace("floor-", "")
+
+
+def floor_frame_page(tag):
+    frame = url(FRAMEF, "/floor-post?to=" + quote(url(STANDIN, "/floor-write/" + tag), safe="") + "&tag=" + tag)
+    return url(SITEF, "/embed?src=" + quote(frame, safe=""))
+
+
+def floor_case():
+    """C5, the merge guard's floor (board ab-v16.100): rule 89 in a guarded tab, and the marked tab."""
+    t = (D.bridge("tabs.create", [{"url": "about:blank", "active": True}, "scope-f"]).get("data") or {}).get("id")
+    att = D.bridge("debugger.attach", [t])
+    g = D.bridge("bridge.mergeGuard", [{"hosts": [STANDIN], "tabs": [t]}])
+    check("floor: a tab of scope-f is a bridge tab, and bridge.mergeGuard guards it with the stand-in guarded host (answer null)",
+          t is not None and att.get("ok") and g.get("ok") and g.get("data") is None, tab=t, attach=att.get("error"), guard=g.get("error"))
+    # A page of site A with a frame of another site that posts to the guarded host.
+    nav_cdp(t, floor_frame_page("frame"))
+    framed = bool(wait_for(lambda: reqs(SITEF, "/beacon/embed") and reqs(FRAMEF, "/floor-post"), 8))
+    got = floor_outcome(FRAMEF, "frame")
+    time.sleep(0.5)
+    shot("floor-guarded-frame")
+    check(f"floor: in the guarded tab, a frame of {FRAMEF} in a page of {SITEF} posts to {STANDIN}: blocked (rule 89; the frame's fetch fails, the server sees no post)",
+          framed and got == "refused" and not floor_posts(STANDIN, "/floor-write/frame"),
+          framed=framed, outcome=got, posts=len(floor_posts(STANDIN, "/floor-write/frame")))
+    # The guarded host's own page posts to its host.
+    nav_cdp(t, url(STANDIN, "/floor-post?to=" + quote(url(STANDIN, "/floor-write/own"), safe="") + "&tag=own"))
+    got = floor_outcome(STANDIN, "own")
+    time.sleep(0.3)
+    check(f"floor: in the guarded tab, the page of {STANDIN} posts to its own host: it passes (the server sees the post)",
+          got == "sent" and len(floor_posts(STANDIN, "/floor-write/own")) == 1, outcome=got, posts=len(floor_posts(STANDIN, "/floor-write/own")))
+    # The operator's marked tab: the same page, the same frame's post.
+    ev = operator_tab("ctrl+t")
+    op = ((ev or {}).get("tab") or {}).get("id")
+    marked = op is not None and is_marked(op)
+    operator_goes(floor_frame_page("marked"))
+    got = floor_outcome(FRAMEF, "marked")
+    time.sleep(0.3)
+    shot("floor-marked-frame")
+    check(f"floor: in the operator's marked tab, the same frame's post to {STANDIN} passes (rules 9 and 89 leave the marked tabs out)",
+          marked and got == "sent" and len(floor_posts(STANDIN, "/floor-write/marked")) == 1,
+          tab=op, marked=marked, outcome=got, posts=len(floor_posts(STANDIN, "/floor-write/marked")))
+    # The end: no guarded tab and no added host; the case's tabs close.
+    g = D.bridge("bridge.mergeGuard", [{"hosts": [], "tabs": []}])
+    D.bridge("debugger.detach", [t])
+    D.bridge("tabs.remove", [t])
+    if op is not None and focus(op):
+        operator_key("ctrl+w")
+    gone = wait_for(lambda: t not in tab_ids() and (op is None or op not in tab_ids()), 5)
+    check("floor: the case ends with no guarded tab and its two tabs closed", g.get("ok") and bool(gone), guard=g.get("error"), tabs=tab_ids())
+
+
 def run_cases():
     r = D.set_scopes(scopes_obj())
     check("set_scopes answers ok (operator \"*\")", r.get("ok"), data=r.get("data"))
+    if "floor" in CASES:
+        floor_case()
+    if not CASES - {"floor"}:
+        shot("end")
+        return
 
     # ---- two marked tabs with "*" register the workers of two hosts of no list and stay there ----
     ev = operator_tab("ctrl+t")

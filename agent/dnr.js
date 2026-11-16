@@ -33,6 +33,14 @@
 //   judges each request itself (the guarded tabs of bridge.mergeGuard, while
 //   the bridge holds them), the marked tabs (the operator's own) and the act
 //   tabs. A fetch tab never leaves it. Priority 6, above every allow rule.
+// - the floor's initiator rule 89 (C5; board ab-v16.100): it blocks each write
+//   to a guarded host whose initiator is not a guarded host, except a top-level
+//   request, in every tab but the marked tabs and the act tabs (the guarded
+//   tabs too): a frame of another site that the client's auto-attach does not
+//   bring has no session in the tab, so agent-browser's model never sees its
+//   requests. A request with no initiator counts as another site's (Chromium
+//   gives it an opaque origin), so the main frame stays out: the tab's session
+//   always holds it. Priority 6; written with rule 9, in the same call.
 // Dynamic rule 5 sets Sec-Fetch-Site: none on the receiver's own top-level
 // requests. Dynamic rules 2 and 4 (one list for every tab, before part 1a)
 // are gone: the worker removes them at its start and at each set_scopes.
@@ -62,8 +70,12 @@ export const ACT_RULE_C = 12;
 export const ACT_RULE_D = 13;
 export const ACT_RULE_E = 14;
 export const MAX_SEND_TO = 32;
-// The merge guard's floor (C5, board ab-v16.99): rule 9, priority 6.
+// The merge guard's floor (C5, board ab-v16.99): rule 9, priority 6; and its
+// initiator rule 89 (board ab-v16.100), between the fetch window's rules (78 to
+// 88) and the scope rules (100 and up). The receiver writes both in one call.
 export const FLOOR_RULE_ID = 9;
+export const FLOOR_INITIATOR_RULE_ID = 89;
+export const FLOOR_IDS = Object.freeze([FLOOR_RULE_ID, FLOOR_INITIATOR_RULE_ID]);
 export const FLOOR_PRIORITY = 6;
 // GitHub's hosts: always in the floor, from the worker's start (bridge.mergeGuard can only add hosts).
 export const FLOOR_HOSTS = Object.freeze(["github.com"]);
@@ -222,6 +234,20 @@ export function floorRule(hosts, excluded) {
   return { id: FLOOR_RULE_ID, priority: FLOOR_PRIORITY, action: { type: "block" }, condition };
 }
 
+// C5, the floor's initiator rule 89 (board ab-v16.100): each write to a host
+// of hosts (and its subdomains) whose initiator is not a host of hosts (nor
+// its subdomain), of every resource type but the main frame, in every tab but
+// the excluded ones (the marked tabs and the act tabs: the guarded tabs stay
+// in), and in each request with no tab.
+export function floorInitiatorRule(hosts, excluded) {
+  const condition = {
+    requestDomains: [...hosts], excludedRequestMethods: [...FLOOR_FREE_METHODS],
+    excludedResourceTypes: ["main_frame"], excludedInitiatorDomains: [...hosts],
+  };
+  if (excluded.length > 0) condition.excludedTabIds = [...excluded];
+  return { id: FLOOR_INITIATOR_RULE_ID, priority: FLOOR_PRIORITY, action: { type: "block" }, condition };
+}
+
 // Chrome names the extension as the initiator of a Page.navigate, so the site
 // sees Sec-Fetch-Site: cross-site. This rule sets none for the top-level
 // requests that the agent package starts, and for no other: then a
@@ -269,24 +295,27 @@ export class SessionRules {
     this.#floorMarked = floorMarked;
   }
 
-  // The floor rule now: its hosts, and the tabs that it leaves out (the
-  // guarded tabs, the marked tabs and the act tabs), in order. A fetch tab
-  // never leaves it (C5, the fetch window's rules).
-  floorRule() {
-    const out = new Set([...this.#guarded, ...this.#floorMarked(), ...(this.#actSpec ? this.#actSpec.tabIds : [])]);
+  // The floor's rules now, 9 and 89: their hosts, and the tabs that each
+  // leaves out, in order: rule 9 the guarded tabs, the marked tabs and the act
+  // tabs; rule 89 the marked tabs and the act tabs. A fetch tab never leaves
+  // them (C5, the fetch window's rules).
+  floorRules() {
     const fetchTabs = new Set(this.#fetchTabs ?? []);
-    return floorRule(this.#guardHosts, [...out].filter((id) => Number.isInteger(id) && !fetchTabs.has(id)).sort((a, b) => a - b));
+    const out = (ids) => [...new Set(ids)].filter((id) => Number.isInteger(id) && !fetchTabs.has(id)).sort((a, b) => a - b);
+    const kept = [...this.#floorMarked(), ...(this.#actSpec ? this.#actSpec.tabIds : [])];
+    return [floorRule(this.#guardHosts, out([...this.#guarded, ...kept])), floorInitiatorRule(this.#guardHosts, out(kept))];
   }
 
-  // The floor rule again when it changed (inside the chain). A call that fails
-  // leaves the floor unknown: the next change writes it again.
+  // The floor's rules again when they changed (inside the chain), both in one
+  // call. A call that fails leaves the floor unknown: the next change writes
+  // it again.
   async #syncFloor() {
     if (!this.#floorStarted) return;
-    const rule = this.floorRule();
-    const key = JSON.stringify(rule);
+    const rules = this.floorRules();
+    const key = JSON.stringify(rules);
     if (key === this.#floorKey) return;
     this.#floorKey = null;
-    await this.#dnr.updateSessionRules({ removeRuleIds: [FLOOR_RULE_ID], addRules: [rule] });
+    await this.#dnr.updateSessionRules({ removeRuleIds: [...FLOOR_IDS], addRules: rules });
     this.#floorKey = key;
   }
 
@@ -355,9 +384,9 @@ export class SessionRules {
         const ids = all.filter((id) => !ACT_IDS.includes(id) && !FETCH_IDS.includes(id));
         // The floor in the same call as the removal: a worker that starts again leaves no moment without it.
         this.#guarded.clear();
-        const floor = this.floorRule();
+        const floor = this.floorRules();
         this.#floorStarted = true;
-        await this.#dnr.updateSessionRules({ removeRuleIds: [...new Set([...ids, FLOOR_RULE_ID])], addRules: [floor] });
+        await this.#dnr.updateSessionRules({ removeRuleIds: [...new Set([...ids, ...FLOOR_IDS])], addRules: floor });
         this.#floorKey = JSON.stringify(floor);
       })();
       let handle;
@@ -429,7 +458,7 @@ export class SessionRules {
       // Rules 6 and 7 go too when no import of this worker runs, the act's
       // rules when no act of this worker holds them, and the fetch window's
       // rules when no fetch window of this worker holds them.
-      const keep = [FLOOR_RULE_ID, ...(this.#importing ? IMPORT_IDS : []), ...(this.#acting ? ACT_IDS : []), ...(this.#fetching ? FETCH_IDS : [])];
+      const keep = [...FLOOR_IDS, ...(this.#importing ? IMPORT_IDS : []), ...(this.#acting ? ACT_IDS : []), ...(this.#fetching ? FETCH_IDS : [])];
       if (Array.isArray(rules)) {
         for (const r of rules) if (!keep.includes(r.id)) remove.add(r.id);
       } else {

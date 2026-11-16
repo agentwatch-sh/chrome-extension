@@ -7,8 +7,8 @@ import { readFileSync } from "node:fs";
 import { REMOVAL_WAIT_MS } from "../agent/removals.js";
 import { callsSince, flush, startReceiver } from "./receiver-harness.mjs";
 
-// The merge guard's floor (rule 9, C5; board ab-v16.99) is in force from the worker's start; these tests read the other rules.
-const noFloor = (rules) => rules.filter((r) => r.id !== 9);
+// The merge guard's floor (rules 9 and 89, C5; boards ab-v16.99 and ab-v16.100) is in force from the worker's start; these tests read the other rules.
+const noFloor = (rules) => rules.filter((r) => r.id !== 9 && r.id !== 89);
 
 const B = JSON.parse(readFileSync(new URL("./vectors/bridge.json", import.meta.url), "utf8"));
 const blank = (id, windowId = 1) => ({ id, windowId, url: "about:blank" });

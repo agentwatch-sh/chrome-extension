@@ -15,8 +15,8 @@ import { receiver } from "../agent/receiver.js";
 import { makeFakeChrome } from "./fake-chrome.mjs";
 import { callsSince, flush, startReceiver } from "./receiver-harness.mjs";
 
-// The merge guard's floor (rule 9, C5; board ab-v16.99) is in force from the worker's start; these tests read the other rules.
-const noFloor = (rules) => rules.filter((r) => r.id !== 9);
+// The merge guard's floor (rules 9 and 89, C5; boards ab-v16.99 and ab-v16.100) is in force from the worker's start; these tests read the other rules.
+const noFloor = (rules) => rules.filter((r) => r.id !== 9 && r.id !== 89);
 
 const read = (p) => JSON.parse(readFileSync(new URL(p, import.meta.url), "utf8"));
 const S = read("./vectors/scopes.json");
