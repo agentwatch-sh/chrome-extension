@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { SessionRules } from "../agent/dnr.js";
+import { ACT_RULE_A, ACT_RULE_MAX, SessionRules } from "../agent/dnr.js";
 import { importState } from "../agent/importer.js";
 import { FEATURES } from "../agent/link.js";
 import { callsSince, flush, startReceiver } from "./receiver-harness.mjs";
@@ -16,8 +16,8 @@ const V = JSON.parse(readFileSync(new URL("./vectors/act.json", import.meta.url)
 const WIN = V.actWindow.res.data;
 const ACT_TAB = WIN.tabs[0].id; // 31
 const REGULAR = { id: 7, windowId: 1, url: "https://staging.example.com/home" };
-// The act's rules have the ids 10 to 77 (C5), below the scope rules' 100.
-const isActRule = (r) => r.id >= 10 && r.id < 100;
+// The act's rules have the ids 10 to 77 (C5), below the fetch window's 78 to 88, the floor's rule 89 and the scope rules' 100.
+const isActRule = (r) => r.id >= ACT_RULE_A && r.id <= ACT_RULE_MAX;
 
 // windows.create with incognito gives the vector's window; its tab is open (with a target, so the
 // receiver's close can close it) and has its own cookie store, as an incognito tab has.

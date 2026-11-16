@@ -2102,19 +2102,29 @@ test("review-ce44b and the daemon lead's P1: C5 and C10 state R1's item, the exa
 
 
 // ---- the merge guard's floor (C5, C10; board ab-v16.99; agent-browser C11, the merge guard) ----
-// C5's item holds exactly these sentences; C10's op row, its kind and the changed row of debugger.detach (old, then new).
+// C5's item holds exactly these sentences (board ab-v16.100 adds rule 89 and changes what it does not stop); C10's op row, its kind and the changed row of debugger.detach (old, then new).
+const FLOOR_OLD = ["What it does not stop, stated plainly: a write of a guarded tab (agent-browser's model judges those); a write of an operator's marked tab or of an act tab; a request to a host that is not guarded; a message on a WebSocket; and a write in the moment after Chrome's own detach, before the floor is written again."];
 const FLOOR_ITEMS = [
   "The merge guard's floor (board ab-v16.99; agent-browser C11, the merge guard; the operator's rule of 2026-11-12: no agent merges a PR of agentwatch's issue triage): session rule id 9, priority 6, `{\"type\":\"block\"}`, `requestDomains` = the guarded hosts, `excludedRequestMethods` `[\"get\",\"head\",\"options\"]`, `resourceTypes` every resource type (the main frame among them), and `excludedTabIds` = the guarded tabs, the marked tabs and the act tabs (no `excludedTabIds` while none is). It blocks each write (a request whose method is not `GET`, `HEAD` or `OPTIONS`) to a guarded host or its subdomains from every other tab, and from each request with no tab (a shared worker, a service worker). The guarded hosts are GitHub's, `github.com`, always, and the hosts that `bridge.mergeGuard` adds (C10). The guarded tabs are the tabs of the last `bridge.mergeGuard` that are bridge tabs: the tabs where agent-browser's model judges each request itself with its own `Fetch`. A fetch tab is never a guarded tab (C10, the fetch window): the receiver leaves it out of `bridge.mergeGuard`'s tabs and out of `excludedTabIds`, so the floor blocks every write to a guarded host from the fetch window (the PageFetch design, section 5.3). Its priority is above every allow rule (the scope rules' 2, the import's rules' 2, rule 8's 2, the act's rules' 5), so no allow rule lets a write through.",
+  "Rule 89, the floor's initiator rule (board ab-v16.100; review-125b): session rule id 89, priority 6, `{\"type\":\"block\"}`, `requestDomains` = the guarded hosts, `excludedRequestMethods` `[\"get\",\"head\",\"options\"]`, `excludedResourceTypes` `[\"main_frame\"]`, `excludedInitiatorDomains` = the guarded hosts, and `excludedTabIds` = the marked tabs and the act tabs (no `excludedTabIds` while none is). It blocks each write to a guarded host or its subdomains that is not a top-level request and whose initiator is not a guarded host or its subdomain, in every tab but the marked tabs and the act tabs: the guarded tabs too, and a fetch tab, which it never leaves out. So in a guarded tab, a write to a guarded host from a page or a frame of any other host (its subresources, its form posts into a frame, the requests of its dedicated workers) is blocked, also from a frame that the client's auto-attach does not bring, which has no session in the tab (agent-browser C11, the merge guard). A write of a page or a frame of a guarded host passes it, as before, and so does each top-level request (resource type `main_frame`).",
+  "A request with no initiator counts as one of another site: Chromium gives it an opaque origin (`RequestParams` in `extensions/browser/api/declarative_net_request/request_params.cc`), and an opaque origin matches only a rule with no `initiatorDomains` (`DoesOriginMatchInitiatorDomainList` in `components/url_pattern_index/url_pattern_index.cc`; read in Chromium's source of 2026-11-16, not measured; the API's text for `excludedInitiatorDomains` names no case with no initiator). An opaque initiator (a sandboxed frame, a `data:` frame) counts the same. So rule 89 leaves out the main frame: a typed navigation, a top-level form post of the user and every other top-level request of a guarded tab stay where rule 9 leaves them, and agent-browser's model judges them with its own `Fetch` (the tab's own session always holds its main frame).",
+  "The receiver writes rules 9 and 89 together, in one `updateSessionRules` call, each time that it writes the floor (below).",
+  "GitHub's own pages pass rule 89: DNR matches the initiator, the origin of the document that starts the request (not the host of its script), and each entry of `excludedInitiatorDomains` also excludes its subdomains, so a page or a frame of `github.com` or of a subdomain is never another site. This comes from the guarded hosts and the API's text, not from a real GitHub page. The side effect, stated plainly: in a guarded tab, a write to a guarded host from a document of another host is blocked also when that document is GitHub's own (for example a frame of GitHub's on a host outside the guarded hosts), and so is such a write from an opaque initiator.",
+  "The shared vectors: `floor` in `test/vectors/bridge.json` (the floor's rules for one state, and requests that they block or pass).",
   "The receiver writes it at its worker's start, in the same `updateSessionRules` call that removes the session rules of a worker before it (with no guarded tab), so a worker that starts again leaves no moment without it; when that removal fails or has not ended in time, it writes the floor in a call of its own.",
   "It writes it again in the receiver's one chain of rule changes, when it changes: at each `bridge.mergeGuard`, at each change of the marks, and when the act's rules come, change or go (the act tabs leave the floor: the act's sign-in posts to its site, and the act's own guard judges it), and when the fetch window's rules come, change or go.",
   "A tab leaves the guarded tabs before its debugger goes: at the bridge's `debugger.detach` the receiver writes the floor first, then detaches (Chrome lets a paused request go at a detach); at a link change and at the worker's start every tab leaves them before any detach. After Chrome's own detach (`chrome.debugger.onDetach`) the tab leaves them too, a moment after the detach.",
-  "What it does not stop, stated plainly: a write of a guarded tab (agent-browser's model judges those); a write of an operator's marked tab or of an act tab; a request to a host that is not guarded; a message on a WebSocket; and a write in the moment after Chrome's own detach, before the floor is written again."
+  "What it does not stop, stated plainly: in a guarded tab, a top-level write and a write whose initiator is a guarded host (agent-browser's model judges those; a frame of a guarded host in a page of another host that the client's auto-attach does not bring has no session in the tab, and no layer of the guard judges its writes); a write of an operator's marked tab or of an act tab; a request to a host that is not guarded; a message on a WebSocket; and a write in the moment after Chrome's own detach, before the floor is written again."
 ];
 test("C5 states the merge guard's floor, sentence by sentence, before the rule on how the changes run", () => {
   for (const s of FLOOR_ITEMS) assert.ok(says(C5, s), `C5 says: ${s.slice(0, 120)}`);
   const at = flat(C5).indexOf(flat(FLOOR_ITEMS[0]));
   assert.ok(at > 0 && at < flat(C5).indexOf("Each change is one `updateSessionRules` call, and the changes run one after the other"));
   assert.ok(!/\/home\//.test(FLOOR_ITEMS.join(" ")), "no box path");
+  for (const s of FLOOR_OLD) assert.ok(!says(C5, s), `the old text is gone: ${s.slice(0, 80)}`);
+  // Rule 89's sentences come right after rule 9's, before the floor's life.
+  const ats = FLOOR_ITEMS.map((s) => flat(C5).indexOf(flat(s)));
+  assert.deepEqual([...ats].sort((x, y) => x - y), ats, "in this order");
 });
 
 const FLOOR_C10 = [
@@ -2132,13 +2142,17 @@ test("C10 states the op bridge.mergeGuard, its kind, and the floor at debugger.d
   }
 });
 
-test("the receiver's floor is the code's: rule 9, priority 6, GitHub's host, the free methods, the limits of bridge.mergeGuard", async () => {
-  const { FLOOR_RULE_ID, FLOOR_PRIORITY, FLOOR_HOSTS, FLOOR_FREE_METHODS } = await import("../agent/dnr.js");
+test("the receiver's floor is the code's: rules 9 and 89, priority 6, GitHub's host, the free methods, rule 89's conditions, the vectors, the limits of bridge.mergeGuard", async () => {
+  const { FLOOR_RULE_ID, FLOOR_INITIATOR_RULE_ID, FLOOR_PRIORITY, FLOOR_HOSTS, FLOOR_FREE_METHODS, floorInitiatorRule } = await import("../agent/dnr.js");
   const { MAX_GUARD_HOSTS, MAX_GUARD_TABS } = await import("../agent/bridge.js");
   const c5 = flat(C5);
   assert.ok(c5.includes(`session rule id ${FLOOR_RULE_ID}, priority ${FLOOR_PRIORITY}, \`{"type":"block"}\``));
   assert.ok(c5.includes(`The guarded hosts are GitHub's, \`${FLOOR_HOSTS[0]}\`, always`));
   assert.ok(c5.includes(`\`excludedRequestMethods\` \`${JSON.stringify(FLOOR_FREE_METHODS)}\``));
+  assert.ok(c5.includes(`Rule ${FLOOR_INITIATOR_RULE_ID}, the floor's initiator rule (board ab-v16.100; review-125b): session rule id ${FLOOR_INITIATOR_RULE_ID}, priority ${FLOOR_PRIORITY}, \`{"type":"block"}\``));
+  const r89 = floorInitiatorRule(["github.com"], []).condition;
+  assert.ok(c5.includes(`\`excludedResourceTypes\` \`${JSON.stringify(r89.excludedResourceTypes)}\`, \`excludedInitiatorDomains\` = the guarded hosts`));
+  assert.ok(says(C5, "`floor` in `test/vectors/bridge.json`") && bridge.floor.rules.map((r) => r.id).join() === `${FLOOR_RULE_ID},${FLOOR_INITIATOR_RULE_ID}`);
   assert.ok(flat(C10).includes(`a list of at most ${MAX_GUARD_HOSTS} hosts`) && flat(C10).includes(`a list of at most ${MAX_GUARD_TABS} ids`));
 });
 

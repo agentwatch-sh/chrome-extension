@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { FETCH_BLOCK_FIRST, FETCH_BLOCK_PRIORITY, FETCH_RULE_ID, FETCH_RULE_MAX, FETCH_WORKER_FREE, FLOOR_RULE_ID, REFUSED_ADDRESSES, SessionRules, fetchRules } from "../agent/dnr.js";
+import { FETCH_BLOCK_FIRST, FETCH_BLOCK_PRIORITY, FETCH_RULE_ID, FETCH_RULE_MAX, FETCH_WORKER_FREE, FLOOR_INITIATOR_RULE_ID, FLOOR_RULE_ID, REFUSED_ADDRESSES, SessionRules, fetchRules } from "../agent/dnr.js";
 import { FEATURES } from "../agent/link.js";
 import { callsSince, flush, startReceiver } from "./receiver-harness.mjs";
 import { makeFakeChrome } from "./fake-chrome.mjs";
@@ -434,6 +434,11 @@ test("the merge guard's floor holds for a fetch tab: bridge.mergeGuard cannot ma
   await rules.setFetch([FETCH_TAB]);
   await rules.setGuard([], [FETCH_TAB, 7]);
   assert.deepEqual(f.sessionRules_.find((r) => r.id === FLOOR_RULE_ID).condition.excludedTabIds, [7]);
+  // Rule 89 (board ab-v16.100) never leaves out a fetch tab either, also one that the act names.
+  f.impl["declarativeNetRequest.getSessionRules"] = async () => structuredClone(f.sessionRules_);
+  await rules.setAct({ tabIds: [FETCH_TAB, 31], sendTo: ["https://login.example"] });
+  assert.deepEqual(f.sessionRules_.find((r) => r.id === FLOOR_INITIATOR_RULE_ID).condition.excludedTabIds, [31]);
+  assert.deepEqual(f.sessionRules_.find((r) => r.id === FLOOR_RULE_ID).condition.excludedTabIds, [7, 31]);
 });
 
 // ---- the rules (C5) and the hello (C4) ----

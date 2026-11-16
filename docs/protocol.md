@@ -879,6 +879,35 @@ is on, agent-browser's service. The daemon never sends it.
     floor blocks every write to a guarded host from the fetch window (the PageFetch design, section 5.3). Its priority
     is above every allow rule (the scope rules' 2, the import's rules' 2, rule 8's 2, the act's rules' 5), so no allow
     rule lets a write through.
+    - Rule 89, the floor's initiator rule (board ab-v16.100; review-125b): session rule id 89, priority 6,
+      `{"type":"block"}`, `requestDomains` = the guarded hosts, `excludedRequestMethods` `["get","head","options"]`,
+      `excludedResourceTypes` `["main_frame"]`, `excludedInitiatorDomains` = the guarded hosts, and `excludedTabIds` =
+      the marked tabs and the act tabs (no `excludedTabIds` while none is). It blocks each write to a guarded host or
+      its subdomains that is not a top-level request and whose initiator is not a guarded host or its subdomain, in
+      every tab but the marked tabs and the act tabs: the guarded tabs too, and a fetch tab, which it never leaves out.
+      So in a guarded tab, a write to a guarded host from a page or a frame of any other host (its subresources, its
+      form posts into a frame, the requests of its dedicated workers) is blocked, also from a frame that the client's
+      auto-attach does not bring, which has no session in the tab (agent-browser C11, the merge guard). A write of a
+      page or a frame of a guarded host passes it, as before, and so does each top-level request (resource type
+      `main_frame`).
+    - A request with no initiator counts as one of another site: Chromium gives it an opaque origin (`RequestParams` in
+      `extensions/browser/api/declarative_net_request/request_params.cc`), and an opaque origin matches only a rule with
+      no `initiatorDomains` (`DoesOriginMatchInitiatorDomainList` in
+      `components/url_pattern_index/url_pattern_index.cc`; read in Chromium's source of 2026-11-16, not measured; the
+      API's text for `excludedInitiatorDomains` names no case with no initiator). An opaque initiator (a sandboxed
+      frame, a `data:` frame) counts the same. So rule 89 leaves out the main frame: a typed navigation, a top-level
+      form post of the user and every other top-level request of a guarded tab stay where rule 9 leaves them, and
+      agent-browser's model judges them with its own `Fetch` (the tab's own session always holds its main frame).
+    - The receiver writes rules 9 and 89 together, in one `updateSessionRules` call, each time that it writes the floor
+      (below).
+    - GitHub's own pages pass rule 89: DNR matches the initiator, the origin of the document that starts the request
+      (not the host of its script), and each entry of `excludedInitiatorDomains` also excludes its subdomains, so a page
+      or a frame of `github.com` or of a subdomain is never another site. This comes from the guarded hosts and the
+      API's text, not from a real GitHub page. The side effect, stated plainly: in a guarded tab, a write to a guarded
+      host from a document of another host is blocked also when that document is GitHub's own (for example a frame of
+      GitHub's on a host outside the guarded hosts), and so is such a write from an opaque initiator.
+    - The shared vectors: `floor` in `test/vectors/bridge.json` (the floor's rules for one state, and requests that they
+      block or pass).
     - The receiver writes it at its worker's start, in the same `updateSessionRules` call that removes the session rules
       of a worker before it (with no guarded tab), so a worker that starts again leaves no moment without it; when that
       removal fails or has not ended in time, it writes the floor in a call of its own.
@@ -890,9 +919,11 @@ is on, agent-browser's service. The daemon never sends it.
       floor first, then detaches (Chrome lets a paused request go at a detach); at a link change and at the worker's
       start every tab leaves them before any detach. After Chrome's own detach (`chrome.debugger.onDetach`) the tab
       leaves them too, a moment after the detach.
-    - What it does not stop, stated plainly: a write of a guarded tab (agent-browser's model judges those); a write of an
-      operator's marked tab or of an act tab; a request to a host that is not guarded; a message on a WebSocket; and a
-      write in the moment after Chrome's own detach, before the floor is written again.
+    - What it does not stop, stated plainly: in a guarded tab, a top-level write and a write whose initiator is a
+      guarded host (agent-browser's model judges those; a frame of a guarded host in a page of another host that the
+      client's auto-attach does not bring has no session in the tab, and no layer of the guard judges its writes); a
+      write of an operator's marked tab or of an act tab; a request to a host that is not guarded; a message on a
+      WebSocket; and a write in the moment after Chrome's own detach, before the floor is written again.
   - Each change is one `updateSessionRules` call, and the changes run one after the other, each from
     the map when it runs. A `set_scopes` replaces every scope rule and rule 8. A tab that gets or
     loses a scope replaces only the two rules of its list (of both lists when it changes lists). A

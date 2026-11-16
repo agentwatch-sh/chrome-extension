@@ -252,7 +252,7 @@ export const OPS = Object.freeze({
   // The merge guard's floor (C5, board ab-v16.99): the hosts and the guarded
   // tabs, of which only the bridge's own tabs count, never a fetch tab (it
   // never leaves the floor: C5, the fetch window's rules); it answers when
-  // the rule is in force.
+  // the floor's rules (9 and 89) are in force.
   "bridge.mergeGuard": op(["mergeGuard"], 1, (c, [g]) => c.r.rules.setGuard(g.hosts, g.tabs.filter((t) => c.att.isBridgeTab(t) && !c.r.map.wasFetch(t))), { nullResult: true }),
 });
 

@@ -17,8 +17,8 @@ import { parseScopes } from "../agent/scopes.js";
 import { TOMBSTONE_MS } from "../agent/tabmap.js";
 import { flush, startReceiver } from "./receiver-harness.mjs";
 
-// The merge guard's floor (rule 9, C5; board ab-v16.99) is in force from the worker's start; these tests read the other rules.
-const noFloor = (rules) => rules.filter((r) => r.id !== 9);
+// The merge guard's floor (rules 9 and 89, C5; boards ab-v16.99 and ab-v16.100) is in force from the worker's start; these tests read the other rules.
+const noFloor = (rules) => rules.filter((r) => r.id !== 9 && r.id !== 89);
 
 const B = JSON.parse(readFileSync(new URL("./vectors/bridge.json", import.meta.url), "utf8"));
 const NAV_TARGET = B.eventVectors.find((v) => v.chrome && v.chrome[0] === "webNavigation.onCreatedNavigationTarget");
@@ -29,10 +29,10 @@ const page = (id, url, windowId = 1) => ({ id, windowId, url });
 const ruleIds = (f) => noFloor(f.sessionRules_).map((r) => r.id).sort((a, b) => a - b);
 const ruleOf = (f, id) => noFloor(f.sessionRules_).find((r) => r.id === id);
 const tabIdsOf = (f, id) => ruleOf(f, id)?.condition.tabIds;
-// The rule calls of the scopes and the marks; the floor's own calls (rule 9 alone, after a change of the marks) are left out.
-const updates = (f) => f.callsTo("declarativeNetRequest.updateSessionRules").map(([d]) => d).filter((d) => !(JSON.stringify(d.removeRuleIds) === "[9]" && (d.addRules ?? []).every((r) => r.id === 9)));
-/** The floor's own calls: rule 9 alone. */
-const floorWrites = (f) => f.callsTo("declarativeNetRequest.updateSessionRules").map(([d]) => d).filter((d) => JSON.stringify(d.removeRuleIds) === "[9]");
+// The rule calls of the scopes and the marks; the floor's own calls (rules 9 and 89 alone, after a change of the marks) are left out.
+const updates = (f) => f.callsTo("declarativeNetRequest.updateSessionRules").map(([d]) => d).filter((d) => !(JSON.stringify(d.removeRuleIds) === "[9,89]" && (d.addRules ?? []).every((r) => r.id === 9 || r.id === 89)));
+/** The floor's own calls: rules 9 and 89 alone. */
+const floorWrites = (f) => f.callsTo("declarativeNetRequest.updateSessionRules").map(([d]) => d).filter((d) => JSON.stringify(d.removeRuleIds) === "[9,89]");
 const evNames = (s, from) => s.evs().slice(from).map((e) => `${e.ev}:${e.tabId ?? e.tab?.id ?? e.details?.tabId ?? e.addedTabId}`);
 const created = (s, tabId, from = 0) => s.evs().slice(from).filter((e) => e.ev === "tabs.onCreated" && e.tab.id === tabId);
 
