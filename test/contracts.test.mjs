@@ -109,9 +109,10 @@ function applySetScopes(msg) {
     else if (validName(o)) operator = Object.hasOwn(lists, o) ? o : null;
     else refused += 1;
   }
-  // A scope's list: its scopes entry when it has one (no fall-back), else default.
+  // A scope's list: its scopes entry when it has one (no fall-back), else default for a local scope
+  // only: a remote scope that scopes does not name has no list (fail closed; board ab-v16.94.7.2).
   const listOf = (scope) => {
-    const name = Object.hasOwn(scopes, scope) ? scopes[scope] : def;
+    const name = Object.hasOwn(scopes, scope) ? scopes[scope] : NAME.test(scope) ? def : null;
     return name !== null && Object.hasOwn(lists, name) ? name : null;
   };
   return { lists, scopes, default: def, operator, refused, listOf };
@@ -193,7 +194,7 @@ test("each guard vector follows C5's guard: the host that it judges and the cove
     const keys = Object.keys(v.tab);
     assert.ok(keys.length <= 1 && keys.every((k) => ["scope", "marked", "orphan", "restore"].includes(k)), `${v.note}: one kind of tab`);
     kinds.add(keys[0] ?? "none");
-    if (v.tab.scope) assert.ok(NAME.test(v.tab.scope), v.note);
+    if (v.tab.scope) assert.ok(anyScope(v.tab.scope), v.note);
     if (v.tab.restore) assert.equal(normalizeEntry(v.tab.restore).entry, v.tab.restore, v.note);
     const host = guardHostOf(v.url);
     assert.equal(host, v.host, `${v.note}: the host`);
@@ -330,7 +331,7 @@ test("C4's blocked holds from (board ab-v16.33), each notice vector has C4's sha
     assert.equal(msg.t, "blocked", note);
     assert.ok(Number.isInteger(msg.tab) && msg.tab >= 0, note);
     assert.ok(host(msg.host), `${note}: host`);
-    assert.ok(msg.scope === null || NAME.test(msg.scope), `${note}: scope`);
+    assert.ok(msg.scope === null || anyScope(msg.scope), `${note}: scope`);
     assert.ok(msg.from === null || host(msg.from), `${note}: from`);
   }
   assert.ok(blockedV.notices.some((n) => n.msg.scope === null && n.msg.from === null), "a notice with both null");
@@ -384,6 +385,14 @@ test("each set_scopes vector applies by C4's rules, with its count in refused", 
     const named = (v) => (f === "scopes" ? Object.values(scopes(v)) : [v.in[f]]).includes("a/b");
     assert.ok(has((v) => named(v) && !JSON.stringify(v.applies).includes('"a/b"')), `a/b in ${f} is no list name`);
   }
+  // The fix round of PR #48: a remote scope that scopes does not name has no list, also with a default, and a local
+  // one still gets default (B); a local scope and a remote scope with that box part each get their own list (C1).
+  const unnamed = (v, isRemote) => Object.entries(v.listOf ?? {}).some(([s, l]) => !Object.hasOwn(scopes(v), s)
+    && (isRemote ? REMOTE.test(s) && l === null : NAME.test(s) && l === v.applies.default));
+  assert.ok(has((v) => typeof v.applies.default === "string" && Object.hasOwn(lists(v), v.applies.default) && unnamed(v, true) && unnamed(v, false)),
+    "a remote scope that scopes does not name has no list under a default; a local one gets the default");
+  assert.ok(has((v) => Object.keys(scopes(v)).some((s) => NAME.test(s) && Object.hasOwn(scopes(v), `${s}/web-1`) && v.listOf?.[s] !== v.listOf?.[`${s}/web-1`] && v.listOf?.[s] !== null && v.listOf?.[`${s}/web-1`] !== null)),
+    "a local scope and a remote scope with that box part, each with its own list");
 });
 
 test("the remote scope pattern is two names of the local pattern with one /; a list name keeps the local pattern", () => {
@@ -719,8 +728,11 @@ test("tabs.create and windows.create take the scope arg, and a new tab opens at 
   // windows.create's optional third arg: the mark of an act window (board ab-v16.97.3).
   assert.deepEqual([opByName.get("tabs.create").args.length, opByName.get("windows.create").args, opByName.get("windows.create").kinds.at(-1)], [2, ["createData", "scope", "mark?"], "mark"]);
   assert.ok(SCOPE.test(bridge.scope));
+  // Stage 5 (board ab-v16.94.7.2): a remote scope with a list gets its tab, as a local scope does.
+  assert.ok(NAME.test(bridge.scope) && REMOTE.test(bridge.remoteScope) && applySetScopes(bridge.setScopes).listOf(bridge.remoteScope) !== null, "the remote scope of the samples has a list");
+  assert.ok(bridge.requests.some((v) => v.req.op === "tabs.create" && v.req.args[1] === bridge.remoteScope && v.res.ok), "a positive tabs.create of a remote scope");
   for (const v of bridge.requests.filter((x) => SCOPED.includes(x.req.op))) {
-    assert.equal(v.req.args[1], bridge.scope, v.req.id);
+    assert.ok([bridge.scope, bridge.remoteScope].includes(v.req.args[1]), v.req.id);
     assert.deepEqual(v.chrome[1], [v.req.args[0]], `${v.req.id}: the scope goes to the map, not to Chrome`);
   }
   const bad = bridge.badRequests.filter((v) => SCOPED.includes(v.req.op));
@@ -938,6 +950,8 @@ test("the sweep: each vector closes the tabs whose scope has no list, and none a
   assert.ok(has((v) => v.closes.some((t) => scopes(v)[v.map[t]] === null)), "a scope named null");
   assert.ok(has((v) => v.closes.some((t) => typeof scopes(v)[v.map[t]] === "string" && !Object.hasOwn(v.in.lists, scopes(v)[v.map[t]]))), "a list that is not in lists");
   assert.ok(has((v) => typeof v.in.default === "string" && Object.values(v.map).some((s) => !Object.hasOwn(scopes(v), s)) && v.closes.length === 0), "a scope that is not named, with a default list, stays");
+  assert.ok(has((v) => typeof v.in.default === "string" && Object.hasOwn(v.in.lists, v.in.default) && v.closes.some((t) => REMOTE.test(v.map[t]) && !Object.hasOwn(scopes(v), v.map[t]))
+    && Object.entries(v.map).some(([t, s]) => NAME.test(s) && !Object.hasOwn(scopes(v), s) && !v.closes.includes(Number(t)))), "a remote scope that is not named closes under a default list; a local one stays");
   assert.ok(has((v) => !v.applied && Object.hasOwn(v.in, "scopes") && !isObj(v.in.scopes)), "scopes not an object: no sweep");
   assert.ok(has((v) => !v.applied && Object.hasOwn(v.in, "lists") && !isObj(v.in.lists)), "lists not an object: no sweep");
   // A refused scopes entry (neither null nor a valid name) applies as null, and its tab closes.
@@ -1640,7 +1654,7 @@ test("C10 defines daemon.blocked with checked host and scope, a bounded wait and
 });
 
 test("daemon.blocked vectors check args before a prompt and keep older carriers compatible", () => {
-  assert.equal(bridge.blockedVectors?.length, 43, "the shared blocked vectors");
+  assert.equal(bridge.blockedVectors?.length, 44, "the shared blocked vectors");
   for (const v of bridge.blockedVectors) {
     assert.equal(v.req.op, "daemon.blocked", v.req.id);
     assert.equal(v.req.wait, 250, v.req.id);
@@ -1662,6 +1676,7 @@ test("daemon.blocked vectors check args before a prompt and keep older carriers 
     }, v.req.id);
   }
   assert.ok(bridge.blockedVectors.some((v) => v.olderCarrier));
+  assert.ok(bridge.blockedVectors.some((v) => v.res.ok && REMOTE.test(v.req.args[0].scope) && v.notice?.scope === v.req.args[0].scope), "a remote scope makes a prompt (stage 5)");
   assert.ok(bridge.blockedVectors.some((v) => v.previous?.length && v.notice === null && v.res.ok));
   for (const v of bridge.blockedVectors.filter((v) => !v.olderCarrier)) {
     assert.deepEqual(daemonAnswer(v.req, { ...bridge.pointerWorld, xvfb: null }).res, v.res, v.req.id + ": no pointer checks");
@@ -1752,6 +1767,17 @@ test("C11 here is short: it names agent-browser's master file, the parties, the 
 test("C10's kind scope is a scope of C11, local or remote (stage 5 C1, board ab-v16.94.7.2)", () => {
   assert.ok(says(C10, "- `scope`: a scope of C11, local or remote (C11's two patterns)."));
   assert.ok(!says(C10, "- `scope`: a scope of C11, a string that matches"), "the old text, the local pattern only, is gone");
+});
+
+test("C4's scopes take C11's two patterns, and default applies only to a local scope (the fix round of PR #48)", () => {
+  assert.ok(says(C4, "A scope that matches neither of C11's two patterns applies as absent and counts 1 in `refused` (no connection can name it: C11's 404)."), "A: the scope that applies as absent");
+  assert.ok(says(C4, "A scope that matches one of them but whose value is neither a valid name nor `null` applies as `null` and counts 1 in `refused`"), "A: the next sentence");
+  assert.ok(!says(C4, "A scope that does not match the scope pattern applies as absent"), "A: the old text is gone");
+  assert.ok(!says(C4, "A scope that matches the pattern but whose value"), "A: the old next sentence is gone");
+  assert.ok(says(C4, "A remote scope that `scopes` does not name has no list: `default` applies only to a local scope."), "B: the daemon lead's text");
+  const at = flat(C4).indexOf(flat("- `default` is a list name or `null`: the list of a scope that `scopes` does not name."));
+  const b = flat(C4).indexOf(flat("A remote scope that `scopes` does not name has no list"));
+  assert.ok(at >= 0 && b > at && b < flat(C4).indexOf(flat("- A `lists` or `scopes` that is not an object")), "B: in the rule of default");
 });
 
 test("docs/protocol.md no longer holds C11's text or the old master statements (the negative list)", () => {

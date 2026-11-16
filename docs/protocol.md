@@ -319,8 +319,8 @@ held one list for the whole agent browser. The request is above. Its fields and 
   counts 1 in `refused` and applies as `null`.
 - `scopes` maps a scope to a list name or `null`. A scope with `null`, or whose list is not in
   `lists` (also a list that applies as absent), has no list: it does not fall back to `default`, and
-  it counts nothing. A scope that does not match the scope pattern applies as absent and counts 1
-  in `refused` (no connection can name it: C11's 404). A scope that matches the pattern but whose
+  it counts nothing. A scope that matches neither of C11's two patterns applies as absent and counts
+  1 in `refused` (no connection can name it: C11's 404). A scope that matches one of them but whose
   value is neither a valid name nor `null` applies as `null` and counts 1 in `refused`: it has no
   list and does not fall back to `default`, so a broken entry never gives a session another list.
 - Each scope in `scopes` is the scope that agentwatch fixed at the session's launch (C11, the
@@ -329,7 +329,8 @@ held one list for the whole agent browser. The request is above. Its fields and 
   tab to another scope at a rename.
 - `default` is a list name or `null`: the list of a scope that `scopes` does not name. With `null`,
   or a valid name that is not in `lists`, such a scope has no list. A `default` that is neither a
-  valid name nor `null` (also a missing one) counts 1 in `refused` and applies as `null`.
+  valid name nor `null` (also a missing one) counts 1 in `refused` and applies as `null`. A remote
+  scope that `scopes` does not name has no list: `default` applies only to a local scope.
 - A `lists` or `scopes` that is not an object (also a missing one) applies as an empty object and
   counts 1 in `refused`. A `scopes` that is not an object also makes `default` apply as `null`
   (with no more count): no scope gets the `default` list while the daemon's scopes are not known.

@@ -41,10 +41,18 @@ export class ScopeSet {
   }
 
   // A scope's list: its scopes entry when it has one (no fall-back to
-  // default), else default; null when that name is not in lists.
+  // default), else default for a local scope only; null when that name is not
+  // in lists. A remote scope that scopes does not name has no list (C4; fail
+  // closed, board ab-v16.94.7.2).
   listOf(scope) {
-    const name = Object.hasOwn(this.scopes, scope) ? this.scopes[scope] : this.default;
+    const name = Object.hasOwn(this.scopes, scope) ? this.scopes[scope] : isName(scope) ? this.default : null;
     return name !== null && Object.hasOwn(this.lists, name) ? name : null;
+  }
+
+  // The entries of the default list: the list of a local scope that scopes
+  // does not name; null when there is none.
+  defaultEntries() {
+    return this.default !== null && Object.hasOwn(this.lists, this.default) ? this.lists[this.default] : null;
   }
 
   // The entries of a scope's list, or null for a scope with no list.
@@ -120,15 +128,16 @@ export function parseScopes(msg) {
 }
 
 // C5's worker removal: true when some scope has a list in last and in next,
-// and next's list lacks an entry of last's. A scope that neither object names
-// has the default list in each. The operator value counts as one more
+// and next's list lacks an entry of last's. A local scope that neither object
+// names has the default list in each. The operator value counts as one more
 // scope's list: a change from "*" to a list, or a list that loses an entry.
 // No last (the first set_scopes after the worker's start): true.
 export function shrinks(last, next) {
   if (!last) return true;
   const lost = (a, b) => a !== null && b !== null && a.some((e) => !b.includes(e));
-  const names = new Set([...Object.keys(last.scopes), ...Object.keys(next.scopes), ""]); // "" names no scope: the default
+  const names = new Set([...Object.keys(last.scopes), ...Object.keys(next.scopes)]);
   for (const s of names) if (lost(last.entriesOf(s), next.entriesOf(s))) return true;
+  if (lost(last.defaultEntries(), next.defaultEntries())) return true;
   const a = last.markEntries();
   const b = next.markEntries();
   if (a === ANY) return b !== ANY && b !== null;

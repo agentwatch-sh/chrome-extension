@@ -60,6 +60,26 @@ test("a scope is local or remote (C11's two patterns, scopes.json); a list name 
   for (const x of [null, undefined, 1, ["a/b"], { scope: "a/b" }]) assert.ok(!m.isScope(x) && !m.isName(x), `${JSON.stringify(x)}: not a string`);
 });
 
+test("a remote scope that set_scopes does not name has no list, also under a default (fail closed); a local one gets the default list", async () => {
+  const s = await startReceiver({
+    tabs: [blank(7), blank(8), blank(9), blank(99)],
+    copy: { "tab:7": "linux/web-1", "tab:8": "linux/web-2", "tab:9": "md-other" },
+    targets: [7, 8, 9, 99].map((id) => ({ id: "T" + id, tabId: id, type: "page" })),
+  });
+  const res = await s.set({ lists: { md: ["a.example"], grant: ["b.example"] }, scopes: { "linux/web-1": "grant" }, default: "md" });
+  assert.equal(res.closed, 1, "the tab of linux/web-2 closes at the sweep");
+  assert.deepEqual(s.f.tabs_.map((t) => t.id), [7, 9, 99]);
+  assert.deepEqual(s.r.map.list(), [{ tabId: 7, scope: "linux/web-1" }, { tabId: 9, scope: "md-other" }]);
+  assert.equal(s.r.map.current.listOf("linux/web-2"), null);
+  assert.equal(s.r.map.current.listOf("md-other"), "md");
+  assert.equal((await s.answer({ id: "d1", op: "tabs.create", args: [{ url: "about:blank" }, "linux/web-2"] })).error, "no list for this scope", "an unnamed remote scope");
+  const local = await s.answer({ id: "d2", op: "tabs.create", args: [{ url: "about:blank" }, "md-new"] });
+  assert.equal(local.ok, true, "an unnamed local scope has the default list");
+  assert.equal(s.r.map.scopeOf(local.data.id), "md-new");
+  const named = await s.answer({ id: "d3", op: "tabs.create", args: [{ url: "about:blank" }, "linux/web-1"] });
+  assert.equal(named.ok, true, "a named remote scope has its list");
+});
+
 test("a tab of a remote scope: its copy comes back at the worker's start, set_scopes gives it its list's rules, the bridge opens tabs in it; a bad form goes or gets bad args", async () => {
   const s = await startReceiver({
     tabs: [blank(7), blank(8), blank(9), blank(10), blank(11)],
