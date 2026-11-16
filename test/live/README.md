@@ -85,7 +85,7 @@ the live run's own code (board ab-v16.89). When a step of `up` fails, `down` run
 `up`, which is itself a process of the run: the guard stops that subshell and its `sleep`, and
 `run.sh` exits 130, not with the code of `up`.
 
-`run.sh` never takes the X displays 0, 90 (agentwatch's agent browser on taylor, the operator's),
+`run.sh` never takes the X displays 0, 90 (agentwatch's agent browser on the Linux server, the operator's),
 147, 190, 191 or 192, whatever `LIVE_DISPLAY` is (`RESERVED_DISPLAYS`, the same list as in
 `harness_guard.py`): when such a display stops, its socket and lock file go, so the free test alone
 would take it. `run.sh displays` prints the two displays that `up` would take now. `workers.py`
@@ -192,7 +192,7 @@ passed**. The control: 11 of 11 requests, and 3 of 3 of the popup rows (a POST i
 tracker and its fetch there), reached the server. With the rules: 3 of 11, and 1 of 3 of the popup rows (the
 popup's GET) reached it. `act_end` closed 7 tabs (the act tab and six popups), and no incognito tab was left.
 
-Run of 2026-11-12 on taylor (Chromium 156.0.8078.79, the unpacked receiver 0.3.6 of the branch
+Run of 2026-11-12 on the Linux server (Chromium 156.0.8078.79, the unpacked receiver 0.3.6 of the branch
 `ab-v16.97.3-act-window`, `LIVE_DISPLAY=171`, displays 171 and 172, `run.sh up`, then `run.sh test <run> link act`,
 then `run.sh down`, under the shared heavy-job lock): **13 checks, 13 passed**. The act window was incognito, and
 `bridge.tabScopes` did not list its tab; `windows.get` answered it (bounds 0, 0, 1279, 899: the case does not move
@@ -262,7 +262,7 @@ example a timing run of another receiver with `RECEIVER`),
 `PORT_B`, `CHROMIUM`, `RECEIVER`. The run folder holds `results.json`, `summary.json`, the rows of
 each case, the logs, the screenshots and the screencast frames. The script deletes nothing.
 
-Result on taylor (2026-11-06, Chromium 156.0.8078.79, receiver 0.3.5 of the branch
+Result on the Linux server (2026-11-06, Chromium 156.0.8078.79, receiver 0.3.5 of the branch
 `ab-v16.74-sw-remove` after review-30e, `DISPLAY_N=142`, the defaults): 51 of 51 checks passed.
 
 | Case | Trials | Worker's page committed (seen by the client) | Requests to the host |
@@ -360,7 +360,7 @@ The complete run takes about 265 seconds; the driver takes about 261 seconds
 (an estimate). The guard measures cleanup at 0.1 seconds. The timeout does not
 fire. The guard and a process check confirm that every recorded process stops.
 
-Run of 2026-11-05 on taylor (Debian 13), Chromium from `/usr/bin/chromium`, `HOLD_TRIALS=10
+Run of 2026-11-05 on the Linux server (Debian 13), Chromium from `/usr/bin/chromium`, `HOLD_TRIALS=10
 test/live/run.sh` (`all` mode) in two private Xvfb displays, against the unpacked `agent/` of board
 task ab-v16.56's branch (receiver 0.3.3, hello `features ["scopes"]`): **74 checks, 73 passed, 1
 failed**. The one failure is the accepted test-site limit (the partitioned cookie of an http
@@ -379,7 +379,7 @@ and released as a blank tab that a client navigates. The hold, measured (`hold.j
 The tables below are the earlier runs. They keep the wording of their time (`set_allowlist`, a
 `tabs.create` with a URL).
 
-Run of 2026-11-04 on taylor (Debian 13), Chromium 156.0.8078.79, `HOLD_TRIALS=10 test/live/run.sh`
+Run of 2026-11-04 on the Linux server (Debian 13), Chromium 156.0.8078.79, `HOLD_TRIALS=10 test/live/run.sh`
 (`all` mode) from a clean run folder, against the agent package of board task ab-v16.17 (stage 2
 part B, after its review): **73 checks, 72 passed, 1 failed**. The one failure is the accepted
 test-site limit of the earlier runs (the partitioned cookie of an http `*.localhost` site, below).
@@ -428,7 +428,7 @@ the event. While the hold's `Fetch.enable` waited for the attach's answer, `wind
 `Target.setAutoAttach` with `waitForDebuggerOnStart` does not attach a popup (measured: no
 `Target.attachedToTarget`).
 
-Run of 2026-11-01 on taylor (Debian 13), Chromium 156.0.8078.73, `test/live/run.sh` (`all` mode) from a
+Run of 2026-11-01 on the Linux server (Debian 13), Chromium 156.0.8078.73, `test/live/run.sh` (`all` mode) from a
 clean run folder, against head `33d0b74` after the fix wave plus the harness fix below: **57 checks,
 56 passed, 1 failed**. The one failure is an accepted test-site limit (see below). The 55-check run
 earlier the same day had the same failure. The two checks of the new `sw_removed` case and the
