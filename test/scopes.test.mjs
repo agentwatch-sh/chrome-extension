@@ -296,6 +296,31 @@ test("a tab of the sweep that its item does not close leaves the map and the cop
   assert.deepEqual(s.f.tabs_.map((t) => t.id), [3]);
 });
 
+// Board ab-v16.67 (C10, the time limit): the sweep's item waits for a dropped close until its second
+// close or its fallback ends it, so a tab that closes then counts as closed and joins no orphan set.
+test("a sweep item waits for a dropped close: the tab that its second close closes counts as closed and does not join the orphan set", async () => {
+  for (const second of ["closes", "dropped too"]) {
+    const s = await startReceiver({ tabs: [blank(7), blank(3)], copy: { "tab:7": "md-old" }, targets: [{ id: "T7", tabId: 7, type: "page" }] });
+    let n = 0;
+    s.f.impl["debugger.sendCommand"] = async (t, m) => {
+      if (m !== "Target.closeTarget") return {};
+      if (++n === 2 && second === "closes") s.f.closeTab(t.tabId);
+      return { success: true }; // the first close: Chrome dropped it, and the tab stays
+    };
+    const p = s.set({ lists: { md: ["a.example"] }, scopes: { "md-lead": "md" }, default: null });
+    await flush();
+    await s.fire(REMOVAL_WAIT_MS); // the item's wait, and the close's watch: the second close
+    if (second === "dropped too") await s.fire(REMOVAL_WAIT_MS); // the second close's watch: chrome.tabs.remove closes the tab
+    const res = await p;
+    assert.equal(res.closed, 1, second);
+    assert.equal(s.r.map.isOrphan(7), false, second);
+    assert.equal(s.r.map.has(7), false, second);
+    assert.deepEqual(s.f.tabs_.map((t) => t.id), [3], second);
+    assert.deepEqual(s.f.callsTo("tabs.remove").map(([id]) => id), second === "closes" ? [] : [7], second);
+    assert.equal(n, 2, second);
+  }
+});
+
 test("a sweep item whose window rule fails closes no tab, and the sweep's tabs join the orphan set; the closing rule's tabs stay in their scope", async () => {
   const s = await startReceiver({ tabs: [blank(7), { id: 8, windowId: 1, url: "https://z.example/" }], copy: { "tab:7": "md-old", "tab:8": "md-lead" } });
   s.f.impl["tabs.create"] = async () => {

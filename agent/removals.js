@@ -19,20 +19,30 @@
 //   tab's chain of attaches (attach.js). No beforeunload handler runs. Its
 //   fallback is chrome.tabs.remove. A command that answered with no error
 //   but closed no tab (no tabs.onRemoved REMOVAL_WAIT_MS after its answer)
-//   counts as failed too: Chrome drops a close that reaches it shortly
-//   before the tab's navigation commits (measured, board ab-v16.63).
+//   is a dropped close: Chrome drops a close that reaches it shortly before
+//   the tab's navigation commits (measured, board ab-v16.63). The close
+//   then sends one more Target.closeTarget (the second close, board
+//   ab-v16.67), and the fallback runs only when that one also fails or is
+//   dropped: chrome.tabs.remove runs the new page's beforeunload handler,
+//   and its dialog can hold the call (measured).
 // - A pending close: from the moment its item starts it until the tab's
 //   tabs.onRemoved, or until it fails and the tab stays (and, when a
 //   Target.closeTarget command went, until that command answered). The
 //   window rule counts a pending tab as closed.
 // - The time limit: an item starts its closes one after the other, then
 //   waits until they ended, at most REMOVAL_WAIT_MS after the last start.
+//   A dropped close then gets DROPPED_WAIT_MS more (its watch, its second
+//   close and its fallback), so a tab that they close counts as closed.
 // - A client's Page.close keeps its own semantics (beforeunload runs); each
 //   later debugger.sendCommand of the tab waits at a gate until that
 //   Page.close went to Chrome, was refused, or passed its deadline.
 import { call } from "./attach.js";
 
 export const REMOVAL_WAIT_MS = 2000;
+// The item's extra wait for a dropped close, after its REMOVAL_WAIT_MS:
+// the watch, a second close that Chrome drops too, and the rest for the
+// fallback's chrome.tabs.remove (board ab-v16.67).
+export const DROPPED_WAIT_MS = 2 * REMOVAL_WAIT_MS;
 export const NOT_AGENT_TAB = "not an agent tab";
 // Chrome's answer to Target.closeTarget when the tab closed first: no error.
 const DETACHED = "Detached while handling command.";
@@ -62,6 +72,8 @@ class Close {
   commandClosed = false; // that command answered with no error: the tab closes
   fallback = false; // the fallback ran
   fallbackError = null;
+  commands = 0; // the Target.closeTarget commands that went (the second one at a dropped close)
+  watched = false; // a command answered with no error: the item waits for this close (DROPPED_WAIT_MS)
 
   constructor(tabId, forget) {
     this.tabId = tabId;
@@ -155,10 +167,10 @@ export class Removals {
     return Promise.race([done, late]).finally(() => this.#clock.clearTimer(handle));
   }
 
-  #wait(promises) {
+  #wait(promises, ms = REMOVAL_WAIT_MS) {
     let handle;
     const late = new Promise((resolve) => {
-      handle = this.#clock.setTimer(resolve, REMOVAL_WAIT_MS);
+      handle = this.#clock.setTimer(resolve, ms);
     });
     return Promise.race([Promise.all(promises), late]).finally(() => this.#clock.clearTimer(handle));
   }
@@ -189,6 +201,12 @@ export class Removals {
     }
     const closes = mine.map((id) => start(id));
     await this.#wait(closes.map((c) => c.ended));
+    // A close whose command answered with no error and whose tab has not
+    // closed: its watch, its second close or its fallback still runs (a
+    // dropped close). The item waits until it ends, at most DROPPED_WAIT_MS
+    // more, so a tab that they close counts as closed.
+    const dropped = closes.filter((c) => !c.done && c.watched);
+    if (dropped.length) await this.#wait(dropped.map((c) => c.ended), DROPPED_WAIT_MS);
     return { closes, error: null };
   }
 
@@ -204,10 +222,12 @@ export class Removals {
 
   // The op of the tab's chain. It ends at the command's answer, or when the
   // fallback called chrome.tabs.remove; the close stays pending outside it.
-  async #closeOp(c) {
+  // own: the close holds its own attach already (the second close of a
+  // dropped close, board ab-v16.67); with no attachment of this worker left,
+  // the op attaches for the close again, as the first one did.
+  async #closeOp(c, own = false) {
     const { tabId } = c;
     if (c.done) return;
-    let own = false;
     let fallback = false;
     let running = null; // the answer of a command that has not answered in time
     if (!this.#att.isAttached(tabId)) {
@@ -231,6 +251,7 @@ export class Removals {
     }
     if (!fallback && !c.done) {
       c.commandOpen = true;
+      c.commands += 1;
       const sent = call(() => this.#chrome.debugger.sendCommand({ tabId }, "Target.closeTarget", { targetId }));
       const answered = sent.then(() => true, (e) => message(e) === DETACHED);
       c.commandAnswer = answered;
@@ -287,11 +308,15 @@ export class Removals {
   // comes in REMOVAL_WAIT_MS after that answer, Chrome dropped the close
   // (measured: a Target.closeTarget that reaches Chrome shortly before the
   // tab's navigation commits answers {success: true}, and the tab stays
-  // open): the command counts as failed, and the fallback runs, one op of
-  // the tab's chain. When the fallback ran already (the command answered
-  // after its limit), its result ends the close.
+  // open): one more Target.closeTarget goes (the second close), one op of
+  // the tab's chain, and the fallback runs only when that one also fails or
+  // is dropped (measured, board ab-v16.67: the second close runs no
+  // beforeunload handler; chrome.tabs.remove does, and its dialog can hold
+  // it). When the fallback ran already (the command answered after its
+  // limit), its result ends the close.
   #watch(c, own) {
     if (c.done) return;
+    c.watched = true;
     const handle = this.#clock.setTimer(() => {
       if (c.done) return;
       c.commandClosed = false;
@@ -307,6 +332,8 @@ export class Removals {
       if (c.done) return;
       // A later close can borrow this close's attach and pass its command
       // limit. Wait outside the chain: a later close must still be free to run.
+      // That close's command is the further Target.closeTarget of the tab:
+      // after it, this close runs its fallback, with no second close.
       const running = this.openCommands(c.tabId);
       if (running.length) {
         const ready = Promise.race([c.ended, Promise.all(running)]);
@@ -321,7 +348,8 @@ export class Removals {
         });
         return;
       }
-      return this.#fallback(c, own);
+      // The second close; after it, the fallback.
+      return c.commands < 2 ? this.#closeOp(c, own) : this.#fallback(c, own);
     }).catch(() => {});
   }
 

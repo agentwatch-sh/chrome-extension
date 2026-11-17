@@ -829,12 +829,37 @@ test("the window rule: each vector follows C10's rule, also for a pending close 
   assert.ok(says(C5, "The sweep closes a tab with a pending close again, by the receiver's close"), "C5: the sweep does not skip a held tab");
   // Board ab-v16.63: the dropped close (a no-error answer with no tabs.onRemoved) gets the fallback; its numbers.
   for (const s of ["The **dropped close** (board ab-v16.63, receiver 0.3.4)", "a `Target.closeTarget` that reaches Chrome shortly before the tab's navigation commits answers `{\"success\":true}`, and the tab stays open with no `tabs.onRemoved`",
-    "no `tabs.onRemoved` of the tab came `REMOVAL_WAIT_MS` after that answer, the command counts as failed, and the fallback runs", "when the command fails and the tab stays, or at a dropped close (above)",
+    "no `tabs.onRemoved` of the tab came `REMOVAL_WAIT_MS` after that answer, the command counts as dropped, and the second close runs", "when the command fails and the tab stays, or at a dropped close whose second close fails or is dropped too (above)",
     "The fallback of a dropped close is one more op of the tab's chain", "a failed fallback then ends the close `REMOVAL_WAIT_MS` after that answer",
-    "A dropped close ends at its fallback, about `REMOVAL_WAIT_MS` after the command's answer, so after the item's wait", "Chrome answered `{\"success\":true}` in 1 to 3 ms each time"]) {
+    "Chrome answered `{\"success\":true}` in 1 to 3 ms each time"]) {
     assert.ok(says(C10, s), `C10 says: ${s}`);
   }
-  assert.ok(says(C5, "that needs a failed attach or a dropped close (C10)"), "C5: the dropped close can lead to a held fallback");
+  assert.ok(says(C5, "that needs a failed attach or a dropped close whose second close fails or is dropped too (C10)"), "C5: a twice-dropped close can lead to a held fallback");
+  // Board ab-v16.67 (receiver 0.3.13): the second close, the item's wait for a dropped close, the new bound, the measurement.
+  const second = "The **second close** of a dropped close (board ab-v16.67, receiver 0.3.13). The receiver then sends one more "
+    + "`Target.closeTarget` with the tab's target id: one op of the tab's chain, as the first one, through the same attachment "
+    + "(or through an attach for the close when no attachment of this worker is left: a link change can end it), with the same "
+    + "time limit and the same watch. Only when that command also fails, has not answered within `REMOVAL_WAIT_MS`, or is dropped "
+    + "too (no `tabs.onRemoved` `REMOVAL_WAIT_MS` after its answer) does the fallback run (below).";
+  const itemWait = "A dropped close ends at its second close, about `REMOVAL_WAIT_MS` after the command's answer, so after that wait. "
+    + "The item then waits for it (board ab-v16.67, receiver 0.3.13): when a close of the item has not ended at the end of that wait "
+    + "and its command answered with no error (a dropped close: its watch, its second close or its fallback still runs), the item "
+    + "waits until that close ended, at most `DROPPED_WAIT_MS` = 2 x `REMOVAL_WAIT_MS` (4 s) more.";
+  const bound = "An item ends at most five times `REMOVAL_WAIT_MS` (10 s) after it starts (its query, its `about:blank` tab, its wait, "
+    + "and the wait for a dropped close, `DROPPED_WAIT_MS`; before receiver 0.3.13 three times, 6 s)";
+  const daemon = "With a dropped close, the sweep's item at its bound and the key removals take up to six times `REMOVAL_WAIT_MS` (12 s): "
+    + "so that item alone, or several long items, can make the answer later than the daemon's 10 s (C4).";
+  for (const s of [second, itemWait, bound, daemon, "When a later close's command still runs on the tab at that time (a borrowed attachment, below), that command is the further `Target.closeTarget`",
+    "A dialog that holds the fallback's `chrome.tabs.remove` ends the item at that limit: the tab counts as not closed and stays pending.",
+    "A close that ended within the first wait adds no wait",
+    "Then a second `Target.closeTarget` closed the tab 5 of 5 times with no dialog", "a `chrome.tabs.remove` opened the `beforeunload` dialog 5 of 5 times (5.0 to 7.8 ms after the call)",
+    "Not measured: Google Chrome 157.0.8103.78."]) {
+    assert.ok(says(C10, s), `C10 says: ${s}`);
+  }
+  for (const gone of ["the command counts as failed, and the fallback runs (below)", "A dropped close ends at its fallback, about `REMOVAL_WAIT_MS` after the command's answer, so after the item's wait",
+    "An item ends at most three times `REMOVAL_WAIT_MS` (6 s) after it starts"]) {
+    assert.ok(!says(C10, gone), `C10 no longer says: ${gone}`);
+  }
   // review-17b: B1 (pending from the start of the close), N1 (the chain), N2 (step 3), N3 (a tab that the sweep cannot close leaves its scope).
   for (const s of ["a close is pending from the moment its item starts it (for the receiver's close, from the moment it joins the tab's chain; for a client's `Page.close`, from its send) until the tab's `tabs.onRemoved`, or until it fails and the tab stays (after the fallback too, and, when the receiver sent a `Target.closeTarget` command, only after that command also answered",
     "a late `Page.close` answer with no error leaves the close pending, and a late error ends it", "also one that still waits in the tab's chain, or is still in its attach",
@@ -925,7 +950,8 @@ test("C10 step 3: the cleanup never ends an attachment while a close command run
     + "wait). Until then a new bridge attach of the tab gets Chrome's error (`Another debugger is already attached to the "
     + "tab`). At a link change, when no close command runs, the attach of a receiver's close ends right after the close's op, "
     + "so a new bridge attach after that op finds the tab free. With no link change, a close's own attach stays after a "
-    + "no-error answer until the tab closes or the dropped close's fallback ends it (`REMOVAL_WAIT_MS` later, or later while "
+    + "no-error answer until the tab closes or the dropped close's fallback ends it (after its second close: at once when "
+    + "that close fails, `REMOVAL_WAIT_MS` after its answer when Chrome drops it too, or later while "
     + "a borrowed command still runs). The wait ends at the command's answer, at the tab's close (Chrome then fails the "
     + "command), or at the worker's restart, which drops the receiver's state; it has no time bound of its own, since a bound "
     + "would end an attachment while a command runs.";

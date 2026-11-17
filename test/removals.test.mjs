@@ -4,8 +4,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { REMOVAL_WAIT_MS } from "../agent/removals.js";
+import * as removals from "../agent/removals.js";
 import { callsSince, flush, startReceiver } from "./receiver-harness.mjs";
+
+const { DROPPED_WAIT_MS, REMOVAL_WAIT_MS } = removals;
 
 // The merge guard's floor (rules 9 and 89, C5; boards ab-v16.99 and ab-v16.100) is in force from the worker's start; these tests read the other rules.
 const noFloor = (rules) => rules.filter((r) => r.id !== 9 && r.id !== 89);
@@ -17,9 +19,9 @@ const blanks = (f) => f.callsTo("tabs.create").filter(([p]) => p.url === "about:
 const closeCmds = (f, mark = 0) => callsSince(f, mark).filter(([p, a]) => p === "debugger.sendCommand" && a[1] === "Target.closeTarget").map(([, a]) => a[0].tabId);
 const isOpen = (f, id) => f.tabs_.some((t) => t.id === id);
 
-// Tab ids pending: a receiver's close whose command answered with no error and closed no tab, and
-// whose fallback (REMOVAL_WAIT_MS after that answer) a beforeunload dialog holds; the item waits
-// REMOVAL_WAIT_MS and ends.
+// Tab ids pending: a receiver's close whose command and second command answered with no error and
+// closed no tab, and whose fallback (REMOVAL_WAIT_MS after the second answer) a beforeunload dialog
+// holds; the item waits REMOVAL_WAIT_MS, then DROPPED_WAIT_MS (board ab-v16.67), and ends.
 async function makePending(s, ids) {
   const sendCommand = s.f.impl["debugger.sendCommand"];
   const remove = s.f.impl["tabs.remove"];
@@ -27,7 +29,9 @@ async function makePending(s, ids) {
   s.f.impl["tabs.remove"] = (id) => (ids.includes(id) ? new Promise(() => {}) : remove ? remove(id) : s.f.closeTab(id));
   const done = s.r.removals.closeOwn({ ids });
   await flush();
-  await s.fire(REMOVAL_WAIT_MS);
+  await s.fire(REMOVAL_WAIT_MS); // the item's wait, and each close's watch: the second closes
+  await s.fire(REMOVAL_WAIT_MS); // their watches: the fallbacks
+  await s.fire(DROPPED_WAIT_MS); // the item's wait for its dropped closes
   assert.deepEqual((await done).left, ids);
   assert.deepEqual(s.f.callsTo("tabs.remove").filter(([id]) => ids.includes(id)).map(([id]) => id).sort(), [...ids].sort(), "the held fallbacks");
   s.f.impl["debugger.sendCommand"] = sendCommand;
@@ -466,7 +470,7 @@ test("Target.closeTarget that answers Detached while handling command. before th
 // Board ab-v16.63 (measured, Chromium 156): a Target.closeTarget that reaches Chrome shortly before the
 // tab's navigation commits answers {success: true}, and Chrome drops the close: the tab stays open, and
 // no tabs.onRemoved comes. Such a close counts as failed REMOVAL_WAIT_MS after its answer: the fallback runs.
-test("a Target.closeTarget that answers with no error but closes no tab: the fallback runs REMOVAL_WAIT_MS after the answer, and the op answers at the close", async () => {
+test("a Target.closeTarget that answers with no error but closes no tab: the second close goes REMOVAL_WAIT_MS after the answer, the fallback REMOVAL_WAIT_MS after a second no-error answer, and the op answers at the close", async () => {
   const noClose = (s) => {
     s.f.impl["debugger.sendCommand"] = async (t, m) => (m === "Target.closeTarget" ? { success: true } : {});
   };
@@ -481,6 +485,9 @@ test("a Target.closeTarget that answers with no error but closes no tab: the fal
   assert.deepEqual(s.f.callsTo("tabs.remove"), [], "no fallback before the limit");
   await s.fire(REMOVAL_WAIT_MS); // the item's wait, and the close's limit after the command's answer
   await flush();
+  assert.deepEqual(closeCmds(s.f), [7, 7], "the second close (board ab-v16.67)");
+  assert.deepEqual(s.f.callsTo("tabs.remove"), [], "no fallback before the second close's limit");
+  await s.fire(REMOVAL_WAIT_MS); // Chrome dropped the second close too
   assert.deepEqual(s.f.callsTo("tabs.remove"), [[7]], "the fallback");
   assert.deepEqual(s.f.callsTo("debugger.detach"), [], "the bridge's attachment stays");
   assert.deepEqual(s.resOf("r").map((m) => m.data), [null]);
@@ -494,9 +501,9 @@ test("a Target.closeTarget that answers with no error but closes no tab: the fal
   o.send({ t: "req", id: "r", op: "tabs.remove", args: [7] });
   await flush();
   await o.fire(REMOVAL_WAIT_MS);
-  await flush();
-  const order = callsSince(o.f, mark).map(([p]) => p).filter((p) => ["debugger.attach", "debugger.detach", "tabs.remove"].includes(p));
-  assert.deepEqual(order, ["debugger.attach", "debugger.detach", "tabs.remove"]);
+  await o.fire(REMOVAL_WAIT_MS);
+  const order = callsSince(o.f, mark).map(([p, a]) => (p === "debugger.sendCommand" ? a[1] : p)).filter((p) => ["debugger.attach", "Target.closeTarget", "debugger.detach", "tabs.remove"].includes(p));
+  assert.deepEqual(order, ["debugger.attach", "Target.closeTarget", "Target.closeTarget", "debugger.detach", "tabs.remove"], "the second close keeps the close's own attach");
   assert.deepEqual(o.resOf("r").map((m) => m.data), [null]);
 
   // A failed fallback: the close fails, the tab stays and is not pending, and the op answers the error.
@@ -509,7 +516,7 @@ test("a Target.closeTarget that answers with no error but closes no tab: the fal
   e.send({ t: "req", id: "r", op: "tabs.remove", args: [7] });
   await flush();
   await e.fire(REMOVAL_WAIT_MS);
-  await flush();
+  await e.fire(REMOVAL_WAIT_MS);
   assert.deepEqual(e.resOf("r").map((m) => m.error), ["No tab with id: 7."]);
   assert.equal(e.r.removals.isPending(7), false);
 
@@ -547,28 +554,159 @@ test("a Target.closeTarget that answers with no error but closes no tab: the fal
   assert.deepEqual(d.f.callsTo("tabs.remove"), [[7]], "one fallback");
 });
 
+// Board ab-v16.67: the item waits for a dropped close until its second close or its fallback ends it, at
+// most DROPPED_WAIT_MS after the item's wait (F1); the second close is one more Target.closeTarget, and
+// chrome.tabs.remove runs only when that one also fails or is dropped (F2; measured, C10).
+const dropFirst = (s, second = (t) => s.f.closeTab(t.tabId)) => {
+  let n = 0;
+  s.f.impl["debugger.sendCommand"] = async (t, m) => {
+    if (m !== "Target.closeTarget") return {};
+    if (++n === 1) return { success: true }; // Chrome dropped the close: the tab stays
+    await second(t, n);
+    return { success: true };
+  };
+  return () => n;
+};
+
+test("ab-v16.67: a dropped close's second close closes the tab with no chrome.tabs.remove, and the item counts the tab as closed", async () => {
+  const s = await startReceiver({ tabs: [blank(7), blank(3)], targets: [target(7)] });
+  dropFirst(s);
+  let result = null;
+  const done = s.r.removals.closeOwn({ ids: [7] }).then((r) => (result = r));
+  await flush();
+  assert.deepEqual(closeCmds(s.f), [7]);
+  await s.fire(REMOVAL_WAIT_MS); // the item's wait, and the close's watch: the second close goes
+  await done;
+  assert.deepEqual(closeCmds(s.f), [7, 7], "one more Target.closeTarget");
+  assert.deepEqual(s.f.callsTo("tabs.remove"), [], "no chrome.tabs.remove: the new page's beforeunload dialog could hold it");
+  assert.deepEqual([result.closed, result.left, result.pending], [[7], [], []], "the item counts the tab as closed");
+  assert.equal(s.pending(DROPPED_WAIT_MS).length, 0, "the tab's close ended the item's extra wait");
+  assert.equal(s.r.removals.isPending(7), false);
+
+  // The tabs.remove op answers at that close; the next item starts after it.
+  const o = await startReceiver({ tabs: [blank(7), blank(8), blank(3)], targets: [target(7), target(8)] });
+  dropFirst(o);
+  o.send({ t: "req", id: "r", op: "tabs.remove", args: [7] });
+  o.send({ t: "req", id: "next", op: "tabs.remove", args: [8] });
+  await flush();
+  assert.deepEqual(closeCmds(o.f), [7], "the next item waits for the dropped close");
+  await o.fire(REMOVAL_WAIT_MS);
+  assert.deepEqual(o.resOf("r").map((m) => m.data), [null]);
+  assert.deepEqual(o.resOf("next").map((m) => m.data), [null]);
+  assert.deepEqual(closeCmds(o.f), [7, 7, 8]);
+});
+
+test("ab-v16.67: when the second close fails or Chrome drops it too, chrome.tabs.remove runs, and the item counts the tab that it closes", async () => {
+  // Dropped too: the fallback runs REMOVAL_WAIT_MS after the second command's answer; it ends the close's own attach first.
+  const s = await startReceiver({ tabs: [blank(7), blank(3)], targets: [target(7)] });
+  s.f.impl["debugger.sendCommand"] = async (t, m) => (m === "Target.closeTarget" ? { success: true } : {});
+  let result = null;
+  const done = s.r.removals.closeOwn({ ids: [7] }).then((r) => (result = r));
+  await flush();
+  const mark = s.f.calls.length;
+  await s.fire(REMOVAL_WAIT_MS); // the item's wait and the first watch: the second close
+  assert.deepEqual(closeCmds(s.f, mark), [7]);
+  assert.deepEqual(s.f.callsTo("tabs.remove"), []);
+  assert.equal(result, null, "the item waits for the dropped close");
+  await s.fire(REMOVAL_WAIT_MS); // the second close's watch: the fallback
+  await done;
+  const order = callsSince(s.f, mark).map(([p, a]) => (p === "debugger.sendCommand" ? a[1] : p)).filter((p) => ["Target.closeTarget", "debugger.detach", "tabs.remove"].includes(p));
+  assert.deepEqual(order, ["Target.closeTarget", "debugger.detach", "tabs.remove"]);
+  assert.deepEqual([result.closed, result.left], [[7], []], "the item counts the tab that the fallback closed");
+
+  // The second command fails: chrome.tabs.remove at once.
+  const e = await startReceiver({ tabs: [blank(7), blank(3)], targets: [target(7)] });
+  dropFirst(e, () => {
+    throw new Error("close refused");
+  });
+  let eResult = null;
+  const eDone = e.r.removals.closeOwn({ ids: [7] }).then((r) => (eResult = r));
+  await flush();
+  await e.fire(REMOVAL_WAIT_MS);
+  await eDone;
+  assert.deepEqual(closeCmds(e.f), [7, 7]);
+  assert.deepEqual(e.f.callsTo("tabs.remove"), [[7]]);
+  assert.deepEqual(eResult.closed, [7]);
+});
+
+test("ab-v16.67: a dialog that holds the fallback's chrome.tabs.remove ends the item DROPPED_WAIT_MS after its wait: the tab counts as not closed and stays pending", async () => {
+  const s = await startReceiver({ tabs: [blank(7), blank(3)], targets: [target(7)] });
+  s.f.impl["debugger.sendCommand"] = async (t, m) => (m === "Target.closeTarget" ? { success: true } : {});
+  s.f.impl["tabs.remove"] = () => new Promise(() => {}); // a beforeunload dialog holds it
+  let result = null;
+  const done = s.r.removals.closeOwn({ ids: [7] }).then((r) => (result = r));
+  await flush();
+  await s.fire(REMOVAL_WAIT_MS);
+  await s.fire(REMOVAL_WAIT_MS);
+  assert.deepEqual(s.f.callsTo("tabs.remove"), [[7]]);
+  assert.equal(result, null);
+  assert.equal(s.pending(DROPPED_WAIT_MS).length, 1, "the item's extra wait");
+  await s.fire(DROPPED_WAIT_MS);
+  await done;
+  assert.deepEqual([result.closed, result.left, result.pending], [[], [7], [7]]);
+  assert.equal(s.r.removals.isPending(7), true, "the held close stays pending");
+});
+
+test("ab-v16.67: only a dropped close makes the item wait longer: a close that ends at once, and one whose command answers after the item's wait, add no wait", async () => {
+  const s = await startReceiver({ tabs: [blank(7), blank(3)], targets: [target(7)] });
+  const r = await s.r.removals.closeOwn({ ids: [7] });
+  assert.deepEqual(r.closed, [7]);
+  assert.equal(s.timers.filter((t) => t.ms === DROPPED_WAIT_MS).length, 0, "no extra wait");
+
+  // The command has not answered at the item's wait: the item ends there, as before receiver 0.3.13.
+  const l = await startReceiver({ tabs: [blank(7), blank(3)], targets: [target(7)] });
+  let answer;
+  l.f.impl["debugger.sendCommand"] = (t, m) => (m === "Target.closeTarget" ? new Promise((res) => (answer = res)) : Promise.resolve({}));
+  let result = null;
+  const done = l.r.removals.closeOwn({ ids: [7] }).then((x) => (result = x));
+  await flush();
+  const [itemWait] = l.pending(REMOVAL_WAIT_MS);
+  itemWait.cleared = true;
+  itemWait.fn();
+  await flush();
+  answer({ success: true });
+  await done;
+  assert.deepEqual([result.closed, result.pending], [[], [7]]);
+  assert.equal(l.timers.filter((t) => t.ms === DROPPED_WAIT_MS).length, 0, "no extra wait");
+});
+
+// From receiver 0.3.13 (board ab-v16.67) an item waits for a close whose command answered with no error
+// (DROPPED_WAIT_MS), so a later item can borrow that close's attachment while its watch runs only when
+// the answer came right after the item's wait. This fires the item's wait, then answers the first
+// command with no error (Chrome dropped it: the tab stays); it gives the close's watch timer.
+async function answerAfterItemWait(s, itemWait, answer) {
+  itemWait.cleared = true;
+  itemWait.fn();
+  await flush();
+  const before = s.timers.length;
+  answer({ success: true });
+  await flush();
+  return s.timers.slice(before).find((t) => t.ms === REMOVAL_WAIT_MS && !t.cleared);
+}
+
 // review-26 B1: the fallback of a dropped close is one op of the tab's chain (C10): while a second
 // close's command runs through the first close's own attach, that fallback neither ends the attach
 // (a detach makes the running command fail) nor calls chrome.tabs.remove.
-test("a dropped close's fallback waits in the tab's chain while a second close's command runs", async () => {
+test("a dropped close's watch waits in the tab's chain while a later close's command runs, then sends its second close", async () => {
   const s = await startReceiver({ tabs: [blank(7), blank(3)], targets: [target(7)] });
   let n = 0;
+  let answer1;
   let answer2;
   s.f.impl["debugger.sendCommand"] = (t, m) => {
     if (m !== "Target.closeTarget") return Promise.resolve({});
     n += 1;
-    if (n === 1) return Promise.resolve({ success: true }); // the dropped close
-    return new Promise((res) => (answer2 = res));
+    if (n === 1) return new Promise((res) => (answer1 = res)); // the dropped close
+    if (n === 2) return new Promise((res) => (answer2 = res));
+    s.f.closeTab(t.tabId); // the dropped close's second close: Chrome closes the tab
+    return Promise.resolve({ success: true });
   };
   s.send({ t: "req", id: "r1", op: "tabs.remove", args: [7] });
   await flush();
-  const [itemWait, watch, ...more] = s.pending(REMOVAL_WAIT_MS);
-  assert.ok(itemWait && watch && more.length === 0, "the item's wait and the close's watch");
+  const [itemWait, ...more] = s.pending(REMOVAL_WAIT_MS);
+  assert.ok(itemWait && more.length === 1, "the item's wait and the command's limit");
   s.send({ t: "req", id: "r2", op: "tabs.remove", args: [7] });
   await flush();
-  itemWait.cleared = true;
-  itemWait.fn();
-  await flush();
+  const watch = await answerAfterItemWait(s, itemWait, (v) => answer1(v));
   assert.equal(n, 2, "the second close's command runs (through the first close's own attach)");
   const mark = s.f.calls.length;
   watch.cleared = true;
@@ -576,9 +714,10 @@ test("a dropped close's fallback waits in the tab's chain while a second close's
   await flush();
   const ends = () => callsSince(s.f, mark).map(([p]) => p).filter((p) => p === "debugger.detach" || p === "tabs.remove");
   assert.deepEqual(ends(), [], "no detach and no tabs.remove while that command runs");
-  answer2({ success: true });
+  answer2({ success: true }); // and the tab stays
   await flush();
-  assert.deepEqual(ends(), ["debugger.detach", "tabs.remove"]);
+  assert.equal(n, 3, "then the dropped close's op runs in the chain: no command runs, so its second close goes (board ab-v16.67)");
+  assert.deepEqual(ends(), [], "no fallback");
   assert.deepEqual(s.resOf("r1").map((m) => m.data), [null]);
   assert.deepEqual(s.resOf("r2").map((m) => m.data), [null]);
   assert.equal(s.r.removals.isPending(7), false);
@@ -587,20 +726,19 @@ test("a dropped close's fallback waits in the tab's chain while a second close's
 test("N1: a dropped close's fallback keeps a borrowed attachment while the second command runs past its limit", async () => {
   const s = await startReceiver({ tabs: [blank(7), blank(3)], targets: [target(7)] });
   let n = 0;
+  let answer1;
   let fail2;
   s.f.impl["debugger.sendCommand"] = (t, m) => {
     if (m !== "Target.closeTarget") return Promise.resolve({});
-    if (++n === 1) return Promise.resolve({ success: true });
+    if (++n === 1) return new Promise((res) => (answer1 = res));
     return new Promise((res, rej) => (fail2 = rej));
   };
   s.f.impl["tabs.remove"] = async () => { throw new Error("held"); };
   s.send({ t: "req", id: "r1", op: "tabs.remove", args: [7] });
   await flush();
-  const [itemWait, watch] = s.pending(REMOVAL_WAIT_MS);
+  const [itemWait] = s.pending(REMOVAL_WAIT_MS);
   s.send({ t: "req", id: "r2", op: "tabs.remove", args: [7] });
-  itemWait.cleared = true;
-  itemWait.fn();
-  await flush();
+  const watch = await answerAfterItemWait(s, itemWait, (v) => answer1(v));
   assert.equal(n, 2, "the second close borrows the first close's attachment");
   watch.cleared = true;
   watch.fn();
@@ -623,9 +761,10 @@ test("N1: a dropped close's fallback keeps a borrowed attachment while the secon
 test("N1: a borrowed command that never answers holds no queue or later close", async () => {
   const s = await startReceiver({ tabs: [blank(7), blank(3), blank(9)], targets: [target(7), target(3)] });
   let n = 0;
+  let answer1;
   s.f.impl["debugger.sendCommand"] = async (t, m) => {
     if (m !== "Target.closeTarget") return {};
-    if (t.tabId === 7 && ++n === 1) return { success: true };
+    if (t.tabId === 7 && ++n === 1) return new Promise((res) => (answer1 = res));
     if (t.tabId === 7 && n === 2) return new Promise(() => {});
     s.f.closeTab(t.tabId);
     return { success: true };
@@ -633,11 +772,9 @@ test("N1: a borrowed command that never answers holds no queue or later close", 
   s.f.impl["tabs.remove"] = async () => { throw new Error("held"); };
   s.send({ t: "req", id: "r1", op: "tabs.remove", args: [7] });
   await flush();
-  const [itemWait, watch] = s.pending(REMOVAL_WAIT_MS);
+  const [itemWait] = s.pending(REMOVAL_WAIT_MS);
   s.send({ t: "req", id: "r2", op: "tabs.remove", args: [7] });
-  itemWait.cleared = true;
-  itemWait.fn();
-  await flush();
+  const watch = await answerAfterItemWait(s, itemWait, (v) => answer1(v));
   watch.cleared = true;
   watch.fn();
   await s.fire(REMOVAL_WAIT_MS);
@@ -656,7 +793,8 @@ test("N1: a borrowed command that never answers gets one bounded fallback and le
   for (const fallbackFails of [false, true]) {
     const s = await startReceiver({ tabs: [blank(7), blank(3)], targets: [target(7)] });
     let n = 0;
-    s.f.impl["debugger.sendCommand"] = async () => (++n === 1 ? { success: true } : new Promise(() => {}));
+    let answer1;
+    s.f.impl["debugger.sendCommand"] = async () => (++n === 1 ? new Promise((res) => (answer1 = res)) : new Promise(() => {}));
     let removes = 0;
     s.f.impl["tabs.remove"] = async (id) => {
       if (++removes === 1 || fallbackFails) throw new Error("held");
@@ -664,11 +802,9 @@ test("N1: a borrowed command that never answers gets one bounded fallback and le
     };
     s.send({ t: "req", id: "r1", op: "tabs.remove", args: [7] });
     await flush();
-    const [itemWait, watch] = s.pending(REMOVAL_WAIT_MS);
+    const [itemWait] = s.pending(REMOVAL_WAIT_MS);
     s.send({ t: "req", id: "r2", op: "tabs.remove", args: [7] });
-    itemWait.cleared = true;
-    itemWait.fn();
-    await flush();
+    const watch = await answerAfterItemWait(s, itemWait, (v) => answer1(v));
     watch.cleared = true;
     watch.fn();
     await s.fire(REMOVAL_WAIT_MS); // the borrowed command's limit and first fallback
@@ -691,15 +827,14 @@ test("B1: a dropped close's deferred detach keeps a third close's running comman
   s.f.trackDebuggerCommands = true;
   const answers = [];
   let n = 0;
-  s.f.impl["debugger.sendCommand"] = () => (++n === 1 ? Promise.resolve({ success: true }) : new Promise((res, rej) => (answers[n] = rej)));
+  let answer1;
+  s.f.impl["debugger.sendCommand"] = () => (++n === 1 ? new Promise((res) => (answer1 = res)) : new Promise((res, rej) => (answers[n] = rej)));
   s.f.impl["tabs.remove"] = async () => { throw new Error("held"); };
   s.send({ t: "req", id: "r1", op: "tabs.remove", args: [7] });
   await flush();
-  const [itemWait, watch] = s.pending(REMOVAL_WAIT_MS);
+  const [itemWait] = s.pending(REMOVAL_WAIT_MS);
   s.send({ t: "req", id: "r2", op: "tabs.remove", args: [7] });
-  itemWait.cleared = true;
-  itemWait.fn();
-  await flush();
+  const watch = await answerAfterItemWait(s, itemWait, (v) => answer1(v));
   watch.cleared = true;
   watch.fn();
   await s.fire(REMOVAL_WAIT_MS);
@@ -726,15 +861,14 @@ test("T1: deferred detach checks again after the third close's command also pass
   s.f.trackDebuggerCommands = true;
   const answers = [];
   let n = 0;
-  s.f.impl["debugger.sendCommand"] = () => (++n === 1 ? Promise.resolve({ success: true }) : new Promise((res, rej) => (answers[n] = rej)));
+  let answer1;
+  s.f.impl["debugger.sendCommand"] = () => (++n === 1 ? new Promise((res) => (answer1 = res)) : new Promise((res, rej) => (answers[n] = rej)));
   s.f.impl["tabs.remove"] = async () => { throw new Error("held"); };
   s.send({ t: "req", id: "r1", op: "tabs.remove", args: [7] });
   await flush();
-  const [itemWait, watch] = s.pending(REMOVAL_WAIT_MS);
+  const [itemWait] = s.pending(REMOVAL_WAIT_MS);
   s.send({ t: "req", id: "r2", op: "tabs.remove", args: [7] });
-  itemWait.cleared = true;
-  itemWait.fn();
-  await flush();
+  const watch = await answerAfterItemWait(s, itemWait, (v) => answer1(v));
   watch.cleared = true;
   watch.fn();
   await s.fire(REMOVAL_WAIT_MS);
@@ -794,7 +928,10 @@ test("N2: a dropped close's watch keeps the new bridge attachment after a link r
   assert.equal((await s.answer({ id: "new-attach", op: "debugger.attach", args: [7] })).ok, true);
   s.f.impl["tabs.remove"] = async () => { throw new Error("held"); };
   const mark = s.f.calls.length;
-  await s.fire(REMOVAL_WAIT_MS);
+  await s.fire(REMOVAL_WAIT_MS); // the item's wait, and the watch: the second close
+  assert.deepEqual(closeCmds(s.f, mark), [7], "the second close goes through the new bridge attachment");
+  assert.deepEqual(callsSince(s.f, mark).filter(([p]) => p === "debugger.attach"), [], "no attach of its own");
+  await s.fire(REMOVAL_WAIT_MS); // the second close's watch: the fallback
   await done;
   assert.deepEqual(callsSince(s.f, mark).filter(([p]) => p === "debugger.detach"), [], "the old watch never detaches the new bridge");
   assert.equal((await s.f.chrome.debugger.getTargets())[0].attached, true);
@@ -810,20 +947,19 @@ test("ab-v16.88: a link change during a dropped close's deferred wait keeps the 
   s.f.trackAttachments = true;
   s.f.trackDebuggerCommands = true;
   let n = 0;
+  let answer1;
   let fail2;
   s.f.impl["debugger.sendCommand"] = (t, m) => {
     if (m !== "Target.closeTarget") return Promise.resolve({});
-    if (++n === 1) return Promise.resolve({ success: true });
+    if (++n === 1) return new Promise((res) => (answer1 = res));
     return new Promise((res, rej) => (fail2 = rej));
   };
   s.f.impl["tabs.remove"] = async () => { throw new Error("held"); };
   s.send({ t: "req", id: "r1", op: "tabs.remove", args: [7] });
   await flush();
-  const [itemWait, watch] = s.pending(REMOVAL_WAIT_MS);
+  const [itemWait] = s.pending(REMOVAL_WAIT_MS);
   s.send({ t: "req", id: "r2", op: "tabs.remove", args: [7] });
-  itemWait.cleared = true;
-  itemWait.fn();
-  await flush();
+  const watch = await answerAfterItemWait(s, itemWait, (v) => answer1(v));
   assert.equal(n, 2, "the second close borrows the first close's attachment");
   watch.cleared = true;
   watch.fn();
@@ -935,9 +1071,16 @@ test("ab-v16.88: a link change during a close's op ends the close's attachment a
   assert.deepEqual(s.f.callsTo("debugger.detach"), [[{ tabId: 7 }]], "the reset's detach comes right after the close's op");
   assert.equal(s.r.att.isBridgeTab(7), true);
   s.f.impl["tabs.remove"] = async () => { throw new Error("held"); };
+  // The second close (board ab-v16.67) goes through the new bridge attachment; Chrome refuses it.
+  s.f.impl["debugger.sendCommand"] = async (t, m) => {
+    if (m === "Target.closeTarget") throw new Error("close refused");
+    return {};
+  };
   const mark = s.f.calls.length;
   await s.fire(REMOVAL_WAIT_MS);
   await done;
+  assert.deepEqual(closeCmds(s.f, mark), [7], "the second close");
+  assert.deepEqual(callsSince(s.f, mark).filter(([p]) => p === "debugger.attach"), [], "no attach of its own");
   assert.deepEqual(callsSince(s.f, mark).filter(([p]) => p === "debugger.detach"), [], "the close's fallback keeps the new bridge attachment");
   assert.deepEqual(callsSince(s.f, mark).filter(([p]) => p === "tabs.remove").map(([, a]) => a[0]), [7]);
   assert.equal((await s.f.chrome.debugger.getTargets())[0].attached, true);
