@@ -36,7 +36,7 @@ test("scripts/extension-id.mjs prints both IDs when it runs, also from a path wi
 
 test("operator manifest", () => {
   assert.equal(sender.manifest_version, 3);
-  assert.equal(sender.version, "0.2.0");
+  assert.equal(sender.version, "0.2.1");
   assert.equal(sender.name, "agentwatch \u2014 operator mode");
   assert.equal(sender.minimum_chrome_version, "132");
   assert.equal(typeof sender.description, "string");
