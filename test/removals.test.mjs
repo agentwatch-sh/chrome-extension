@@ -862,12 +862,52 @@ test("ab-v16.88: a link change keeps a bridge tab's attachment until a borrowed 
   assert.equal(s.f.debuggerCommands_.size, 1, "the command still runs");
   assert.equal(s.r.att.isBridgeTab(7), false);
   assert.equal(s.r.att.isAttached(7), true, "a later close can still borrow the attachment");
+  const early = await s.answer({ id: "early-attach", op: "debugger.attach", args: [7] });
+  assert.deepEqual([early.ok, early.error], [false, "Another debugger is already attached to the tab"], "a new bridge attach during the wait gets Chrome's error");
+  assert.equal(s.f.debuggerCommands_.size, 1, "the failed attach ends no command");
   fail(new Error("close refused"));
   await flush();
   assert.deepEqual(s.f.callsTo("debugger.detach"), [[{ tabId: 7 }]], "one detach, after the command's answer");
   assert.equal(s.r.att.isAttached(7), false);
   assert.equal((await s.f.chrome.debugger.getTargets())[0].attached, false);
   assert.equal((await s.answer({ id: "new-attach", op: "debugger.attach", args: [7] })).ok, true);
+});
+
+// Board ab-v16.88 (review of PR #50): after the wait the reset's detach reads the commands again. During
+// the wait the new connection's close borrows the attachment, and its command also passes its limit; the
+// answer of the first command must not end the attachment while the second one runs.
+test("ab-v16.88: the reset's detach checks the commands again after its wait: a close of the new connection that borrowed the attachment keeps it", async () => {
+  const s = await startReceiver({ tabs: [blank(7), blank(3)], targets: [target(7)] });
+  s.f.trackAttachments = true;
+  s.f.trackDebuggerCommands = true;
+  assert.equal((await s.answer({ id: "a", op: "debugger.attach", args: [7] })).ok, true);
+  const fails = [];
+  s.f.impl["debugger.sendCommand"] = (t, m) => (m === "Target.closeTarget" ? new Promise((res, rej) => fails.push(rej)) : Promise.resolve({}));
+  s.f.impl["tabs.remove"] = async () => { throw new Error("held"); };
+  s.send({ t: "req", id: "rA", op: "tabs.remove", args: [7] });
+  await flush();
+  assert.equal(fails.length, 1, "command A runs through the bridge's attachment");
+  await s.fire(REMOVAL_WAIT_MS); // command A passes its limit
+  s.port().fireMessage({ t: "link", up: true });
+  await flush();
+  assert.deepEqual(s.f.callsTo("debugger.detach"), [], "the reset waits for command A");
+  s.send({ t: "req", id: "rB", op: "tabs.remove", args: [7] });
+  await flush();
+  assert.equal(fails.length, 2, "the new connection's close borrows the attachment: command B runs");
+  assert.equal(s.f.callsTo("debugger.attach").length, 1, "no attach of its own");
+  await s.fire(REMOVAL_WAIT_MS); // command B passes its limit too; the close's op ends
+  assert.equal(s.f.debuggerCommands_.size, 2);
+  fails[0](new Error("close A refused"));
+  await flush();
+  assert.deepEqual(s.f.callsTo("debugger.detach"), [], "no detach while command B runs");
+  assert.equal(s.f.debuggerCommands_.size, 1, "command B still runs");
+  assert.deepEqual(s.resOf("rB"), [], "command B did not fail at a detach");
+  fails[1](new Error("close B refused"));
+  await flush();
+  assert.deepEqual(s.f.callsTo("debugger.detach"), [[{ tabId: 7 }]], "exactly one detach, after command B's answer");
+  assert.deepEqual(s.resOf("rB").map((m) => m.error), ["held"]);
+  assert.equal(s.r.att.isAttached(7), false);
+  assert.equal((await s.f.chrome.debugger.getTargets())[0].attached, false);
 });
 
 // Board ab-v16.88 (review-34 note 2): a link change while the receiver's close of a tab runs in the

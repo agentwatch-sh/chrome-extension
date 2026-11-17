@@ -918,13 +918,23 @@ test("C10 step 3: the cleanup never ends an attachment while a close command run
     + "of a receiver's close holds, and a tab with an op in its chain) joins that chain at the link change, so it runs after the "
     + "close's op and before any op of the new connection (as `reset()` of `agent/attach.js` does). A tab that only "
     + "`chrome.debugger.getTargets()` reports, and that the new connection attached or whose op of the new connection runs, is "
-    + "not detached. The cleanup never ends an attachment while a `Target.closeTarget` command of a receiver's close runs on it "
-    + "(board ab-v16.88, receiver 0.3.12): while such a command has not answered (also after its time limit), the detach waits "
-    + "outside the tab's chain for the answer, then checks again in the chain. Until then a new bridge attach of the tab gets "
-    + "Chrome's error (`Another debugger is already attached to the tab`). When no close command runs, the attach of a "
-    + "receiver's close ends right after the close's op, so a new bridge attach after that op finds the tab free.";
+    + "not detached. At a link change the cleanup never ends an attachment while a `Target.closeTarget` command of a receiver's "
+    + "close runs on it (board ab-v16.88, receiver 0.3.12; at a worker's start the receiver knows no command of the worker "
+    + "before it): while such a command has not answered (also after its time limit), the detach waits outside the tab's chain "
+    + "for the answer, then checks again in the chain (a close of the new connection can borrow the attachment during the "
+    + "wait). Until then a new bridge attach of the tab gets Chrome's error (`Another debugger is already attached to the "
+    + "tab`). At a link change, when no close command runs, the attach of a receiver's close ends right after the close's op, "
+    + "so a new bridge attach after that op finds the tab free. With no link change, a close's own attach stays after a "
+    + "no-error answer until the tab closes or the dropped close's fallback ends it (`REMOVAL_WAIT_MS` later, or later while "
+    + "a borrowed command still runs). The wait ends at the command's answer, at the tab's close (Chrome then fails the "
+    + "command), or at the worker's restart, which drops the receiver's state; it has no time bound of its own, since a bound "
+    + "would end an attachment while a command runs.";
   assert.ok(says(C10, step3), "C10 step 3 has the new text");
-  assert.ok(!says(C10, "and a tab whose chain runs is not detached"), "C10: the old rule is gone");
+  // The old rule, and the first text of this board task (before its review: no "at a link change", no end of the wait).
+  for (const gone of ["and a tab whose chain runs is not detached", "The cleanup never ends an attachment while",
+    "(board ab-v16.88, receiver 0.3.12): while", "When no close command runs, the attach of a receiver's close ends"]) {
+    assert.ok(!says(C10, gone), `C10 no longer says: ${gone}`);
+  }
 });
 
 // review-81 note 3: after a bridge deadline each kind of close keeps its own end. Board ab-v16.90: the probe of a client's
