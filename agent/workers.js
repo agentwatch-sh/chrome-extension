@@ -2,7 +2,7 @@
 // bounded call, and the removal of the workers of each recorded origin that no
 // list covers and whose site no marked tab shows (board ab-v16.74; the
 // operator's answer ab-214: "Remove such a site's worker when your tab leaves
-// it"; review-30, -30b, -30c, -30d and ab-lead's decisions).
+// it"; review-30, -30b, -30c, -30d and the lead's decisions).
 //
 // A site's service worker answers a navigation before DNR sees it. A worker
 // that the operator's marked tab ("*") registered for a host on no list
@@ -47,7 +47,7 @@
 //   origins. Each logs one line (no origin), and the next event's check tries
 //   again. Every loop of a check pauses (one task) after SLICE items, so
 //   Chrome's queued events (the guard's) run between its parts.
-// - The bound (ab-lead's decisions after review-30b and review-30d: no page
+// - The bound (the lead's decisions after review-30b and review-30d: no page
 //   content can make the receiver remove a worker of a site that a marked tab
 //   shows, or of an origin that a list covers while that list is in force; a
 //   simple bound): at RECORD_MAX the record refuses a new origin, and never

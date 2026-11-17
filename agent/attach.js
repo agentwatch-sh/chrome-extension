@@ -32,7 +32,7 @@ const message = (e) => String(e && e.message ? e.message : e);
 export class Attachments {
   #chrome;
   #tabs = new Set(); // the bridge tabs
-  #live = new Set(); // the tabs that the bridge's attachment holds (a bridge tab, or one whose detach still waits in its chain)
+  #live = new Set(); // the tabs that the bridge's attachment holds (a bridge tab, or one whose detach still waits: in its chain, or for a close command at a reset)
   #closing = new Set(); // the tabs that an attach for a receiver's close holds
   #chains = new Map(); // tabId -> {kind, epoch, run, done}: the last op of the tab that has not ended
   #epoch = 0; // counts the resets
@@ -47,6 +47,10 @@ export class Attachments {
   // The merge guard's floor (C5, board ab-v16.99): a tab that leaves the
   // bridge leaves its guard first (null: every tab). receiver.js sets it.
   onUnguard = () => Promise.resolve();
+  // The answers of the tab's Target.closeTarget commands of the receiver's
+  // closes that have not answered, also after their limit (removals.js; set
+  // by receiver.js). A reset's detach of the tab waits for them (C10).
+  closeCommands = () => [];
 
   constructor(chrome) {
     this.#chrome = chrome;
@@ -239,11 +243,14 @@ export class Attachments {
   // attach goes off, every hold ends, and every bridge tab and every tab that
   // chrome.debugger.getTargets() reports as attached is detached (a worker
   // that started again knows no bridge tabs), except the restore tab of a
-  // running import. Errors are ignored. The detaches go in the tabs' chains,
-  // so an attach of the new connection runs after them; a tab that the new
-  // connection attaches, or whose op still runs, keeps its state. So the
-  // attach of a receiver's close that runs is never detached: the detach of
-  // a bridge tab goes into the chain after the close.
+  // running import. Errors are ignored. The detaches go in the tabs' chains:
+  // the detach of each tab of the old link (a bridge tab, a tab that the
+  // attach of a receiver's close holds, a tab with an op in its chain) joins
+  // its chain at once, so it runs after the old link's ops and before any op
+  // of the new connection. So the attach of a receiver's close that runs is
+  // never detached, and it ends right after the close's op (board
+  // ab-v16.88). A tab of getTargets() that the new connection attaches, or
+  // whose op of the new connection runs, keeps its state.
   async reset() {
     this.#epoch += 1;
     this.attachNew = false;
@@ -251,12 +258,10 @@ export class Attachments {
     const known = [...this.#tabs];
     this.#tabs.clear();
     // Every tab leaves its guard before any detach of the reset.
-    await call(() => this.onUnguard(null)).catch(() => {});
-    const quiet = (tabId) => this.#queue(tabId, "detach", () => {
-      this.#closing.delete(tabId);
-      return this.#detachNow(tabId);
-    }).catch(() => {});
-    const detaching = known.map(quiet);
+    const unguarded = call(() => this.onUnguard(null)).catch(() => {});
+    const old = new Set([...known, ...this.#live, ...this.#closing, ...this.#chains.keys()]);
+    const detaching = [...old].map((id) => this.#resetDetach(id, known.includes(id), unguarded));
+    await unguarded;
     let targets = [];
     try {
       targets = await this.#chrome.debugger.getTargets();
@@ -266,10 +271,34 @@ export class Attachments {
     for (const t of Array.isArray(targets) ? targets : []) {
       if (!t || t.attached !== true || !Number.isInteger(t.tabId)) continue;
       const id = t.tabId;
-      if (known.includes(id) || this.isRestoreTab(id) || this.#tabs.has(id) || this.#chains.has(id)) continue;
-      detaching.push(quiet(id));
+      if (old.has(id) || this.isRestoreTab(id) || this.#tabs.has(id) || this.#chains.has(id)) continue;
+      detaching.push(this.#resetDetach(id, true, unguarded));
     }
     await Promise.all(detaching);
+  }
+
+  // The reset's detach of one tab, one op of the tab's chain. A detach makes
+  // a running command fail (C10): while a Target.closeTarget command of a
+  // receiver's close of the tab has not answered (also after its limit), the
+  // op waits outside the chain for the answers, then runs again in the chain
+  // and reads the commands again (a later close can borrow the attachment
+  // meanwhile). always: the tab was a bridge tab, or getTargets() reported
+  // it as attached; else the op detaches only an attachment of this worker
+  // that is still there when it runs. A tab that the new connection attached
+  // keeps its attachment.
+  #resetDetach(tabId, always, unguarded) {
+    return this.#queue(tabId, "detach", async () => {
+      await unguarded;
+      if (this.#tabs.has(tabId)) return;
+      const open = this.closeCommands(tabId);
+      if (open.length) {
+        void Promise.allSettled(open).then(() => this.#resetDetach(tabId, false, unguarded));
+        return;
+      }
+      if (!always && !this.isAttached(tabId)) return;
+      this.#closing.delete(tabId);
+      return this.#detachNow(tabId);
+    }).catch(() => {});
   }
 
   // The import's restore tab (channel main, C6). The import sets a flag

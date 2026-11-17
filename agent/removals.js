@@ -108,6 +108,12 @@ export class Removals {
     return this.#pending.has(tabId);
   }
 
+  // The answers of the tab's Target.closeTarget commands that have not
+  // answered, also after their limit (a detach would make them fail).
+  openCommands(tabId) {
+    return [...(this.#pending.get(tabId) ?? [])].filter((c) => c.commandOpen).map((c) => c.commandAnswer);
+  }
+
   // tabs.onRemoved: every close of the tab ends.
   tabRemoved(tabId) {
     for (const c of [...(this.#pending.get(tabId) ?? [])]) c.end(true);
@@ -268,8 +274,7 @@ export class Removals {
   // the detach's chain op runs, rather than keeping a snapshot of commands.
   #detachWhenIdle(tabId) {
     void this.#att.inChain(tabId, () => {
-      const running = [...(this.#pending.get(tabId) ?? [])]
-        .filter((c) => c.commandOpen).map((c) => c.commandAnswer);
+      const running = this.openCommands(tabId);
       if (running.length) {
         void Promise.all(running).then(() => this.#detachWhenIdle(tabId));
         return;
@@ -302,8 +307,7 @@ export class Removals {
       if (c.done) return;
       // A later close can borrow this close's attach and pass its command
       // limit. Wait outside the chain: a later close must still be free to run.
-      const running = [...(this.#pending.get(c.tabId) ?? [])]
-        .filter((x) => x.commandOpen).map((x) => x.commandAnswer);
+      const running = this.openCommands(c.tabId);
       if (running.length) {
         const ready = Promise.race([c.ended, Promise.all(running)]);
         // One extra limit, outside both queues. A command that never answers
@@ -311,8 +315,7 @@ export class Removals {
         void this.#limit(() => ready).then(() => {
           if (c.done) return;
           void this.#att.inChain(c.tabId, () => {
-            const stillRunning = [...(this.#pending.get(c.tabId) ?? [])]
-              .filter((x) => x.commandOpen).map((x) => x.commandAnswer);
+            const stillRunning = this.openCommands(c.tabId);
             return this.#fallback(c, own, stillRunning.length ? Promise.all(stillRunning) : null);
           }).catch(() => {});
         });

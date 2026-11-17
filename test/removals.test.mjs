@@ -802,6 +802,108 @@ test("N2: a dropped close's watch keeps the new bridge attachment after a link r
   assert.equal(s.r.removals.isPending(7), false);
 });
 
+// Board ab-v16.88 (review-34 note 1): a link change finds the close's attachment with no op in the tab's
+// chain while a borrowed close command still runs past its limit. The fake fails a running command at
+// a detach, as Chrome does.
+test("ab-v16.88: a link change during a dropped close's deferred wait keeps the attachment until the borrowed command answers", async () => {
+  const s = await startReceiver({ tabs: [blank(7), blank(3)], targets: [target(7)] });
+  s.f.trackAttachments = true;
+  s.f.trackDebuggerCommands = true;
+  let n = 0;
+  let fail2;
+  s.f.impl["debugger.sendCommand"] = (t, m) => {
+    if (m !== "Target.closeTarget") return Promise.resolve({});
+    if (++n === 1) return Promise.resolve({ success: true });
+    return new Promise((res, rej) => (fail2 = rej));
+  };
+  s.f.impl["tabs.remove"] = async () => { throw new Error("held"); };
+  s.send({ t: "req", id: "r1", op: "tabs.remove", args: [7] });
+  await flush();
+  const [itemWait, watch] = s.pending(REMOVAL_WAIT_MS);
+  s.send({ t: "req", id: "r2", op: "tabs.remove", args: [7] });
+  itemWait.cleared = true;
+  itemWait.fn();
+  await flush();
+  assert.equal(n, 2, "the second close borrows the first close's attachment");
+  watch.cleared = true;
+  watch.fn();
+  await s.fire(REMOVAL_WAIT_MS); // the second command passes its limit; the dropped close waits outside the chain
+  assert.deepEqual(s.f.callsTo("debugger.detach"), []);
+  assert.equal(s.r.att.isAttached(7), true);
+  s.port().fireMessage({ t: "link", up: true });
+  await flush();
+  assert.deepEqual(s.f.callsTo("debugger.detach"), [], "the reset keeps the attachment while the second command runs");
+  assert.equal(s.f.debuggerCommands_.size, 1, "the second command still runs");
+  fail2(new Error("close refused"));
+  await flush();
+  assert.deepEqual(s.f.callsTo("debugger.detach"), [[{ tabId: 7 }]], "one detach, after the command's answer");
+  assert.equal(s.r.att.isAttached(7), false);
+  assert.equal((await s.f.chrome.debugger.getTargets())[0].attached, false);
+});
+
+// Board ab-v16.88 (review-34 note 1), the same on a bridge tab: the close borrowed the bridge's
+// attachment, and its command passed its limit before the link change.
+test("ab-v16.88: a link change keeps a bridge tab's attachment until a borrowed close command answers", async () => {
+  const s = await startReceiver({ tabs: [blank(7), blank(3)], targets: [target(7)] });
+  s.f.trackAttachments = true;
+  s.f.trackDebuggerCommands = true;
+  assert.equal((await s.answer({ id: "a", op: "debugger.attach", args: [7] })).ok, true);
+  let fail;
+  s.f.impl["debugger.sendCommand"] = (t, m) => (m === "Target.closeTarget" ? new Promise((res, rej) => (fail = rej)) : Promise.resolve({}));
+  s.f.impl["tabs.remove"] = async () => { throw new Error("held"); };
+  s.send({ t: "req", id: "r", op: "tabs.remove", args: [7] });
+  await flush();
+  assert.equal(typeof fail, "function", "the close runs through the bridge's attachment");
+  await s.fire(REMOVAL_WAIT_MS); // the command passes its limit; the close's op ends
+  assert.deepEqual(s.f.callsTo("tabs.remove"), [[7]]);
+  s.port().fireMessage({ t: "link", up: true });
+  await flush();
+  assert.deepEqual(s.f.callsTo("debugger.detach"), [], "the reset keeps the attachment while the command runs");
+  assert.equal(s.f.debuggerCommands_.size, 1, "the command still runs");
+  assert.equal(s.r.att.isBridgeTab(7), false);
+  assert.equal(s.r.att.isAttached(7), true, "a later close can still borrow the attachment");
+  fail(new Error("close refused"));
+  await flush();
+  assert.deepEqual(s.f.callsTo("debugger.detach"), [[{ tabId: 7 }]], "one detach, after the command's answer");
+  assert.equal(s.r.att.isAttached(7), false);
+  assert.equal((await s.f.chrome.debugger.getTargets())[0].attached, false);
+  assert.equal((await s.answer({ id: "new-attach", op: "debugger.attach", args: [7] })).ok, true);
+});
+
+// Board ab-v16.88 (review-34 note 2): a link change while the receiver's close of a tab runs in the
+// tab's chain. The command answers with no error and the tab stays (a dropped close); a new bridge
+// attach that waited behind the close's op finds the tab free.
+test("ab-v16.88: a link change during a close's op ends the close's attachment after the op, so a new bridge attach after it works", async () => {
+  const s = await startReceiver({ tabs: [blank(7), blank(3)], targets: [target(7)] });
+  s.f.trackAttachments = true;
+  s.f.trackDebuggerCommands = true;
+  let answer;
+  s.f.impl["debugger.sendCommand"] = (t, m) => (m === "Target.closeTarget" ? new Promise((res) => (answer = res)) : Promise.resolve({}));
+  const done = s.r.removals.closeOwn({ ids: [7] });
+  await flush();
+  assert.equal(typeof answer, "function", "the close's command runs");
+  assert.equal(s.r.att.isAttached(7), true, "the close owns an attachment");
+  s.port().fireMessage({ t: "link", up: true });
+  await flush();
+  assert.deepEqual(s.f.callsTo("debugger.detach"), [], "the reset never detaches the attach of a close that runs");
+  s.send({ t: "req", id: "new-attach", op: "debugger.attach", args: [7] });
+  await flush();
+  assert.deepEqual(s.resOf("new-attach"), [], "the new attach waits for the close's op");
+  answer({ success: true }); // the tab stays: Chrome dropped the close
+  await flush();
+  assert.deepEqual(s.resOf("new-attach").map((m) => [m.ok, m.error]), [[true, undefined]], "no Chrome error: the close's attachment is gone");
+  assert.deepEqual(s.f.callsTo("debugger.detach"), [[{ tabId: 7 }]], "the reset's detach comes right after the close's op");
+  assert.equal(s.r.att.isBridgeTab(7), true);
+  s.f.impl["tabs.remove"] = async () => { throw new Error("held"); };
+  const mark = s.f.calls.length;
+  await s.fire(REMOVAL_WAIT_MS);
+  await done;
+  assert.deepEqual(callsSince(s.f, mark).filter(([p]) => p === "debugger.detach"), [], "the close's fallback keeps the new bridge attachment");
+  assert.deepEqual(callsSince(s.f, mark).filter(([p]) => p === "tabs.remove").map(([, a]) => a[0]), [7]);
+  assert.equal((await s.f.chrome.debugger.getTargets())[0].attached, true);
+  assert.equal(s.r.att.isBridgeTab(7), true);
+});
+
 test("N3: a tab removed during the fallback's detach gets no tabs.remove call", async () => {
   const s = await startReceiver({ tabs: [blank(7), blank(3)], targets: [target(7)] });
   s.f.impl["debugger.sendCommand"] = async () => { throw new Error("close refused"); };

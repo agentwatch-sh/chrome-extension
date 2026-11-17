@@ -910,6 +910,23 @@ test("the window rule: each vector follows C10's rule, also for a pending close 
   }
 });
 
+// Board ab-v16.88 (review-34 notes 1 and 2): step 3 of the cleanup waits for a running close command, and
+// ends the attach of a receiver's close right after the close's op.
+test("C10 step 3: the cleanup never ends an attachment while a close command runs, and ends a close's attach right after its op (board ab-v16.88)", () => {
+  const step3 = "In the per-scope build it never detaches the attach of a receiver's close that runs: "
+    + "each detach goes into the tab's chain, and the detach of each tab of the old link (a bridge tab, a tab that the attach "
+    + "of a receiver's close holds, and a tab with an op in its chain) joins that chain at the link change, so it runs after the "
+    + "close's op and before any op of the new connection (as `reset()` of `agent/attach.js` does). A tab that only "
+    + "`chrome.debugger.getTargets()` reports, and that the new connection attached or whose op of the new connection runs, is "
+    + "not detached. The cleanup never ends an attachment while a `Target.closeTarget` command of a receiver's close runs on it "
+    + "(board ab-v16.88, receiver 0.3.12): while such a command has not answered (also after its time limit), the detach waits "
+    + "outside the tab's chain for the answer, then checks again in the chain. Until then a new bridge attach of the tab gets "
+    + "Chrome's error (`Another debugger is already attached to the tab`). When no close command runs, the attach of a "
+    + "receiver's close ends right after the close's op, so a new bridge attach after that op finds the tab free.";
+  assert.ok(says(C10, step3), "C10 step 3 has the new text");
+  assert.ok(!says(C10, "and a tab whose chain runs is not detached"), "C10: the old rule is gone");
+});
+
 // review-81 note 3: after a bridge deadline each kind of close keeps its own end. Board ab-v16.90: the probe of a client's
 // Page.close (it answers before its dialog opens, and an error comes only when Chrome did not start the close).
 test("C10: after a bridge deadline a client's Page.close stays pending until tabs.onRemoved or its Chrome error, a receiver close until it fails; the measured Page.close (board ab-v16.90)", () => {
