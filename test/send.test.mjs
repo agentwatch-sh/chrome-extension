@@ -765,7 +765,7 @@ test("lastSend is tagged and the popup shows it only for its domain, stale ones 
   assert.equal(visibleStatus(last, "other.example"), null);
   assert.equal(visibleStatus(null, "app.localhost"), null);
   const now = Date.now();
-  const reading = { state: "reading", text: "Reading...", domain: "a.example", at: now - 7 * 60 * 1000 };
+  const reading = { state: "reading", text: "Reading...", domain: "a.example", at: now - 9 * 60 * 1000 };
   assert.deepEqual(visibleStatus(reading, "a.example", now), { state: "error", text: "The last send did not finish." });
   assert.equal(visibleStatus({ ...reading, at: now - 60 * 1000 }, "a.example", now).state, "reading");
   // board ab-b84.43: a send can run longer than 3 minutes (the service's worst case is 225 s, and agentwatch's gateway
@@ -773,6 +773,11 @@ test("lastSend is tagged and the popup shows it only for its domain, stale ones 
   assert.ok(STALE_MS > 340 * 1000, "the stale time is above the gateway's wait of 340 s");
   assert.equal(visibleStatus({ ...reading, at: now - 4 * 60 * 1000 }, "a.example", now).state, "reading");
   assert.equal(visibleStatus({ ...reading, state: "sending", at: now - 330 * 1000 }, "a.example", now).state, "sending");
+  // The limit starts before the upload: a slow upload of the body (about 34 s for 32 MiB at 8 Mbit/s) plus the
+  // gateway's 340 s still runs at 6.5 minutes. A send that stopped ends after the limit, also in "sending".
+  assert.equal(visibleStatus({ ...reading, state: "sending", at: now - 390 * 1000 }, "a.example", now).state, "sending");
+  assert.deepEqual(visibleStatus({ ...reading, state: "sending", at: now - 9 * 60 * 1000 }, "a.example", now),
+    { state: "error", text: "The last send did not finish." });
   assert.equal(visibleStatus({ ...reading, state: "done", at: now - 9e6 }, "a.example", now).state, "done");
 });
 
