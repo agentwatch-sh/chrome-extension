@@ -696,9 +696,53 @@ test("a close of the origin's tab that has not ended in the item's wait fails cl
   Object.assign(receiver(f.chrome).clock, { setTimer: qt.setTimer, clearTimer: qt.clearTimer });
   const p = importState(f.chrome, makeState(), opts());
   for (let i = 0; i < 50 && qt.pending(REMOVAL_WAIT_MS).length === 0; i++) await settle(1);
-  qt.pending(REMOVAL_WAIT_MS).forEach((h) => h.fn());
+  // The item's wait and the watch (the second close, which Chrome drops too: board ab-v16.67), the
+  // second watch (the held fallback), and the item's wait for the dropped close (DROPPED_WAIT_MS).
+  const { DROPPED_WAIT_MS } = await import("../agent/removals.js");
+  for (const ms of [REMOVAL_WAIT_MS, REMOVAL_WAIT_MS, DROPPED_WAIT_MS]) {
+    qt.pending(ms).forEach((h) => {
+      h.cleared = true;
+      h.fn();
+    });
+    await settle(5);
+  }
+  assert.equal(f.callsTo("tabs.remove").length, 1, "the held fallback");
   await rejectsWith(p, "close tabs");
   assert.equal(f.callsTo("cookies.getAll").length, 0);
+});
+
+// Board ab-v16.67 (C10, the time limit): the item waits for a dropped close until its second close ends
+// it, so the step counts that tab as closed and the import goes on.
+test("a dropped close of the origin's tab that its second close closes: close tabs does not fail, and the import goes on", { timeout: 5000 }, async () => {
+  const { receiver } = await import("../agent/receiver.js");
+  const { REMOVAL_WAIT_MS } = await import("../agent/removals.js");
+  const f = makeFakeChrome();
+  f.autoNavigate = true;
+  f.trackNewTabs = true;
+  f.setTabs([{ id: 1, windowId: 1, url: ORIGIN + "/a" }, { id: 3, windowId: 1, url: "https://other.localhost/" }]);
+  f.targets_ = [{ id: "T1", tabId: 1, type: "page", attached: false }];
+  // The first close answers with no error, and the tab stays (Chrome dropped it); later commands are the fake's.
+  f.impl["debugger.sendCommand"] = async (t, m) => {
+    assert.equal(m, "Target.closeTarget");
+    delete f.impl["debugger.sendCommand"];
+    return {};
+  };
+  const qt = fakeTimers();
+  const clock = receiver(f.chrome).clock;
+  const real = { setTimer: clock.setTimer, clearTimer: clock.clearTimer };
+  Object.assign(clock, { setTimer: qt.setTimer, clearTimer: qt.clearTimer });
+  const p = importState(f.chrome, makeState(), opts());
+  for (let i = 0; i < 50 && qt.pending(REMOVAL_WAIT_MS).length < 2; i++) await settle(1);
+  assert.equal(qt.pending(REMOVAL_WAIT_MS).length, 2, "the item's wait, and the close's watch");
+  // The later steps' limits run on the real clock (their calls answer at once).
+  Object.assign(clock, { setTimer: (fn, ms) => real.setTimer(fn, ms), clearTimer: (h) => (qt.list.includes(h) ? qt.clearTimer(h) : real.clearTimer(h)) });
+  qt.pending(REMOVAL_WAIT_MS).forEach((h) => h.fn());
+  const result = await p;
+  assert.equal(result.cookies_set, 2);
+  const closes = f.callsTo("debugger.sendCommand").filter(([target, m]) => m === "Target.closeTarget" && target.tabId === 1);
+  assert.equal(closes.length, 2, "the second close closed the origin's tab");
+  assert.deepEqual(f.callsTo("tabs.remove"), [], "no chrome.tabs.remove");
+  assert.equal(f.tabs_.some((t) => t.id === 1), false);
 });
 
 // The import's finding (board ab-v16.31, from PR #53): a send to a domain on no list is normal (ab-dm6:

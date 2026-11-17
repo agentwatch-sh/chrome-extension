@@ -1236,7 +1236,8 @@ is on, agent-browser's service. The daemon never sends it.
   - A tab that the sweep's item does not close leaves its scope at the end of that item. There are
     two cases. (1) Its close failed, or it is still pending when the item ends: for example the
     fallback's `chrome.tabs.remove`, which a `beforeunload` dialog holds (C10); that needs a failed
-    attach or a dropped close (C10), a `beforeunload` handler and a user activation of the page.
+    attach or a dropped close whose second close fails or is dropped too (C10), a `beforeunload`
+    handler and a user activation of the page.
     (2) The item's window rule failed or came late (C10): then no close starts, and no dialog opens.
     When its `tabs.query` failed or came late, the item picked no tab: the tabs of the sweep are
     then the tabs of the map whose scope the new object gives no list (review-20 B1). The tab leaves the map,
@@ -1871,7 +1872,8 @@ that tab still reach Chrome in the relay's order.
      change, when no close command runs, the attach of a receiver's close ends right after the
      close's op, so a new bridge attach after that op finds the tab free. With no link change, a
      close's own attach stays after a no-error answer until the tab closes or the dropped close's
-     fallback ends it (`REMOVAL_WAIT_MS` later, or later while a borrowed command still runs). The
+     fallback ends it (after its second close: at once when that close fails, `REMOVAL_WAIT_MS`
+     after its answer when Chrome drops it too, or later while a borrowed command still runs). The
      wait ends at the command's answer, at the tab's close (Chrome then fails the command), or at
      the worker's restart, which drops the receiver's state; it has no time bound of its own, since
      a bound would end an attachment while a command runs. Measured: a detach before
@@ -2736,9 +2738,23 @@ ends).
     navigation commits answers `{"success":true}`, and the tab stays open with no `tabs.onRemoved`
     (measured, below). So when the command answered with no error (`{"success":true}` or
     `Detached while handling command.`) and no `tabs.onRemoved` of the tab came `REMOVAL_WAIT_MS`
-    after that answer, the command counts as failed, and the fallback runs (below). Before 0.3.4
+    after that answer, the command counts as dropped, and the second close runs (below). Before 0.3.4
     such a close stayed pending for ever, and its `tabs.remove` op answered only `timeout` at its
     wait.
+  - The **second close** of a dropped close (board ab-v16.67, receiver 0.3.13). The receiver then
+    sends one more `Target.closeTarget` with the tab's target id: one op of the tab's chain, as the
+    first one, through the same attachment (or through an attach for the close when no attachment
+    of this worker is left: a link change can end it), with the same time limit and the same watch.
+    Only when that command also fails, has not answered within `REMOVAL_WAIT_MS`, or is dropped too
+    (no `tabs.onRemoved` `REMOVAL_WAIT_MS` after its answer) does the fallback run (below). The
+    reason: the page that committed after the first command can have a `beforeunload` handler and a
+    user activation (an agent's CDP input gives one). The second close runs no `beforeunload`
+    handler, and it closed such a page with no dialog; the fallback's `chrome.tabs.remove` runs the
+    handler, and its dialog held the call (measured, below). Before 0.3.13 the dropped command
+    counted as failed, and the fallback ran at once. When a later close's command still runs on the
+    tab at that time (a borrowed attachment, below), that command is the further
+    `Target.closeTarget`: the dropped close waits for it and then runs its fallback, as before
+    0.3.13, with no second close.
   - The chain. The receiver's close is one op of the tab's chain of attaches (as `agent/attach.js`
     runs the bridge's attaches and detaches of a tab one after the other). A bridge attach of the tab
     that is in flight ends first, and the close then uses that attachment. A relay's
@@ -2751,7 +2767,8 @@ ends).
     to the tab`, and the first attachment stays and works; review-17b check E3), so the close never
     makes a second one.
   - The fallback: when the attach fails, when `chrome.debugger.getTargets()` fails or lists no target
-    for the tab, when the command fails and the tab stays, or at a dropped close (above), the
+    for the tab, when the command fails and the tab stays, or at a dropped close whose second close
+    fails or is dropped too (above), the
     receiver ends its attach for the close (only when it made one: never the bridge's attachment)
     and calls `chrome.tabs.remove`. The fallback of a dropped close is one more op of the tab's
     chain, after the command's answer. If another close borrowed that attachment and its command
@@ -2826,16 +2843,34 @@ ends).
   also one that still waits in the tab's chain, or is still in its attach or its
   `chrome.debugger.getTargets()` (the definition above).
   An op still answers when its own call ends, or with `timeout` at its wait (the deadline, above).
-  A dropped close ends at its fallback, about `REMOVAL_WAIT_MS` after the command's answer, so after
-  the item's wait: its `tabs.remove` op answers then, and the item counts that tab as not closed
-  (the closing rule's and the sweep's `closed`, C5; the import's step, C6).
-- The bound of a `set_scopes` answer. An item ends at most three times `REMOVAL_WAIT_MS` (6 s) after
-  it starts (its query, its `about:blank` tab, its wait), and in the normal case after a few ms
+  A dropped close ends at its second close, about `REMOVAL_WAIT_MS` after the command's answer, so
+  after that wait. The item then waits for it (board ab-v16.67, receiver 0.3.13): when a close of the
+  item has not ended at the end of that wait and its command answered with no error (a dropped
+  close: its watch, its second close or its fallback still runs), the item waits until that close
+  ended, at most `DROPPED_WAIT_MS` = 2 x `REMOVAL_WAIT_MS` (4 s) more. That covers the watch
+  (`REMOVAL_WAIT_MS` after the answer) and a second close that Chrome drops too (`REMOVAL_WAIT_MS`
+  more), and it leaves the fallback's `chrome.tabs.remove` the rest (about `REMOVAL_WAIT_MS` when the
+  command answered at once). So a tab that the second close or the fallback closes in that time
+  counts as closed (the closing rule's and the sweep's `closed`, C5; the import's step, C6), and its
+  `tabs.remove` op answers then. A close that ended within the first wait adds no wait, and a close
+  whose command had not answered at its end gets none (it stays pending, as above). A dialog that
+  holds the fallback's `chrome.tabs.remove` ends the item at that limit: the tab counts as not
+  closed and stays pending. Before 0.3.13 the item counted each dropped close as not closed: the
+  item ended about 2 ms before the fallback ran.
+- The bound of a `set_scopes` answer. An item ends at most five times `REMOVAL_WAIT_MS` (10 s) after
+  it starts (its query, its `about:blank` tab, its wait, and the wait for a dropped close,
+  `DROPPED_WAIT_MS`; before receiver 0.3.13 three times, 6 s), and in the normal case after a few ms
   (measured: the receiver's close took 1 to 9 ms). Only a held client `Page.close` (at most
-  `REMOVAL_WAIT_MS`) or a Chrome call that does not answer makes an item long. A `set_scopes` answer
+  `REMOVAL_WAIT_MS`), a dropped close (its second close ends it about `REMOVAL_WAIT_MS` and 11.5 to
+  17.2 ms after its command's answer, measured below; a second drop or a dialog makes it longer, up
+  to the limit), or a Chrome call that does not answer makes an item long. A `set_scopes` answer
   waits for the items before the sweep's item, for that item, and for the copy's key removals of the
-  sweep (at most `REMOVAL_WAIT_MS` more; a later one makes the answer `ok: false`, C5), so several
-  long items can make it later than the daemon's 10 s (C4). The daemon then writes no `allowlist`
+  sweep (at most `REMOVAL_WAIT_MS` more; a later one makes the answer `ok: false`, C5). With no
+  dropped close in the sweep's item, that item and the key removals end within 8 s, as before
+  0.3.13; a sweep item whose dropped close its second close ends takes about 2 s. With a dropped
+  close, the sweep's item at its bound and the key removals take up to six times `REMOVAL_WAIT_MS`
+  (12 s): so that item alone, or several long items, can make the answer later than the daemon's
+  10 s (C4). The daemon then writes no `allowlist`
   line for it and sends the object again: the relay keeps its last line, the receiver's new rules
   are in force, and the next `set_scopes` sweeps again, also the tabs of the orphan set (C5, the
   sweep).
@@ -2902,6 +2937,21 @@ ends).
     fallback's `chrome.tabs.remove` went 2000 ms after the command's answer, and `tabs.onRemoved`
     came 6 to 8 ms after that call; 2 runs with log lines), and 4 closes that Chrome made itself,
     whose op answered in 40 to 71 ms.
+  - The second close (board ab-v16.67; the Linux server, 2026-11-17, Chromium 156.0.8078.79 in Xvfb;
+    a probe extension that sends its commands through `chrome.debugger` on the tab, as the receiver
+    does; one `*.localhost` page with a `beforeunload` handler): a new tab at `about:blank`, then
+    `Fetch.enable`, `Page.navigate` to the page, `Fetch.continueRequest` at its pause, and
+    `Target.closeTarget`. 29 tries: a close sent 2 or 5 ms after the continue's answer was dropped
+    10 of 10 times (`{"success":true}`, the page committed 10 to 16 ms after that answer, and no
+    `tabs.onRemoved` came in 2 s); a close sent 0, 10 or 15 ms after it closed the tab 19 of 19 times.
+    After each drop a CDP click gave the new page a user activation. Then a second
+    `Target.closeTarget` closed the tab 5 of 5 times with no dialog (`{"success":true}` in 0.4 to
+    0.9 ms, `tabs.onRemoved` 11.5 to 17.2 ms after the command), and a `chrome.tabs.remove` opened
+    the `beforeunload` dialog 5 of 5 times (5.0 to 7.8 ms after the call): the tab stayed, and the
+    call ended only after the dialog's accept. Not measured: Google Chrome 157.0.8103.78. There the
+    probe's page never paused (2 runs): Chrome installed the packed receiver from the external file
+    of its tools folder into the new profile, and its rules most likely blocked the page before the
+    pause (not checked further).
   - Before: a removal of the browser's only tab ended Chromium (board ab-v16.39, case F), and so did
     two removals at once of its only two tabs, each of which read two tabs (review-48 check X2b);
     one at a time kept it running (X2).
