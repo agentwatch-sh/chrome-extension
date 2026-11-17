@@ -73,6 +73,8 @@ export class Receiver {
     // The merge guard's floor (C5): a tab that leaves the bridge leaves its guard first.
     this.att.onUnguard = (tabIds) => this.rules.unguard(tabIds);
     this.removals = new Removals(chrome, { att: this.att, map: this.map, clock });
+    // A reset's detach of a tab waits for the receiver's close commands that run on it (C10).
+    this.att.closeCommands = (tabId) => this.removals.openCommands(tabId);
     this.popups = new Popups(this);
     this.guard = new Guard(this);
     this.workers = new Workers(this);

@@ -1856,8 +1856,25 @@ that tab still reach Chrome in the relay's order.
      attached (a worker that started again knows no bridge tabs). It ignores the error of a detach.
      It never detaches the restore tab of a running import: that attachment belongs to channel
      `main`. In the per-scope build it never detaches the attach of a receiver's close that runs:
-     the detach of a bridge tab goes into the tab's chain after the close, and a tab whose chain
-     runs is not detached (as `reset()` of `agent/attach.js` does today). Measured: a detach before
+     each detach goes into the tab's chain, and the detach of each tab of the old link (a bridge
+     tab, a tab that the attach of a receiver's close holds, and a tab with an op in its chain)
+     joins that chain at the link change, so it runs after the close's op and before any op of the
+     new connection (as `reset()` of `agent/attach.js` does). A tab that only
+     `chrome.debugger.getTargets()` reports, and that the new connection attached or whose op of
+     the new connection runs, is not detached. At a link change the cleanup never ends an
+     attachment while a `Target.closeTarget` command of a receiver's close runs on it (board
+     ab-v16.88, receiver 0.3.12; at a worker's start the receiver knows no command of the worker
+     before it): while such a command has not answered (also after its time limit), the detach
+     waits outside the tab's chain for the answer, then checks again in the chain (a close of the
+     new connection can borrow the attachment during the wait). Until then a new bridge attach of
+     the tab gets Chrome's error (`Another debugger is already attached to the tab`). At a link
+     change, when no close command runs, the attach of a receiver's close ends right after the
+     close's op, so a new bridge attach after that op finds the tab free. With no link change, a
+     close's own attach stays after a no-error answer until the tab closes or the dropped close's
+     fallback ends it (`REMOVAL_WAIT_MS` later, or later while a borrowed command still runs). The
+     wait ends at the command's answer, at the tab's close (Chrome then fails the command), or at
+     the worker's restart, which drops the receiver's state; it has no time bound of its own, since
+     a bound would end an attachment while a command runs. Measured: a detach before
      the close's command made the command fail (`Debugger is not attached to the tab`), and the tab
      stayed; a detach right after it still closed the tab (review-17b checks E4b and E4a).
   4. at its worker's start only: removes every session rule (rule 8 too; the marks go) and restores
