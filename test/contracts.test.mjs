@@ -284,6 +284,10 @@ test("C5 states the worker removal of the recorded origins: every tab's origins,
     "(also of a site that a marked tab comes to during the check's loops, added with no pause before the call; review-30g B2)",
     "that origin gets no further check (the late-registration case, review-30g note 2).",
     "and of the origins that tabs commit during that check before the call (no read of the check shows them, its loops go over copies of the record and the pending set, and the bound can drop them;",
+    // review-30h N1 to N3 (receiver 0.3.14).
+    "Such an origin, and a due origin that a commit put back into the record and that the check keeps, is then done: a stop of that check or a failed call later in it keeps due only the origins that the check has neither removed nor recorded again, so the next removal of a recorded origin gets a follow-up check of its own (review-30h N2;",
+    "of the origins that are due for a follow-up check (above) of those sites or that those lists cover (a removal took them out of the record, and their pages can have registered a worker again; review-30h N3, receiver 0.3.14)",
+    "it drops them when it has decided what that removal keeps, just before its call, and notes none during the call (review-30g note 3, review-30h N1).",
     "(3) The follow-up sets hold at most 10,000 origins each: beyond 10,000 removed origins in one period of the follow-up timer, the others get no follow-up check",
     // review-30d B3: the shown sites come only from the reads and the marked commits during the check.
     "The version of a read is taken before the read, so an event of that tab during the read makes the read old for the next check",
@@ -2282,6 +2286,10 @@ test("C10 states the fetch window: the mark and the pair rule, the steps of wind
     "Any other error also answers `another private window is open` (fail closed).",
     "`cookies.getAllCookieStores` cannot see such a profile, because it lists a store only while the store has an open tab;",
     "- A download of a fetch window is cancelled by the receiver (review-168 B2): at each `downloads.onCreated` of an incognito download (`incognito` `true`) while a fetch window, a fetch tab or the fetch window's rules are there, the receiver calls `downloads.cancel` for it itself.",
+    // re-check 46C note 3 (receiver 0.3.14).
+    "The one exception (re-check 46C note 3, receiver 0.3.14): while an act tab is open and no fetch tab is, the receiver cancels none.",
+    "A private window that the operator opens while a fetch window, a fetch tab or the fetch window's rules are there shares that context, and the receiver cancels its downloads too",
+    "`downloads.cancel` does nothing to a download that is complete, so its file stays.",
     "The fetch tab has no scope, no operator mark and no key `tab:<id>`.",
     "Only `fetch_end` closes a fetch tab.",
     "The vector: `test/vectors/fetch.json`, with C4's `fetch_end` and C5's rules.",

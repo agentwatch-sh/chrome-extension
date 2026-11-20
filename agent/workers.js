@@ -55,8 +55,9 @@
 //   pendingMax) with the record's rules. Beyond that, a listed origin keeps
 //   its list entries: at the end of one of them, one removal of every worker
 //   that excludes the origins that the marked tabs show, the origins of their
-//   sites and the listed origins; an origin on no list is the residue. A
-//   removal of every worker comes only from a list's end.
+//   sites and the listed origins (recorded, waiting or due for a follow-up
+//   check); an origin on no list is the residue. A removal of every worker
+//   comes only from a list's end.
 //
 // C5's own worker removal of a set_scopes (allowlist.js: every origin) uses
 // the same bounded call; neither waits for the other or fails the other.
@@ -162,7 +163,8 @@ export class Workers {
   // check (null between checks): they count as shown in that check.
   #recent = null;
   // The origins that any tab commits since the start of the running check,
-  // until its list end's removal of every worker is decided (null otherwise):
+  // until the check has decided what its list end's removal of every worker
+  // keeps, just before that call (null otherwise, also during that call):
   // that removal keeps them (no read of the check shows them, and its loops
   // go over copies of the record and the pending set; the bound can drop
   // them).
@@ -449,8 +451,9 @@ export class Workers {
     };
     // A list's end after the pending set dropped a listed origin: one removal
     // of every worker that keeps the shown origins, the origins of the shown
-    // sites and the listed origins (of the record and of the pending set),
-    // and the origins that tabs committed since the check's start.
+    // sites and the listed origins (of the record, of the pending set and of
+    // the due follow-ups: review-30h N3), and the origins that tabs committed
+    // since the check's start.
     let all = false;
     const keep = new Set(); // the origins whose workers that removal keeps
     let seqAll = 0;
@@ -465,17 +468,28 @@ export class Workers {
         }
       }
       const notKept = new Map(); // site -> the origins of that site that the loop did not keep
-      for (const [o, e] of [...this.#record, ...this.#pending]) {
-        await step();
+      const judge = (o, e) => {
         if (sites.has(e.site) || recent.has(e.site) || this.#covered(e)) keep.add(o);
         else if (notKept.has(e.site)) notKept.get(e.site).push(o);
         else notKept.set(e.site, [o]);
+      };
+      for (const [o, e] of [...this.#record, ...this.#pending]) {
+        await step();
+        judge(o, e);
+      }
+      // A due origin is in neither (a removal took it out); its page can have
+      // registered a worker again since (review-30h N3).
+      for (const o of second) {
+        await step();
+        judge(o, this.#entry(infoOf(o), 0));
       }
       if (changed()) return stop();
       // With no pause before the call: the sites that marked tabs came to
-      // during the loop's pauses (review-30g B2), and the commits of the check.
+      // during the loops' pauses (review-30g B2), and the commits of the check.
       for (const site of recent) for (const o of notKept.get(site) ?? []) keep.add(o);
       for (const o of this.#during) keep.add(o);
+      // Decided: the commits from here on need no note (review-30h N1).
+      this.#during = null;
       seqAll = this.#seq;
       all = await removeWorkers(r, null, [...keep]);
       if (all) this.#listedGone.clear();
@@ -494,11 +508,21 @@ export class Workers {
     // list ends or the tab leaves (round 7, the operator's rule ab-214).
     for (const o of second) {
       await step();
-      if (gone.has(o) || this.#record.has(o) || this.#pending.has(o)) continue;
+      if (gone.has(o)) continue;
+      if (this.#record.has(o) || this.#pending.has(o)) {
+        // Recorded again by a commit, and kept: done (review-30h N2).
+        doneDue.add(o);
+        continue;
+      }
       const info = infoOf(o);
       const e = this.#entry(info, 0);
       if (!sites.has(e.site) && !this.#covered(e)) gone.set(o, e);
-      else this.#add(o, info);
+      else {
+        this.#add(o, info);
+        // Recorded again (the bound can refuse it): done, so a later stop or
+        // failed call of this check does not make it due again (review-30h N2).
+        if (this.#record.has(o) || this.#pending.has(o)) doneDue.add(o);
+      }
     }
     // The removals, in parts of at most SLICE origins (each call, or after a
     // removal of every worker each part, is a pause). The last filter of each
@@ -516,8 +540,12 @@ export class Workers {
         const e = gone.get(o);
         if (!recent.has(e.site)) part.push(o);
         // A due origin of a site that a marked tab came to during the check
-        // joins the record again, as in the loop above (review-30g B1).
-        else if (second.has(o) && !this.#record.has(o) && !this.#pending.has(o)) this.#add(o, e);
+        // joins the record again, as in the loop above (review-30g B1), and
+        // is done when recorded (review-30h N2).
+        else if (second.has(o)) {
+          if (!this.#record.has(o) && !this.#pending.has(o)) this.#add(o, e);
+          if (this.#record.has(o) || this.#pending.has(o)) doneDue.add(o);
+        }
       }
       if (part.length === 0) continue;
       if (changed()) {

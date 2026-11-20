@@ -9,9 +9,15 @@
 // key tab:<id> (tabmap.js): the scope's list does not apply to it, so the
 // window opens also for a scope with no list. Its main frame may load any
 // host (C5, the fetch window's rules: rule 78, of rule 8's kind), the guard
-// skips it (guard.js), rules 79 to 86 block every request to a refused
-// address, and rules 87 and 88 block every WebSocket and WebTransport. No connection sees it: bridge.tabScopes leaves it out, and no
-// bridge.tabScope names it. A popup of a fetch tab is a fetch tab.
+// skips it (guard.js), rules 79 to 82 block every request of a fetch tab to a
+// refused address and rule 87 every WebSocket and WebTransport of a fetch
+// tab. Rules 83 to 86 and 88 do the same for each request with no tab (a
+// service worker or a shared worker) only when it goes to another site than
+// its initiator and that initiator is no local name: a socket of such a
+// worker to its own site is not blocked (inside C11's stated limit for those
+// workers; re-check 46C note 2). No connection sees it: bridge.tabScopes
+// leaves it out, and no bridge.tabScope names it. A popup of a fetch tab is a
+// fetch tab.
 //
 // - The fetch window: the receiver must be allowed in incognito; before it
 //   opens one, it ends a left fetch window (its windows, its tabs and its
@@ -25,8 +31,15 @@
 //   fetch window's rules go.
 // - A link change ends the fetch window, and so does the worker's start.
 // - A download of a fetch window is cancelled by the receiver (review-168
-//   B2): Chrome's DownloadItem names no tab, and while a fetch window is open
-//   every incognito tab belongs to it, so each incognito download then goes.
+//   B2): Chrome's DownloadItem names no tab, so each incognito download goes
+//   while the fetch window's state is there (its window, a fetch tab or its
+//   rules), except while an act tab is open and no fetch tab is: an act
+//   window and a fetch window each open only while no incognito tab is
+//   open, so such a download is the act's or the operator's (re-check 46C
+//   note 3). The limits (C10): a private window that the operator opens
+//   while the fetch window's state is there shares that context, and its
+//   downloads go too; and a small download can complete before the cancel,
+//   which then does nothing (the file stays).
 //
 // No log line holds a URL, a host or a value of the page.
 import { ANOTHER_PRIVATE, NO_INCOGNITO, RULES_NOT_HELD, RULES_NOT_REMOVED, offTheRecordHeld } from "./act.js";
@@ -211,11 +224,14 @@ export class FetchWindow {
   // ---- downloads ----
 
   // downloads.onCreated: an incognito download while a fetch window, a fetch
-  // tab or the fetch window's rules are there is the fetch's (no act window
-  // is open then), and the receiver cancels it at once. A cancel that fails
-  // logs one line with no URL; the item's own state shows the rest.
+  // tab or the fetch window's rules are there can be the fetch's, and the
+  // receiver cancels it at once; while an act tab is open and no fetch tab
+  // is (the rules of a fetch_end that answered rules not removed), it is
+  // the act's or the operator's, and it stays. A cancel that fails logs one
+  // line with no URL; the item's own state shows the rest.
   downloadCreated(item) {
     if (!item || item.incognito !== true || !Number.isInteger(item.id) || !this.open) return;
+    if (this.#r.map.acts().length > 0 && this.#r.map.fetches().length === 0) return;
     void call(() => this.#chrome.downloads.cancel(item.id)).catch(() => console.warn("agentwatch receiver: a download of the fetch window was not cancelled"));
   }
 

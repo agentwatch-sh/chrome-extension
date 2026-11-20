@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { FETCH_BLOCK_FIRST, FETCH_BLOCK_PRIORITY, FETCH_RULE_ID, FETCH_RULE_MAX, FETCH_WORKER_FREE, FLOOR_INITIATOR_RULE_ID, FLOOR_RULE_ID, REFUSED_ADDRESSES, SessionRules, fetchRules } from "../agent/dnr.js";
 import { FEATURES } from "../agent/link.js";
+import { TOMBSTONE_MS } from "../agent/tabmap.js";
 import { callsSince, flush, startReceiver } from "./receiver-harness.mjs";
 import { makeFakeChrome } from "./fake-chrome.mjs";
 
@@ -627,4 +628,126 @@ test("review-168 B2: the receiver cancels every incognito download while a fetch
   await s.openAct();
   await fire({ id: 46, incognito: true, state: "in_progress" });
   assert.equal(s.f.callsTo("downloads.cancel").length, n, "no cancel after the fetch window's end, and none for an act");
+});
+
+// ---- re-check 46C note 3: the receiver cancels no download of an act ----
+
+// The receiver's removal of the fetch window's rules fails (rules not removed); every other rule call goes on.
+function fetchRemovalFails(f) {
+  f.impl["declarativeNetRequest.updateSessionRules"] = async (d) => {
+    if ((d.removeRuleIds ?? []).includes(FETCH_RULE_ID) && !(d.addRules ?? []).length) throw new Error("Rule failure (test)");
+    const kept = f.sessionRules_.filter((r) => !(d.removeRuleIds ?? []).includes(r.id));
+    f.sessionRules_ = [...kept, ...structuredClone(d.addRules ?? [])];
+  };
+}
+
+test("review-46 N5 and 46C note 3: fetch_end answers rules not removed when the rules' removal fails (the tab closed first, the rules stay); an act window still opens, and while its tab is open the receiver cancels no incognito download; after act_end it cancels again until the rules go", async () => {
+  const s = await setup();
+  await s.openFetch();
+  fetchRemovalFails(s.f);
+  assert.deepEqual(await s.main(V.endReq), { t: "res", id: V.endReq.id, ok: false, error: "rules not removed" });
+  assert.ok(!s.f.tabs_.some((t) => t.id === FETCH_TAB), "the tab closed first");
+  assert.deepEqual(fetchRulesIn(s.f), V.rules, "the rules stay");
+  assert.equal(s.r.fetchWindow.open, true, "the fetch window's state is there");
+  s.f.dropOtr();
+  await s.openAct(); // no incognito tab is open, so no fetch tab: the act window opens
+  const fire = async (item) => {
+    s.f.chrome.downloads.onCreated.fire(item);
+    await flush();
+  };
+  await fire({ id: 47, incognito: true, state: "in_progress" });
+  assert.deepEqual(s.f.callsTo("downloads.cancel"), [], "an act tab is open and no fetch tab: the download is the act's (or the operator's)");
+  // The act ends; the fetch window's rules are still there: an incognito download is cancelled again (the operator's private window: the limit).
+  assert.equal((await s.main(A.endReq)).ok, true);
+  await fire({ id: 48, incognito: true, state: "in_progress" });
+  assert.deepEqual(s.f.callsTo("downloads.cancel"), [[48]]);
+  // The rules go (the next fetch_end): no cancel.
+  delete s.f.impl["declarativeNetRequest.updateSessionRules"];
+  assert.deepEqual(await s.main({ ...V.endReq, id: "end-again" }), { t: "res", id: "end-again", ok: true, data: { closed: 0 } });
+  assert.deepEqual(fetchRulesIn(s.f), []);
+  await fire({ id: 49, incognito: true, state: "in_progress" });
+  assert.deepEqual(s.f.callsTo("downloads.cancel"), [[48]]);
+});
+
+// ---- review-46 N5: the fetch window's copies of the act's paths ----
+
+test("review-46 N5: a new fetch window after a left one whose tab stays answers another private window is open; after one whose rules do not go, rules not removed; the rules stay, and no window opens", async () => {
+  const s = await setup();
+  await s.openFetch();
+  s.f.impl["debugger.sendCommand"] = async () => ({ success: true }); // Chrome drops the close
+  s.f.impl["tabs.remove"] = async () => {
+    throw new Error("No tab with id");
+  };
+  const before = s.f.callsTo("windows.create").length;
+  s.send({ ...V.fetchWindow.req, id: "left-tab-stays" });
+  await flush(12);
+  await s.fire(2000);
+  await s.fire(2000);
+  await flush(12);
+  assert.deepEqual(s.resOf("left-tab-stays").map((r) => r.error), ["another private window is open"]);
+  assert.ok(s.f.tabs_.some((t) => t.id === FETCH_TAB), "the left tab stays");
+  assert.deepEqual(fetchRulesIn(s.f), V.rules, "the rules stay while a tab of the fetch is open");
+  delete s.f.impl["debugger.sendCommand"];
+  delete s.f.impl["tabs.remove"];
+  // The tab closes now, but the rules' removal fails.
+  fetchRemovalFails(s.f);
+  assert.equal((await s.answer({ ...V.fetchWindow.req, id: "left-rules-stay" })).error, "rules not removed");
+  assert.ok(!s.f.tabs_.some((t) => t.id === FETCH_TAB), "the left tab closed first");
+  assert.deepEqual(fetchRulesIn(s.f), V.rules, "the rules stay");
+  assert.equal(s.f.callsTo("windows.create").length, before, "no window opens");
+});
+
+test("review-46 N5: the guard skips a fetch tab that closed or was replaced in the last TOMBSTONE_MS (its late navigation events): no about:blank and no blocked notice", async () => {
+  const s = await setup();
+  let now = 1000;
+  s.r.clock.now = () => now;
+  await s.openFetch();
+  await s.popup(62, FETCH_TAB);
+  s.f.closeTab(FETCH_TAB);
+  s.f.chrome.tabs.onReplaced.fire(70, 62);
+  await flush();
+  const late = async (tabId, url) => {
+    s.f.chrome.webNavigation.onBeforeNavigate.fire({ tabId, frameId: 0, url });
+    s.f.chrome.webNavigation.onErrorOccurred.fire({ tabId, frameId: 0, url, error: "net::ERR_BLOCKED_BY_CLIENT" });
+    await flush(16);
+  };
+  now += TOMBSTONE_MS - 1;
+  await late(FETCH_TAB, "https://www.example.org/late");
+  await late(62, "https://www.example.org/late");
+  assert.ok(!s.f.callsTo("tabs.update").some(([id]) => id === FETCH_TAB || id === 62), "no about:blank");
+  assert.deepEqual(s.notices(), [], "no blocked notice");
+  // After TOMBSTONE_MS the closed tab is no fetch tab any more: the guard judges it as any tab of no scope.
+  now += 1;
+  await late(FETCH_TAB, "https://www.example.org/later");
+  assert.ok(s.f.callsTo("tabs.update").some(([id, p]) => id === FETCH_TAB && p.url === "about:blank"), "the skip was the kept fetch tab's");
+});
+
+test("review-46 N5: windows.update of a fetch popup's window gets not an agent window (the receiver reads the window first)", async () => {
+  const s = await setup();
+  await s.openFetch();
+  await s.popup(62, FETCH_TAB, 66);
+  assert.equal((await s.answer({ id: "wu66", op: "windows.update", args: [66, { left: 0, focused: true }] })).error, "not an agent window");
+  assert.deepEqual(s.f.callsTo("windows.get"), [[66]], "the read of the window");
+  assert.equal(s.f.callsTo("windows.update").length, 0, "no window moves");
+  assert.equal((await s.answer({ id: "wu1", op: "windows.update", args: [1, { left: 0 }] })).ok, true, "a window of the default context still moves");
+});
+
+test("review-46 N5: the remove-only call of a failed scope update takes the scope rules out and keeps the fetch window's rules 78 to 88", async () => {
+  const f = makeFakeChrome();
+  const model = new Map([["md", { entries: ["a.example"], tabIds: [7] }]]);
+  const rules = new SessionRules(f.chrome, () => model);
+  await rules.start();
+  await rules.replaceAll();
+  await rules.setFetch([FETCH_TAB]);
+  assert.deepEqual(f.sessionRules_.filter(isFetchRule), V.rules);
+  f.impl["declarativeNetRequest.updateSessionRules"] = async (d) => {
+    if ((d.addRules ?? []).length > 0) throw new Error("Session rule count exceeded.");
+    f.sessionRules_ = f.sessionRules_.filter((r) => !(d.removeRuleIds ?? []).includes(r.id));
+  };
+  model.set("md", { entries: ["a.example"], tabIds: [7, 8] });
+  await assert.rejects(rules.replaceLists(["md"]), /Session rule count exceeded/);
+  assert.deepEqual(f.callsTo("declarativeNetRequest.updateSessionRules").at(-1), [{ removeRuleIds: [100, 101] }], "the remove-only call");
+  assert.ok(!f.sessionRules_.some((r) => r.id >= 100), "every scope rule is out");
+  assert.deepEqual(f.sessionRules_.filter(isFetchRule), V.rules, "the fetch window's rules stay");
+  assert.equal(rules.fetching, true);
 });
