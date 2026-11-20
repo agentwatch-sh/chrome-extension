@@ -20,12 +20,16 @@
 // - the fetch window's rules (PageFetch, C5; fetch-window.js): from the
 //   fetch window's open to its end, rule 78 allows every main frame, frame
 //   and <object>/<embed> document in the fetch tabs (as rule 8 does in the
-//   marked tabs), and rules 79 to 86 block every request to a refused
+//   marked tabs), and rules 79 to 86 block the requests to a refused
 //   address: a local or private IP literal, or a *.localhost, *.local or
-//   *.internal host. 79 to 82 in the fetch tabs, 83 to 86 in each request
+//   *.internal host. 79 to 82 every one of the fetch tabs, 83 to 86 each one
 //   with no tab (a service worker or a shared worker) that goes to another
-//   site than its initiator. Rules 87 and 88 block every WebSocket and
-//   WebTransport the same way. Priority 6 (block), above every allow rule.
+//   site than its initiator, unless that initiator is a local name. Rule 87
+//   blocks every WebSocket and WebTransport of the fetch tabs, to any host;
+//   rule 88 each one with no tab as 83 to 86 match, so a service or shared
+//   worker's socket to its own site is not blocked (inside C11's stated
+//   limit for those workers; re-check 46C note 2). Priority 6 (block), above
+//   every allow rule.
 // - the merge guard's floor, rule 9 (C5; board ab-v16.99): it blocks every
 //   request to a guarded host (GitHub's, and the hosts that bridge.mergeGuard
 //   adds) whose method is not GET, HEAD or OPTIONS (a write), in every tab and

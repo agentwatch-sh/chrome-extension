@@ -1462,11 +1462,23 @@ test("review-30g B2: a marked tab that comes to a site during a pause of a list 
   commit(s, 3, "https://www.s.example/"); // waits last (on list spare)
   commit(s, 7, "https://cdn600.a.example/f", { frameId: 700, parentFrameId: 0 }); // dropped: md's entry kept
   await flush(20);
+  // Where the first pause falls (review-30h N5): tab 20 has no new frame event, so the check reads no
+  // frames; its steps are then the shown origin X (1), the record (X, www.a, cdn0: steps 2 to 4) and the
+  // pending set (cdn1 first). So step 500, the first pause, falls in the pending set (before cdn496),
+  // after the loop checked www.a.example (step 3).
+  assert.deepEqual(s.r.workers.origins(), [X, "https://www.a.example", "https://cdn0.a.example"], "the record's order");
+  assert.equal(s.r.workers.pendingOrigins()[0], "https://cdn1.a.example");
+  const w0 = s.r.workers.stats.work;
+  const reads0 = s.f.callsTo("webNavigation.getAllFrames").length;
+  let pausedAt = null;
+  let readsAt = null;
   let injected = 0;
   const real = globalThis.setTimeout;
   globalThis.setTimeout = (fn, ms, ...a) => {
     if (!ms && injected === 0 && /\bpause\b/.test(new Error().stack ?? "")) {
       injected = 1;
+      pausedAt = s.r.workers.stats.work - w0;
+      readsAt = s.f.callsTo("webNavigation.getAllFrames").length - reads0;
       assert.equal(excluding(s).length, 0, "before the call");
       commit(s, 20, "https://app.a.example/f", { frameId: 5, parentFrameId: 0 }); // the marked tab comes to a.example
     }
@@ -1479,6 +1491,8 @@ test("review-30g B2: a marked tab that comes to a site during a pause of a list 
     globalThis.setTimeout = real;
   }
   assert.equal(injected, 1);
+  assert.equal(readsAt, 0, "the check read no frames before its first pause");
+  assert.equal(pausedAt, 500, "the first pause falls at step 500 of the check: in the pending set, after www.a.example (step 3)");
   const ex = excluding(s);
   assert.equal(ex.length, 1);
   for (const o of ["https://www.a.example", "https://cdn0.a.example", "https://cdn1.a.example", "https://cdn599.a.example", "https://app.a.example"]) {
@@ -1500,6 +1514,203 @@ test("review-30g note 3: the check notes the commits only until its list end's r
   delete s.f.impl["browsingData.remove"];
   await flush(20);
   assert.equal(s.r.workers.duringSize(), null, "no notes between checks");
+});
+
+// ---- review-30h: N1 to N5 ----
+
+// The bound with a dropped listed origin (as the test "beyond the pending bound"): the record holds
+// www.b1, api.b1 (both of a site that marked tab 20 shows) and s.example (list spare), the pending set
+// holds f2.b1 and f3.b1, and a.example (list md) is dropped: md's end runs the removal of every worker.
+// pendingMax also bounds the follow-up sets, so it is 2 here: two due origins fit.
+async function fullBound(s) {
+  s.r.workers.max = 3;
+  s.r.workers.pendingMax = 2;
+  commit(s, 20, "https://www.b1.example/");
+  commit(s, 20, "https://api.b1.example/t", { frameId: 100, parentFrameId: 0 });
+  commit(s, 3, "https://s.example/"); // listed (spare)
+  await flush();
+  commit(s, 20, "https://f2.b1.example/t", { frameId: 101, parentFrameId: 0 }); // refused: it waits
+  commit(s, 20, "https://f3.b1.example/t", { frameId: 102, parentFrameId: 0 }); // refused: it waits (pending 2 of 2)
+  await flush();
+  commit(s, 7, "https://a.example/"); // listed (md): refused, and the pending set is full: dropped, its entries kept
+  await flush();
+  assert.deepEqual(recorded(s), ["https://api.b1.example", "https://s.example", "https://www.b1.example"]);
+  assert.deepEqual(s.r.workers.pendingOrigins(), ["https://f2.b1.example", "https://f3.b1.example"]);
+}
+
+test("review-30h N1: the check notes the commits only until it has decided what its list end's removal of every worker keeps: none during that call", async () => {
+  const s = await setup();
+  operatorTab(s, 20);
+  await flush();
+  await fullBound(s);
+  const held = [];
+  s.f.impl["browsingData.remove"] = (d) => (d && d.excludeOrigins ? new Promise((resolve) => held.push(resolve)) : Promise.resolve());
+  await s.set(SESSION_END); // md ends
+  await flush(20);
+  assert.equal(held.length, 1, "the removal of every worker waits");
+  assert.equal(s.r.workers.duringSize(), null, "decided: no notes during its call");
+  commit(s, 3, "https://www.r.example/"); // a commit during the call
+  assert.equal(s.r.workers.duringSize(), null, "a commit during the call adds no note");
+  held[0]();
+  delete s.f.impl["browsingData.remove"];
+  await flush(20);
+  assert.equal(s.r.workers.duringSize(), null, "no notes between checks");
+});
+
+test("review-30h N2: a due origin that the follow-up check records again, or finds recorded, while a marked tab shows its site is done: a failed call later in that check does not make it due again, so its removal at the leave gets its own follow-up check", async () => {
+  // The marked tab comes to Q's site (the check records Q again), or to Q itself (Q is in the record again).
+  for (const shown of ["https://api.q.example/f", "https://www.q.example/f"]) {
+    const s = await setup();
+    operatorTab(s, 20);
+    await flush();
+    commit(s, 20, X + "/home");
+    await flush(10);
+    const Q = "https://www.q.example";
+    const W = "https://www.w.example";
+    const count = (o) => leaves(s).filter((l) => l.includes(o)).length;
+    commit(s, 3, Q + "/"); // on no list, of no shown site: removed; its follow-up waits
+    await flush(20);
+    assert.equal(count(Q), 1);
+    commit(s, 20, shown, { frameId: 5, parentFrameId: 0 }); // the marked tab comes to Q's site
+    await flush(20);
+    // One check: Q's follow-up finds Q's site shown (it records Q again, or Q is in the record), and W's call fails after that.
+    s.f.impl["browsingData.remove"] = async (d) => {
+      if (d && d.origins && d.origins.includes(W)) throw new Error("busy (test)");
+    };
+    const log = quietWarn();
+    try {
+      commit(s, 3, W + "/");
+      await s.fire(RECHECK_MS);
+      await flush(20);
+    } finally {
+      log.restore();
+    }
+    delete s.f.impl["browsingData.remove"];
+    assert.equal(count(W), 1, "W's call ran and failed");
+    assert.equal(count(Q), 1, "the shown site keeps Q's workers");
+    assert.ok(recorded(s).includes(Q), "Q joins the record again");
+    // The marked tab leaves Q's site: Q goes, and that removal gets its own follow-up check.
+    commit(s, 20, X + "/back");
+    await flush(40);
+    assert.equal(count(Q), 2, "Q goes after the leave");
+    for (let i = 0; i < 3; i++) {
+      await s.fire(RECHECK_MS);
+      await flush(20);
+    }
+    assert.equal(count(Q), 3, shown + ": the follow-up check of the leave's removal: " + JSON.stringify(leaves(s).slice(-3)));
+  }
+});
+
+test("review-30h N2: a due origin that its part's last filter records again (review-30g B1) is done too: when that part's call fails, it is not due again, and its removal at the leave gets its own follow-up check", async () => {
+  const s = await setup();
+  operatorTab(s, 20);
+  await flush();
+  commit(s, 20, X + "/home");
+  await flush(10);
+  const Q = "https://www.q.example";
+  const count = (o) => leaves(s).filter((l) => l.includes(o)).length;
+  commit(s, 3, Q + "/"); // on no list, of no shown site: removed; its follow-up waits
+  await flush(20);
+  assert.equal(count(Q), 1);
+  // Tab 20 shows 601 origins of b1.example (kept), then leaves them in the check of Q's follow-up.
+  commit(s, 20, "https://www.b1.example/");
+  for (let i = 0; i < 600; i++) commit(s, 20, `https://f${i}.b1.example/f`, { frameId: 100 + i, parentFrameId: 0 });
+  await flush(20);
+  const held = [];
+  let fail = false;
+  s.f.impl["browsingData.remove"] = (d) => {
+    if (d && d.origins && d.origins.includes("https://www.b1.example") && held.length === 0) return new Promise((resolve) => held.push(resolve));
+    return fail && d && d.origins ? Promise.reject(new Error("busy (test)")) : Promise.resolve();
+  };
+  commit(s, 20, X + "/back"); // tab 20 leaves b1.example ...
+  await s.fire(RECHECK_MS); // ... and Q is due in the same check: Q is in part 2 (after 500 b1 origins)
+  await flush(4);
+  assert.equal(held.length, 1, "part 1's call waits");
+  commit(s, 20, "https://api.q.example/f", { frameId: 5, parentFrameId: 0 }); // during part 1's call: the marked tab comes to Q's site
+  fail = true; // part 2's call (the other b1 origins) fails
+  const log = quietWarn();
+  try {
+    held[0]();
+    await flush(40);
+  } finally {
+    log.restore();
+  }
+  delete s.f.impl["browsingData.remove"];
+  assert.equal(count(Q), 1, "the shown site keeps Q's workers");
+  assert.ok(recorded(s).includes(Q), "Q joins the record again");
+  assert.ok(recorded(s).includes("https://f599.b1.example"), "part 2's call failed");
+  commit(s, 20, X + "/again"); // tab 20 leaves q.example
+  await flush(40);
+  assert.equal(count(Q), 2, "Q goes after the leave");
+  for (let i = 0; i < 3; i++) {
+    await s.fire(RECHECK_MS);
+    await flush(20);
+  }
+  assert.equal(count(Q), 3, "the follow-up check of the leave's removal: " + JSON.stringify(leaves(s).slice(-3).map((l) => l.length)));
+});
+
+test("review-30h N3 and N4: a list end's removal of every worker keeps each due origin of the follow-up checks whose site a marked tab shows or that a list in force covers", async () => {
+  const s = await setup();
+  operatorTab(s, 20);
+  await flush();
+  const Q1 = "https://www.q1.example"; // a marked tab comes to its site before its follow-up check
+  const Q2 = "https://www.q2.example"; // a list that begins covers it at its follow-up check
+  commit(s, 3, Q1 + "/");
+  commit(s, 3, Q2 + "/");
+  await flush(20);
+  assert.deepEqual(leaves(s), [[Q1, Q2]], "both removed; their follow-ups wait");
+  await fullBound(s);
+  assert.equal(excluding(s).length, 0);
+  // In one moment: tab 20 comes to Q1's site (its last read is old now), and the follow-up timer makes
+  // Q1 and Q2 due. One check takes both, and its read of tab 20 waits.
+  const held = [];
+  s.f.impl["webNavigation.getAllFrames"] = ({ tabId }) => new Promise((resolve) => held.push(() => resolve(structuredClone(s.f.frames_.get(tabId) ?? []))));
+  commit(s, 20, "https://api.q1.example/f", { frameId: 103, parentFrameId: 0 }); // refused by the bound (the residue)
+  await s.fire(RECHECK_MS);
+  assert.equal(held.length, 1, "the check reads tab 20");
+  // During the read md ends and a list q2 begins: the check decides with the lists after its read.
+  await s.set({ ...SESSION_END, lists: { ...SESSION_END.lists, q2: ["q2.example"] } });
+  delete s.f.impl["webNavigation.getAllFrames"];
+  held[0]();
+  await flush(40);
+  const ex = excluding(s);
+  assert.equal(ex.length, 1, "md's end: one removal of every worker");
+  assert.ok(ex[0].includes(Q1), "a due origin of a site that a marked tab shows is kept: " + JSON.stringify(ex[0]));
+  assert.ok(ex[0].includes(Q2), "a due origin that a list in force covers is kept: " + JSON.stringify(ex[0]));
+  for (const o of ["https://www.b1.example", "https://api.b1.example", "https://f2.b1.example", "https://f3.b1.example", "https://api.q1.example", "https://s.example"]) assert.ok(ex[0].includes(o), "kept as before: " + o);
+  assert.ok(!ex[0].includes("https://a.example"), "md's origin goes");
+});
+
+test("review-53 note 2: a due origin that a commit puts back into the record during its own follow-up check, and that this check removes, gets a follow-up check for that removal too", async () => {
+  const s = await setup();
+  operatorTab(s, 20);
+  await flush();
+  commit(s, 20, X + "/home");
+  await flush(10);
+  const Q = "https://www.q.example";
+  const count = (o) => leaves(s).filter((l) => l.includes(o)).length;
+  commit(s, 3, Q + "/"); // T0: on no list, of no shown site: removed; its follow-up waits
+  await flush(20);
+  assert.equal(count(Q), 1);
+  // T0 + RECHECK_MS: the follow-up check C1 takes Q as due, and its read of tab 20 waits.
+  const held = [];
+  s.f.impl["webNavigation.getAllFrames"] = ({ tabId }) => new Promise((resolve) => held.push(() => resolve(structuredClone(s.f.frames_.get(tabId) ?? []))));
+  commit(s, 20, X + "/again"); // tab 20's last read is old now
+  await s.fire(RECHECK_MS);
+  assert.equal(held.length, 1, "C1 reads tab 20");
+  commit(s, 3, Q + "/reload"); // the page of Q loads again: the commit puts Q back into the record
+  assert.ok(recorded(s).includes(Q));
+  delete s.f.impl["webNavigation.getAllFrames"];
+  held[0]();
+  await flush(40);
+  assert.equal(count(Q), 2, "C1 removes Q");
+  assert.ok(!recorded(s).includes(Q));
+  // The page registers its worker after C1's call: a follow-up check of that removal removes it.
+  for (let i = 0; i < 3; i++) {
+    await s.fire(RECHECK_MS);
+    await flush(20);
+  }
+  assert.equal(count(Q), 3, "the follow-up check of C1's removal: " + JSON.stringify(leaves(s).slice(-3)));
 });
 
 // ---- review-30e B3: the rules of round 4 with no test (G1 to G6) ----
