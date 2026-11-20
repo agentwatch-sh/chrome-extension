@@ -1681,6 +1681,38 @@ test("review-30h N3 and N4: a list end's removal of every worker keeps each due 
   assert.ok(!ex[0].includes("https://a.example"), "md's origin goes");
 });
 
+test("review-53 note 2: a due origin that a commit puts back into the record during its own follow-up check, and that this check removes, gets a follow-up check for that removal too", async () => {
+  const s = await setup();
+  operatorTab(s, 20);
+  await flush();
+  commit(s, 20, X + "/home");
+  await flush(10);
+  const Q = "https://www.q.example";
+  const count = (o) => leaves(s).filter((l) => l.includes(o)).length;
+  commit(s, 3, Q + "/"); // T0: on no list, of no shown site: removed; its follow-up waits
+  await flush(20);
+  assert.equal(count(Q), 1);
+  // T0 + RECHECK_MS: the follow-up check C1 takes Q as due, and its read of tab 20 waits.
+  const held = [];
+  s.f.impl["webNavigation.getAllFrames"] = ({ tabId }) => new Promise((resolve) => held.push(() => resolve(structuredClone(s.f.frames_.get(tabId) ?? []))));
+  commit(s, 20, X + "/again"); // tab 20's last read is old now
+  await s.fire(RECHECK_MS);
+  assert.equal(held.length, 1, "C1 reads tab 20");
+  commit(s, 3, Q + "/reload"); // the page of Q loads again: the commit puts Q back into the record
+  assert.ok(recorded(s).includes(Q));
+  delete s.f.impl["webNavigation.getAllFrames"];
+  held[0]();
+  await flush(40);
+  assert.equal(count(Q), 2, "C1 removes Q");
+  assert.ok(!recorded(s).includes(Q));
+  // The page registers its worker after C1's call: a follow-up check of that removal removes it.
+  for (let i = 0; i < 3; i++) {
+    await s.fire(RECHECK_MS);
+    await flush(20);
+  }
+  assert.equal(count(Q), 3, "the follow-up check of C1's removal: " + JSON.stringify(leaves(s).slice(-3)));
+});
+
 // ---- review-30e B3: the rules of round 4 with no test (G1 to G6) ----
 
 test("1200 origins to remove go in calls of at most 500 origins", async () => {

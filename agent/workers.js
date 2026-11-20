@@ -566,9 +566,12 @@ export class Workers {
         if (this.#record.delete(o)) keys.push(WORKER_KEY + o);
         this.#pending.delete(o);
         // The follow-up check, once for each removal (a page can register its
-        // worker after the check of its own commit).
+        // worker after the check of its own commit). A due origin's removal
+        // is its follow-up, unless it had an entry: a commit put it back into
+        // the record or the pending set, so this removal gets one too
+        // (review-53 note 2).
         if (second.has(o)) doneDue.add(o);
-        else followUp.push(o);
+        if (!second.has(o) || e) followUp.push(o);
       }
       if (followUp.length > 0) this.#followUp(followUp);
     }

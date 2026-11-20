@@ -1044,12 +1044,15 @@ is on, agent-browser's service. The daemon never sends it.
     removal goes when that list ends or the tab leaves (round 7, the lead's decision). The same holds
     for a due origin that its part's last filter drops because a marked tab came to its site during
     the check (review-30g B1). Such an origin, and a due origin that a commit put back into the record
-    and that the check keeps, is then done: a stop of that check or a failed call later in it keeps
-    due only the origins that the check has neither removed nor recorded again, so the next removal
-    of a recorded origin gets a follow-up check of its own (review-30h N2; before receiver 0.3.14 it
-    stayed due, and that removal counted as its follow-up). A page can register its worker after the
-    check of its own commit (review-30b note 2: a frame on no list in a scope's listed page). One
-    check runs at a time; the events during a check start one more after it.
+    or the pending set and that the check keeps, is then done: a stop of that check or a failed call
+    later in it keeps due only the origins that the check has neither removed nor recorded again, so
+    the next removal of a recorded origin gets a follow-up check of its own (review-30h N2; before
+    receiver 0.3.14 it stayed due, and that removal counted as its follow-up). A due origin that a
+    commit put back into the record or the pending set and that the check removes gets a follow-up
+    check for that removal too (review-53 note 2; before receiver 0.3.14 that removal counted as its
+    follow-up). A page can register its worker after the check of its own commit (review-30b note 2:
+    a frame on no list in a scope's listed page). One check runs at a time; the events during a
+    check start one more after it.
   - The windows. The check after an event ends after its frame read and its removal, each within
     `REMOVAL_WAIT_MS` (C10). When it waits for a check that runs, the removal ends at most about 4 x
     `REMOVAL_WAIT_MS` (8 s) after the event while each call ends in time (one more call for each 500
@@ -1124,7 +1127,12 @@ is on, agent-browser's service. The daemon never sends it.
     also when its own list stays in force (that removal does not know it). The end of a list that
     covered no such origin removes nothing. (3) The follow-up sets hold at most 10,000 origins each:
     beyond 10,000 removed origins in one period of the follow-up timer, the others get no follow-up
-    check (a page needs more than 10,000 removals in 5 s).
+    check (a page needs more than 10,000 removals in 5 s). (4) A list end's removal of every worker
+    keeps only the origins that are due when its check starts: an origin whose follow-up period
+    still runs, or that the timer makes due during that check's pauses, is not kept, so a worker
+    that its page registered again after its removal goes then, also when a marked tab shows its
+    site or a list in force covers it (only at a list end within about 2 x `RECHECK_MS`, 10 s, of
+    that removal; review-53 note 3).
   - The record's cost: one `chrome.storage.session` write for each new origin and one key removal
     for each origin that goes (some tens of bytes per origin, about 50 KB at the bound), one frame
     read of a marked tab after each event of its frames, and one `browsingData.remove` for each
@@ -2695,14 +2703,16 @@ is an incognito window: its off-the-record context shares no cookie, storage, Ca
   receiver calls `downloads.cancel` for it itself. Chrome's `DownloadItem` names no tab. The one exception (re-check
   46C note 3, receiver 0.3.14): while an act tab is open and no fetch tab is, the receiver cancels none. An act window
   and a fetch window each open only while no incognito tab is open (the act window's step 4, the fetch window's step
-  3), so such a download is the act's or the operator's; the fetch window's rules are then those of a `fetch_end` that
-  answered `rules not removed`, or of a start whose end is still owed. The event still reaches the relay. A client's
-  `downloads.cancel` of an incognito download still gets `not an agent download`.
-- The limits of the download cancel, stated plainly (re-check 46C note 3). A private window that the operator opens
-  while a fetch window, a fetch tab or the fetch window's rules are there shares that context, and the receiver
-  cancels its downloads too (also after a `fetch_end` that answered `rules not removed`, until the rules go). The
-  cancel at `downloads.onCreated` races Chrome's completion of a small download: `downloads.cancel` does nothing to a
-  download that is complete, so its file stays. Holding each download until the receiver decides
+  3), so such a download is the act's or the operator's; the fetch window's rules are then left ones, for example
+  those of a `fetch_end` that answered `rules not removed`, or of a link change's or a start's end that did not remove
+  them. The event still reaches the relay. A client's `downloads.cancel` of an incognito download still gets `not an
+  agent download`.
+- The limits of the download cancel, stated plainly (re-check 46C note 3; review-53 note 1). A private window that
+  the operator opens while a fetch tab is open shares the fetch's context, and the receiver cancels its downloads too.
+  While only the fetch window's rules are left (no fetch tab is open), such a window has a context of its own once
+  Chrome has dropped the fetch's, but the receiver still cancels its downloads until the rules go, except while an
+  act tab is open (the exception, above). The cancel at `downloads.onCreated` races Chrome's completion of a small
+  download: `downloads.cancel` does nothing to a download that is complete, so its file stays. Holding each download until the receiver decides
   (`downloads.onDeterminingFilename`) would hold every download of the default context too, so the receiver does
   not.
 - What the receiver still gives the relay of a fetch tab is what it gives of an act tab (the act window, above): its

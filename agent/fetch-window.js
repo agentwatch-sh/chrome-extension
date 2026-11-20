@@ -37,9 +37,10 @@
 //   window and a fetch window each open only while no incognito tab is
 //   open, so such a download is the act's or the operator's (re-check 46C
 //   note 3). The limits (C10): a private window that the operator opens
-//   while the fetch window's state is there shares that context, and its
-//   downloads go too; and a small download can complete before the cancel,
-//   which then does nothing (the file stays).
+//   while a fetch tab is open shares the fetch's context, and its downloads
+//   go too; while only left rules are there, its downloads still go, except
+//   while an act tab is open; and a small download can complete before the
+//   cancel, which then does nothing (the file stays).
 //
 // No log line holds a URL, a host or a value of the page.
 import { ANOTHER_PRIVATE, NO_INCOGNITO, RULES_NOT_HELD, RULES_NOT_REMOVED, offTheRecordHeld } from "./act.js";
@@ -226,9 +227,10 @@ export class FetchWindow {
   // downloads.onCreated: an incognito download while a fetch window, a fetch
   // tab or the fetch window's rules are there can be the fetch's, and the
   // receiver cancels it at once; while an act tab is open and no fetch tab
-  // is (the rules of a fetch_end that answered rules not removed), it is
-  // the act's or the operator's, and it stays. A cancel that fails logs one
-  // line with no URL; the item's own state shows the rest.
+  // is (left rules: for example those of a fetch_end that answered rules
+  // not removed, or of a link change's or a start's end that did not remove
+  // them), it is the act's or the operator's, and it stays. A cancel that
+  // fails logs one line with no URL; the item's own state shows the rest.
   downloadCreated(item) {
     if (!item || item.incognito !== true || !Number.isInteger(item.id) || !this.open) return;
     if (this.#r.map.acts().length > 0 && this.#r.map.fetches().length === 0) return;
