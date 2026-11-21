@@ -144,7 +144,7 @@ test("C4 states the set_scopes request and answer, and the receiver's hello with
   assert.ok(C4.includes("The daemon waits 10 s for `ping` and `set_scopes`"));
   assert.ok(C4.includes("`" + JSON.stringify({ ...helloV.hello, version: "<manifest version>" }) + "`"), "C4 shows the hello");
   // The feature act: the act of the stored sign-ins (board ab-v16.97.3); the feature fetch: PageFetch's fetch window (board ab-v16.102).
-  assert.deepEqual(helloV.hello.features, ["scopes", "act", "fetch"]);
+  assert.deepEqual(helloV.hello.features, ["scopes", "act", "fetch", "pay"]);
   assert.deepEqual(helloV.hello.channels, CHANNELS);
   assert.ok(C4.includes("`test/vectors/hello.json`") && C4.includes("`test/vectors/scopes.json`"), "C4 names the vectors");
 });
@@ -1950,7 +1950,7 @@ test("C4 states the act's three requests with their shapes, their checks in orde
     "It finds the cookie store whose `tabIds` hold the tab (`cookies.getAllCookieStores`; else `no cookie store`).",
     "A store with the id `\"0\"`, the default context's store, also gets `no cookie store` (review-ce44 N10).",
     "Then it reads `cookies.getAll({domain, storeId})` and `cookies.getAll({domain, storeId, partitionKey: {}})`",
-    "The receiver reads no store of the default context for the act: a tab that is no act tab gets `not an act tab`.",
+    "The receiver reads no store of the default context for the act (the one exception is `pay_cookies_copy`, below, which answers no value): a tab that is no act tab gets `not an act tab`.",
     "A cookie of a parent domain of the host is not in the answer (the design's limit).",
     "The values go only in this answer, as an import's values go only in its request, and no log line holds one.",
     "each tab of an act window, each act tab in another window (a popup), each tab of a key `acttab:<id>` of the copy (C10, the act window), and each incognito tab whose opener (`openerTabId`) is a tab of the act (a popup whose navigation target has not come yet; review-ce44 N2)",
@@ -1963,8 +1963,8 @@ test("C4 states the act's three requests with their shapes, their checks in orde
     "No log line of the receiver holds a field of these requests or of their answers.",
     "The shared vector: `test/vectors/act.json`",
   ]) assert.ok(says(act, s), `C4 says: ${s}`);
-  assert.ok(says(C4, "The act's caller waits 10 s for `act_rules`, `act_cookies` and `act_end`."));
-  assert.ok(says(C4, "(`features`: the allowlists, below, the act of the stored sign-ins, below, and PageFetch's fetch window, below)"));
+  assert.ok(says(C4, "The act's caller waits 10 s for `act_rules`, `act_cookies` and `act_end`, and 10 s for `pay_cookies_copy` and `pay_merchant_block`."));
+  assert.ok(says(C4, "(`features`: the allowlists, below, the act of the stored sign-ins, below, PageFetch's fetch window, below, and the card payment's pay act requests, below)"));
   for (const e of actV.errors.main) assert.ok(act.includes("`" + e + "`"), `C4 names the error ${e}`);
   assert.deepEqual(actV.features, helloV.hello.features);
 });
@@ -2305,4 +2305,18 @@ test("C10 states the fetch window: the mark and the pair rule, the steps of wind
   assert.deepEqual([req.op, req.args.length, req.args[0].incognito, req.args[2]], ["windows.create", 3, true, "fetch"]);
   assert.ok(argsFit(opByName.get("windows.create"), req.args));
   assert.ok(!argsFit(opByName.get("windows.create"), [{ url: "about:blank" }, "my-repo", "fetch"]), "the pair rule: the mark fetch only with incognito");
+});
+
+test("the secure card checkout's pay act: C4's two requests, the feature pay, and C5's rule 90", () => {
+  for (const t of [
+    "the two requests of the card payment's pay act (below): `pay_cookies_copy` and `pay_merchant_block`",
+    '`{"t":"req","id":"<id>","op":"pay_cookies_copy","tab":<act tab>,"domain":"<registrable domain>"}` -> `{"count":<cookies written>}`.',
+    "exception to review-ce44 N10 for the card payment's pay act: the answer holds the count only, never a name or a value, and no log line holds one.",
+    '`{"t":"req","id":"<id>","op":"pay_merchant_block","tab":<act tab>,"domain":"<registrable domain>","on":<bool>}` -> `{"rules":[<ids>]}`.',
+    "`act_rules` replaces the act's rules A to E and keeps rule 90; an act tab that joins leaves rule 90 too. `act_end` and a worker's start remove rule 90 with the act's rules.",
+    "reads no store of the default context for the act (the one exception is `pay_cookies_copy`, below, which answers no value)",
+  ]) assert.ok(says(C4, t), t);
+  assert.ok(says(C4, '"features":["scopes","act","fetch","pay"]'));
+  assert.ok(says(C5, "Rule 90, the card payment's merchant rule (the secure card checkout; C4, `pay_merchant_block`): session rule id 90, priority 4"));
+  assert.ok(says(C5, "rule 90 also blocks the merchant's requests of a worker of the act's own context: a stated limit."));
 });
