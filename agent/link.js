@@ -26,8 +26,10 @@ const MAX_WAITING = 100;
 // act_cookies and act_end), so the service starts an act only with it;
 // "fetch" says that it has PageFetch's fetch window (the mark fetch of
 // windows.create, its rules and fetch_end), so the service fetches only with
-// it. A reader tests each feature for membership.
-export const FEATURES = Object.freeze(["scopes", "act", "fetch"]);
+// it; "pay" says that it has the pay act's requests of the secure card
+// checkout (pay_cookies_copy and pay_merchant_block, C4). A reader tests each
+// feature for membership.
+export const FEATURES = Object.freeze(["scopes", "act", "fetch", "pay"]);
 
 // The daemon drops the link at a message over MAX_TO_DAEMON (wire.js). So a
 // bridge res over it goes in parts up to maxResult (C10), any other res over

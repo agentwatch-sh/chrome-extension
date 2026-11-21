@@ -867,3 +867,86 @@ test("R2: downloads.search leaves an incognito download out, and downloads.cance
   assert.equal((await s.answer({ id: "dc3", op: "downloads.cancel", args: [3] })).ok, true);
   assert.deepEqual(s.f.callsTo("downloads.cancel"), [[3]]);
 });
+
+// ---- the pay act's requests (the secure card checkout; C4, C5 rule 90) ----
+
+test("pay_cookies_copy: the default store's cookies of the domain go into the act tab's store; the answer is a count, never a value", async () => {
+  const s = await setup();
+  await s.openAct();
+  s.f.cookieStores_ = [{ id: "0", tabIds: [7] }, { id: "1", tabIds: [ACT_TAB] }];
+  s.f.cookies_ = [
+    { name: "cart", value: "made-up-cart-1", domain: "shop.example", hostOnly: true, path: "/", secure: true, httpOnly: true, session: true, sameSite: "lax" },
+    { name: "pref", value: "made-up-pref", domain: ".shop.example", hostOnly: false, path: "/", secure: true, httpOnly: false, session: false, expirationDate: 2000000000 },
+    { name: "other", value: "made-up-other", domain: "other.example", hostOnly: true, path: "/", secure: true, httpOnly: false, session: true },
+    { name: "act-own", value: "made-up-act", domain: "shop.example", hostOnly: true, path: "/", secure: true, storeId: "1", session: true },
+  ];
+  s.f.impl["cookies.getAll"] = async (filter) => s.f.cookies_.filter((c) => (c.storeId ?? "0") === (filter.storeId ?? "0") && !filter.partitionKey && (c.domain.replace(/^\./, "") === filter.domain || c.domain.endsWith("." + filter.domain)));
+  const res = await s.main({ t: "req", id: "pc1", op: "pay_cookies_copy", tab: ACT_TAB, domain: "shop.example" });
+  assert.deepEqual(res, { t: "res", id: "pc1", ok: true, data: { count: 2 } });
+  assert.ok(!JSON.stringify(res).includes("made-up"), "no cookie value in the answer");
+  const sets = s.f.callsTo("cookies.set").map(([d]) => d);
+  assert.deepEqual(sets.map((d) => [d.name, d.storeId, d.httpOnly]), [["cart", "1", true], ["pref", "1", false]]);
+  assert.equal(sets[0].url, "https://shop.example/");
+  assert.equal(sets[0].domain, undefined, "a host-only cookie stays host-only");
+  assert.equal(sets[1].domain, ".shop.example");
+  assert.equal(sets[1].expirationDate, 2000000000);
+  // Only the default store is read, and only for the domain.
+  assert.deepEqual(s.f.callsTo("cookies.getAll").filter(([f]) => f.domain).map(([f]) => f.storeId), ["0", "0"]);
+});
+
+test("pay_cookies_copy refuses a tab that is not an act tab, a bad domain, and an act tab whose store is the default store", async () => {
+  const s = await setup();
+  await s.openAct();
+  assert.deepEqual(await s.main({ t: "req", id: "pc2", op: "pay_cookies_copy", tab: 7, domain: "shop.example" }), { t: "res", id: "pc2", ok: false, error: "not an act tab" });
+  assert.deepEqual(await s.main({ t: "req", id: "pc3", op: "pay_cookies_copy", tab: ACT_TAB, domain: "https://shop.example" }), { t: "res", id: "pc3", ok: false, error: "bad request" });
+  s.f.cookieStores_ = [{ id: "0", tabIds: [7, ACT_TAB] }];
+  assert.deepEqual(await s.main({ t: "req", id: "pc4", op: "pay_cookies_copy", tab: ACT_TAB, domain: "shop.example" }), { t: "res", id: "pc4", ok: false, error: "no cookie store" });
+  assert.equal(s.f.callsTo("cookies.set").length, 0);
+});
+
+test("pay_merchant_block: rule 90 blocks the domain outside the act tabs; a second act_rules keeps it; act_end removes it", async () => {
+  const s = await setup();
+  await s.openAct();
+  const on = await s.main({ t: "req", id: "pm1", op: "pay_merchant_block", tab: ACT_TAB, domain: "shop.example", on: true });
+  assert.deepEqual(on, { t: "res", id: "pm1", ok: true, data: { rules: [90] } });
+  const rule90 = () => s.f.sessionRules_.find((r) => r.id === 90);
+  assert.equal(rule90().action.type, "block");
+  assert.deepEqual(rule90().condition.requestDomains, ["shop.example"]);
+  assert.deepEqual(rule90().condition.excludedTabIds, [ACT_TAB]);
+  assert.ok(rule90().priority > 2, "above the scope rules' allow");
+  assert.equal((await s.main(V.rulesReq)).ok, true);
+  assert.ok(rule90(), "the act's rules A to E do not remove the merchant rule");
+  assert.equal((await s.main({ t: "req", id: "pm2", op: "act_end" })).ok, true);
+  assert.equal(rule90(), undefined, "the act's end removes the merchant rule");
+});
+
+test("pay_merchant_block: off removes rule 90; a tab that is not an act tab and a bad request are refused", async () => {
+  const s = await setup();
+  await s.openAct();
+  assert.equal((await s.main({ t: "req", id: "pm3", op: "pay_merchant_block", tab: ACT_TAB, domain: "shop.example", on: true })).ok, true);
+  assert.deepEqual(await s.main({ t: "req", id: "pm4", op: "pay_merchant_block", tab: ACT_TAB, domain: "shop.example", on: false }), { t: "res", id: "pm4", ok: true, data: { rules: [] } });
+  assert.equal(s.f.sessionRules_.find((r) => r.id === 90), undefined);
+  assert.deepEqual(await s.main({ t: "req", id: "pm5", op: "pay_merchant_block", tab: 7, domain: "shop.example", on: true }), { t: "res", id: "pm5", ok: false, error: "not an act tab" });
+  assert.deepEqual(await s.main({ t: "req", id: "pm6", op: "pay_merchant_block", tab: ACT_TAB, domain: "shop.example" }), { t: "res", id: "pm6", ok: false, error: "bad request" });
+});
+
+test("the pay act's requests refuse a domain with no dot and an IP literal (bad request): a bare suffix never names every site of it", async () => {
+  const s = await setup();
+  await s.openAct();
+  for (const [i, domain] of ["com", "localhost", "127.0.0.1", "10.0.0.1"].entries()) {
+    assert.deepEqual(await s.main({ t: "req", id: "pd" + i, op: "pay_cookies_copy", tab: ACT_TAB, domain }), { t: "res", id: "pd" + i, ok: false, error: "bad request" }, domain);
+    assert.deepEqual(await s.main({ t: "req", id: "pb" + i, op: "pay_merchant_block", tab: ACT_TAB, domain, on: true }), { t: "res", id: "pb" + i, ok: false, error: "bad request" }, domain);
+  }
+  assert.equal(s.f.callsTo("cookies.set").length, 0);
+  assert.equal(s.f.sessionRules_.find((r) => r.id === 90), undefined);
+});
+
+test("act_rules after pay_merchant_block rebuilds rule 90 with the act tabs of act_rules", async () => {
+  const s = await setup();
+  await s.openAct();
+  assert.equal((await s.main({ t: "req", id: "pr1", op: "pay_merchant_block", tab: ACT_TAB, domain: "shop.example", on: true })).ok, true);
+  assert.equal((await s.main(V.rulesReq)).ok, true);
+  const a = s.f.sessionRules_.find((r) => r.id === 10);
+  const r90 = s.f.sessionRules_.find((r) => r.id === 90);
+  assert.deepEqual(r90.condition.excludedTabIds, a.condition.tabIds, "rule 90 excludes exactly the act tabs of the act's rules");
+});

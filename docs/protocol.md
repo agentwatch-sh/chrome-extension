@@ -219,8 +219,9 @@ frames, the channels, the parts and the messages stay, and the shim sends the sa
 stage 3, and on a box whose switch is off, the daemon is the party, as below.
 
 - receiver -> daemon:
-  `{"t":"hello","v":2,"version":"<manifest version>","channels":["main","bridge"],"features":["scopes","act","fetch"]}`
-  (`features`: the allowlists, below, the act of the stored sign-ins, below, and PageFetch's fetch window, below);
+  `{"t":"hello","v":2,"version":"<manifest version>","channels":["main","bridge"],"features":["scopes","act","fetch","pay"]}`
+  (`features`: the allowlists, below, the act of the stored sign-ins, below, PageFetch's fetch window, below, and
+  the card payment's pay act requests, below);
   `{"t":"res","id":"<id>","ok":true,"data":{...}}` or `{"t":"res","id":"<id>","ok":false,"error":"<text>"}`
   (a res on the bridge channel also has `"ch":"bridge"`, and its `data` can also be a list or `null`:
   C10);
@@ -249,9 +250,11 @@ stage 3, and on a box whose switch is off, the daemon is the party, as below.
   `{"t":"req","id":"<id>","op":"import","state":<C2 payload>}` ->
   `{"cookies_removed":0,"cookies_set":0,"tabs_closed":0,"local":0,"session":0,"idb_databases":0,"idb_records":0,"cache_entries":0,"errors":["<store or cookie name>: <reason>"]}`;
   the three requests of the act of the stored sign-ins (below): `act_rules`, `act_cookies` and
-  `act_end`; and the request of PageFetch's fetch window (below): `fetch_end`.
+  `act_end`; the two requests of the card payment's pay act (below): `pay_cookies_copy` and
+  `pay_merchant_block`; and the request of PageFetch's fetch window (below): `fetch_end`.
 - Ids are strings. The daemon waits 10 s for `ping` and `set_scopes`, 120 s for `import`. The act's caller
-  waits 10 s for `act_rules`, `act_cookies` and `act_end`. The fetch's caller waits 10 s for `fetch_end`.
+  waits 10 s for `act_rules`, `act_cookies` and `act_end`, and 10 s for `pay_cookies_copy` and
+  `pay_merchant_block`. The fetch's caller waits 10 s for `fetch_end`.
 - A message from the receiver to the daemon is at most `MAX_TO_DAEMON = 8388608` bytes (8 MiB) of
   UTF-8 JSON: one line on the daemon's socket, without its newline. The daemon drops the link at a
   longer line, and that would fail a running import. So the receiver never sends a longer message. A
@@ -547,10 +550,32 @@ before that only agent-browser's own tests of the act. The daemon never sends th
   `cookies.getAll({domain, storeId})` and `cookies.getAll({domain, storeId, partitionKey: {}})`: the cookies of
   the host and its subdomains (Chrome's domain filter), partitioned or not, each cookie once. It answers each
   cookie in C2's form, as the sender builds it. A Chrome call that fails answers `cookies failed`. The receiver
-  reads no store of the default context for the act: a tab that is no act tab gets `not an act tab`. A cookie
+  reads no store of the default context for the act (the one exception is `pay_cookies_copy`, below, which answers
+  no value): a tab that is no act tab gets `not an act tab`. A cookie
   of a parent domain of the host is not in the answer (the design's limit). The values go only in this answer,
   as an import's values go only in its request, and no log line holds one. The act's caller checks the move's
   payload and sends it as an `import` (C6): the move is one more caller of `import`.
+- `pay_cookies_copy` (the secure card checkout; the hello's feature `pay`):
+  `{"t":"req","id":"<id>","op":"pay_cookies_copy","tab":<act tab>,"domain":"<registrable domain>"}` ->
+  `{"count":<cookies written>}`. The receiver checks the fields (else `bad request`; a domain with no dot or an IP
+  literal is `bad request` too, so that a bare public suffix never names every site of it: the receiver has no public
+  suffix list, and the act's caller sends only a registrable domain and refuses a public suffix before the request) and
+  the tab (else `not an act tab`), and finds the act tab's store as for `act_cookies` (the default store, or none,
+  gets `no cookie store`).
+  Then it reads the default context's store `"0"` for the domain and its subdomains, partitioned or not, httpOnly
+  included, and writes each cookie into the act tab's store (`cookies.set` with that store's id; a host-only cookie
+  stays host-only). This is the one read of the default store that the receiver makes for an act, a narrow
+  exception to review-ce44 N10 for the card payment's pay act: the answer holds the count only, never a name or a
+  value, and no log line holds one. A Chrome call that fails answers `cookies failed`.
+- `pay_merchant_block` (the hello's feature `pay`):
+  `{"t":"req","id":"<id>","op":"pay_merchant_block","tab":<act tab>,"domain":"<registrable domain>","on":<bool>}` ->
+  `{"rules":[<ids>]}`. With `on` true the receiver adds C5's rule 90 for the domain, with the act tabs in force
+  excluded, and answers `{"rules":[90]}` after a read that holds it; with `on` false it removes rule 90 and answers
+  `{"rules":[]}`. It checks the fields as `pay_cookies_copy` does (else `bad request`) and the tab (else `not an
+  act tab`); a rule that the read does not hold answers `rules not held`. `act_rules` replaces the act's rules A to E
+  and rebuilds rule 90 with the act tabs of those rules; an act tab that joins leaves rule 90 too. `act_end` and a
+  worker's start remove rule 90 with the act's rules. A `pay_cookies_copy` that fails in the middle leaves a part of
+  the cookies in the act's store and answers `cookies failed`: the act's caller ends the act at that error.
 - `act_end`: `{"t":"req","id":"<id>","op":"act_end"}` -> `{"closed":<tabs closed>}`. The receiver closes each
   tab of the act: each tab of an act window, each act tab in another window (a popup), each tab of a key
   `acttab:<id>` of the copy (C10, the act window), and each incognito tab whose opener (`openerTabId`) is a tab
@@ -879,6 +904,13 @@ is on, agent-browser's service. The daemon never sends it.
     floor blocks every write to a guarded host from the fetch window (the PageFetch design, section 5.3). Its priority
     is above every allow rule (the scope rules' 2, the import's rules' 2, rule 8's 2, the act's rules' 5), so no allow
     rule lets a write through.
+    - Rule 90, the card payment's merchant rule (the secure card checkout; C4, `pay_merchant_block`): session rule
+      id 90, priority 4 (the act's block priority, above the scope rules' allow at 2), action `block`, condition
+      `requestDomains` the merchant's registrable domain, every resource type, and `excludedTabIds` the act tabs. It
+      holds from the copy of the merchant's session into a pay act to the act's end, so that an agent's tab cannot
+      change the cart or the order while the operator approves or the act pays. A request of a worker has no tab, so
+      rule 90 also blocks the merchant's requests of a worker of the act's own context: a stated limit. It counts as
+      one of the act's rules: the act's end and a worker's start remove it.
     - Rule 89, the floor's initiator rule (board ab-v16.100; review-125b): session rule id 89, priority 6,
       `{"type":"block"}`, `requestDomains` = the guarded hosts, `excludedRequestMethods` `["get","head","options"]`,
       `excludedResourceTypes` `["main_frame"]`, `excludedInitiatorDomains` = the guarded hosts, and `excludedTabIds` =

@@ -96,6 +96,13 @@ function isHost(h) {
 }
 
 // One cookie of chrome.cookies in C2's form (as the sender builds it).
+// A pay act's domain (pay_cookies_copy, pay_merchant_block): a host with at least one dot and no IP literal, so that
+// a bare public suffix such as "com" never names every site of it (the receiver has no public suffix list: the
+// service sends only a registrable domain; the daemon lead's review of chrome-extension#54).
+function isPayDomain(d) {
+  return isHost(d) && d.includes(".") && !/^[0-9.]+$/.test(d) && !d.includes(":");
+}
+
 export function toPayloadCookie(c) {
   const out = {
     name: c.name, value: c.value, domain: c.domain, hostOnly: !!c.hostOnly, path: c.path,
@@ -266,6 +273,67 @@ export class Act {
         return { cookies: dedupe([...(plain ?? []), ...(parted ?? [])]).map(toPayloadCookie) };
       } catch {
         throw new Error(COOKIES_FAILED);
+      }
+    });
+  }
+
+  // pay_cookies_copy (the secure card checkout, C4): the cookies of a
+  // registrable domain and its subdomains in the default context's store,
+  // httpOnly included, written into the act tab's own store. The one read of
+  // the default store that the receiver makes (a narrow exception to
+  // review-ce44 N10, for the pay act): no value leaves the receiver, and the
+  // answer is {count} only.
+  cookiesCopy(req) {
+    return this.#run(async () => {
+      const { tab, domain } = req;
+      if (!Number.isInteger(tab) || tab < 0 || !isPayDomain(domain)) throw new Error(BAD_REQUEST);
+      if (!this.#r.map.isAct(tab)) throw new Error(NOT_ACT_TAB);
+      let stores;
+      try {
+        stores = await call(() => this.#chrome.cookies.getAllCookieStores());
+      } catch {
+        throw new Error(COOKIES_FAILED);
+      }
+      const store = (Array.isArray(stores) ? stores : []).find((s) => s && typeof s.id === "string" && Array.isArray(s.tabIds) && s.tabIds.includes(tab));
+      // The act tab's store is never the default store.
+      if (!store || store.id === DEFAULT_STORE) throw new Error(NO_STORE);
+      let count = 0;
+      try {
+        const plain = await this.#chrome.cookies.getAll({ domain, storeId: DEFAULT_STORE });
+        const parted = await this.#chrome.cookies.getAll({ domain, storeId: DEFAULT_STORE, partitionKey: {} });
+        for (const c of dedupe([...(plain ?? []), ...(parted ?? [])])) {
+          const host = String(c.domain ?? "").replace(/^\./, "");
+          const details = {
+            url: (c.secure ? "https://" : "http://") + host + (c.path || "/"),
+            name: c.name, value: c.value, path: c.path, secure: c.secure, httpOnly: c.httpOnly, storeId: store.id,
+          };
+          if (!c.hostOnly) details.domain = c.domain;
+          if (c.sameSite && c.sameSite !== "unspecified") details.sameSite = c.sameSite;
+          if (!c.session && typeof c.expirationDate === "number") details.expirationDate = c.expirationDate;
+          if (c.partitionKey) details.partitionKey = c.partitionKey;
+          await this.#chrome.cookies.set(details);
+          count += 1;
+        }
+      } catch {
+        throw new Error(COOKIES_FAILED);
+      }
+      return { count };
+    });
+  }
+
+  // pay_merchant_block (the secure card checkout, C4 and C5 rule 90): on
+  // blocks every request to the registrable domain outside the act tabs (the
+  // agent's tabs and the workers of both contexts); off removes the rule. The
+  // act's end removes it too. Answers {rules: [ids]}.
+  merchantBlock(req) {
+    return this.#run(async () => {
+      const { tab, domain, on } = req;
+      if (!Number.isInteger(tab) || tab < 0 || !isPayDomain(domain) || typeof on !== "boolean") throw new Error(BAD_REQUEST);
+      if (!this.#r.map.isAct(tab)) throw new Error(NOT_ACT_TAB);
+      try {
+        return { rules: await this.#r.rules.setPayMerchant({ domain, on, actTabIds: this.#r.map.acts() }) };
+      } catch {
+        throw new Error(RULES_NOT_HELD);
       }
     });
   }

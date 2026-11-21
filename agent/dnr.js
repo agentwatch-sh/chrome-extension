@@ -88,7 +88,19 @@ export const FLOOR_FREE_METHODS = Object.freeze(["get", "head", "options"]);
 // Every resource type: with neither resourceTypes nor excludedResourceTypes, DNR matches no main frame.
 const ALL_TYPES = ["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "webtransport", "webbundle", "other"];
 export const ACT_RULE_MAX = ACT_RULE_E + 2 * MAX_SEND_TO - 1;
-const ACT_IDS = Array.from({ length: ACT_RULE_MAX - ACT_RULE_A + 1 }, (_, i) => ACT_RULE_A + i);
+const ACT_RANGE_IDS = Array.from({ length: ACT_RULE_MAX - ACT_RULE_A + 1 }, (_, i) => ACT_RULE_A + i);
+// The card payment's merchant rule (C5 rule 90; the secure card checkout design, section 8.2): from the copy of the
+// merchant's session into a pay act to the act's end, every request to the merchant's registrable domain outside the
+// act's tabs fails, so that an agent's tab cannot change the cart or the order while the operator approves or the act
+// pays. A request of a worker has no tab, so the rule matches the workers of both contexts (a stated limit).
+export const PAY_MERCHANT_RULE_ID = 90;
+// Every id of the act's rules: A to E and the merchant rule (each one goes at the act's end).
+const ACT_IDS = [...ACT_RANGE_IDS, PAY_MERCHANT_RULE_ID];
+export function payMerchantRule({ domain, actTabIds }) {
+  const condition = { requestDomains: [domain], resourceTypes: [...ALL_TYPES] };
+  if (actTabIds.length > 0) condition.excludedTabIds = [...actTabIds];
+  return { id: PAY_MERCHANT_RULE_ID, priority: ACT_BLOCK_PRIORITY, action: { type: "block" }, condition };
+}
 export const ACT_BLOCK_PRIORITY = 4;
 export const ACT_ALLOW_PRIORITY = 5;
 // The fetch window's rules (C5, PageFetch; board ab-v16.102): the any-host
@@ -283,6 +295,7 @@ export class SessionRules {
   #importing = false; // rules 6 and 7 of a running import are (or may be) in force
   #acting = false; // the act's rules are (or may be) in force
   #actSpec = null; // {tabIds, sendTo} of the act's rules in force
+  #payDomain = null; // the merchant rule's domain while it is in force (C5 rule 90)
   #fetching = false; // the fetch window's rules are (or may be) in force
   #fetchTabs = null; // the tabIds of the fetch window's rules in force
   #floorMarked; // () => every marked tab (the operator's own), whatever the operator value is
@@ -567,7 +580,9 @@ export class SessionRules {
   setAct(spec) {
     return this.#run(async () => {
       const rules = actRules(spec);
-      await this.#dnr.updateSessionRules({ removeRuleIds: ACT_IDS, addRules: rules });
+      // The merchant rule, when it holds, is rebuilt with these act tabs (a tab of the act is never blocked from its merchant).
+      const merchant = this.#payDomain === null ? [] : [payMerchantRule({ domain: this.#payDomain, actTabIds: spec.tabIds })];
+      await this.#dnr.updateSessionRules({ removeRuleIds: merchant.length ? ACT_IDS : ACT_RANGE_IDS, addRules: [...rules, ...merchant] });
       this.#acting = true;
       this.#actSpec = { tabIds: [...spec.tabIds], sendTo: [...spec.sendTo] };
       // The act tabs leave the floor: their sign-in's POST goes to its site (the act's own guard judges them).
@@ -588,7 +603,9 @@ export class SessionRules {
       const spec = this.#actSpec;
       if (!this.#acting || spec === null || spec.tabIds.includes(tabId)) return;
       const next = { tabIds: [...spec.tabIds, tabId], sendTo: spec.sendTo };
-      await this.#dnr.updateSessionRules({ removeRuleIds: ACT_IDS, addRules: actRules(next) });
+      // A joined act tab leaves the merchant rule too (its requests are the act's).
+      const merchant = this.#payDomain === null ? [] : [payMerchantRule({ domain: this.#payDomain, actTabIds: next.tabIds })];
+      await this.#dnr.updateSessionRules({ removeRuleIds: merchant.length ? ACT_IDS : ACT_RANGE_IDS, addRules: [...actRules(next), ...merchant] });
       this.#actSpec = next;
       await this.#syncFloor();
     });
@@ -599,8 +616,28 @@ export class SessionRules {
     return this.#run(() => this.#dnr.updateSessionRules({ removeRuleIds: ACT_IDS }).then(() => {
       this.#acting = false;
       this.#actSpec = null;
+      this.#payDomain = null;
       return this.#syncFloor();
     }));
+  }
+
+  // The card payment's merchant rule (C5 rule 90): on adds it for domain, with the act tabs in force excluded (and it
+  // counts as an act's rule: the act's end and a worker's start remove it); off removes it. Answers the ids in force.
+  setPayMerchant({ domain, on, actTabIds }) {
+    return this.#run(async () => {
+      if (!on) {
+        await this.#dnr.updateSessionRules({ removeRuleIds: [PAY_MERCHANT_RULE_ID] });
+        this.#payDomain = null;
+        return [];
+      }
+      const rule = payMerchantRule({ domain, actTabIds });
+      await this.#dnr.updateSessionRules({ removeRuleIds: [PAY_MERCHANT_RULE_ID], addRules: [rule] });
+      this.#acting = true;
+      this.#payDomain = domain;
+      const held = await this.#dnr.getSessionRules();
+      if (!(Array.isArray(held) ? held : []).some((r) => r && r.id === PAY_MERCHANT_RULE_ID)) throw new Error("a rule is not held");
+      return [PAY_MERCHANT_RULE_ID];
+    });
   }
 
   // ---- the fetch window's rules (C5, PageFetch; fetch-window.js) ----
