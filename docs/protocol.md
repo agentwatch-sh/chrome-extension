@@ -557,8 +557,11 @@ before that only agent-browser's own tests of the act. The daemon never sends th
   payload and sends it as an `import` (C6): the move is one more caller of `import`.
 - `pay_cookies_copy` (the secure card checkout; the hello's feature `pay`):
   `{"t":"req","id":"<id>","op":"pay_cookies_copy","tab":<act tab>,"domain":"<registrable domain>"}` ->
-  `{"count":<cookies written>}`. The receiver checks the fields (else `bad request`) and the tab (else `not an act
-  tab`), and finds the act tab's store as for `act_cookies` (the default store, or none, gets `no cookie store`).
+  `{"count":<cookies written>}`. The receiver checks the fields (else `bad request`; a domain with no dot or an IP
+  literal is `bad request` too, so that a bare public suffix never names every site of it: the receiver has no public
+  suffix list, and the act's caller sends only a registrable domain and refuses a public suffix before the request) and
+  the tab (else `not an act tab`), and finds the act tab's store as for `act_cookies` (the default store, or none,
+  gets `no cookie store`).
   Then it reads the default context's store `"0"` for the domain and its subdomains, partitioned or not, httpOnly
   included, and writes each cookie into the act tab's store (`cookies.set` with that store's id; a host-only cookie
   stays host-only). This is the one read of the default store that the receiver makes for an act, a narrow
@@ -568,9 +571,11 @@ before that only agent-browser's own tests of the act. The daemon never sends th
   `{"t":"req","id":"<id>","op":"pay_merchant_block","tab":<act tab>,"domain":"<registrable domain>","on":<bool>}` ->
   `{"rules":[<ids>]}`. With `on` true the receiver adds C5's rule 90 for the domain, with the act tabs in force
   excluded, and answers `{"rules":[90]}` after a read that holds it; with `on` false it removes rule 90 and answers
-  `{"rules":[]}`. It checks the fields (else `bad request`) and the tab (else `not an act tab`); a rule that the
-  read does not hold answers `rules not held`. `act_rules` replaces the act's rules A to E and keeps rule 90; an
-  act tab that joins leaves rule 90 too. `act_end` and a worker's start remove rule 90 with the act's rules.
+  `{"rules":[]}`. It checks the fields as `pay_cookies_copy` does (else `bad request`) and the tab (else `not an
+  act tab`); a rule that the read does not hold answers `rules not held`. `act_rules` replaces the act's rules A to E
+  and rebuilds rule 90 with the act tabs of those rules; an act tab that joins leaves rule 90 too. `act_end` and a
+  worker's start remove rule 90 with the act's rules. A `pay_cookies_copy` that fails in the middle leaves a part of
+  the cookies in the act's store and answers `cookies failed`: the act's caller ends the act at that error.
 - `act_end`: `{"t":"req","id":"<id>","op":"act_end"}` -> `{"closed":<tabs closed>}`. The receiver closes each
   tab of the act: each tab of an act window, each act tab in another window (a popup), each tab of a key
   `acttab:<id>` of the copy (C10, the act window), and each incognito tab whose opener (`openerTabId`) is a tab

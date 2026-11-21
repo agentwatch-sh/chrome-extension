@@ -2313,7 +2313,9 @@ test("the secure card checkout's pay act: C4's two requests, the feature pay, an
     '`{"t":"req","id":"<id>","op":"pay_cookies_copy","tab":<act tab>,"domain":"<registrable domain>"}` -> `{"count":<cookies written>}`.',
     "exception to review-ce44 N10 for the card payment's pay act: the answer holds the count only, never a name or a value, and no log line holds one.",
     '`{"t":"req","id":"<id>","op":"pay_merchant_block","tab":<act tab>,"domain":"<registrable domain>","on":<bool>}` -> `{"rules":[<ids>]}`.',
-    "`act_rules` replaces the act's rules A to E and keeps rule 90; an act tab that joins leaves rule 90 too. `act_end` and a worker's start remove rule 90 with the act's rules.",
+    "`act_rules` replaces the act's rules A to E and rebuilds rule 90 with the act tabs of those rules; an act tab that joins leaves rule 90 too. `act_end` and a worker's start remove rule 90 with the act's rules.",
+    "a domain with no dot or an IP literal is `bad request` too, so that a bare public suffix never names every site of it",
+    "the act's caller ends the act at that error.",
     "reads no store of the default context for the act (the one exception is `pay_cookies_copy`, below, which answers no value)",
   ]) assert.ok(says(C4, t), t);
   assert.ok(says(C4, '"features":["scopes","act","fetch","pay"]'));

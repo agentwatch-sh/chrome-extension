@@ -929,3 +929,24 @@ test("pay_merchant_block: off removes rule 90; a tab that is not an act tab and 
   assert.deepEqual(await s.main({ t: "req", id: "pm5", op: "pay_merchant_block", tab: 7, domain: "shop.example", on: true }), { t: "res", id: "pm5", ok: false, error: "not an act tab" });
   assert.deepEqual(await s.main({ t: "req", id: "pm6", op: "pay_merchant_block", tab: ACT_TAB, domain: "shop.example" }), { t: "res", id: "pm6", ok: false, error: "bad request" });
 });
+
+test("the pay act's requests refuse a domain with no dot and an IP literal (bad request): a bare suffix never names every site of it", async () => {
+  const s = await setup();
+  await s.openAct();
+  for (const [i, domain] of ["com", "localhost", "127.0.0.1", "10.0.0.1"].entries()) {
+    assert.deepEqual(await s.main({ t: "req", id: "pd" + i, op: "pay_cookies_copy", tab: ACT_TAB, domain }), { t: "res", id: "pd" + i, ok: false, error: "bad request" }, domain);
+    assert.deepEqual(await s.main({ t: "req", id: "pb" + i, op: "pay_merchant_block", tab: ACT_TAB, domain, on: true }), { t: "res", id: "pb" + i, ok: false, error: "bad request" }, domain);
+  }
+  assert.equal(s.f.callsTo("cookies.set").length, 0);
+  assert.equal(s.f.sessionRules_.find((r) => r.id === 90), undefined);
+});
+
+test("act_rules after pay_merchant_block rebuilds rule 90 with the act tabs of act_rules", async () => {
+  const s = await setup();
+  await s.openAct();
+  assert.equal((await s.main({ t: "req", id: "pr1", op: "pay_merchant_block", tab: ACT_TAB, domain: "shop.example", on: true })).ok, true);
+  assert.equal((await s.main(V.rulesReq)).ok, true);
+  const a = s.f.sessionRules_.find((r) => r.id === 10);
+  const r90 = s.f.sessionRules_.find((r) => r.id === 90);
+  assert.deepEqual(r90.condition.excludedTabIds, a.condition.tabIds, "rule 90 excludes exactly the act tabs of the act's rules");
+});

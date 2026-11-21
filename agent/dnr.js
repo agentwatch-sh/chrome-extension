@@ -580,7 +580,9 @@ export class SessionRules {
   setAct(spec) {
     return this.#run(async () => {
       const rules = actRules(spec);
-      await this.#dnr.updateSessionRules({ removeRuleIds: ACT_RANGE_IDS, addRules: rules });
+      // The merchant rule, when it holds, is rebuilt with these act tabs (a tab of the act is never blocked from its merchant).
+      const merchant = this.#payDomain === null ? [] : [payMerchantRule({ domain: this.#payDomain, actTabIds: spec.tabIds })];
+      await this.#dnr.updateSessionRules({ removeRuleIds: merchant.length ? ACT_IDS : ACT_RANGE_IDS, addRules: [...rules, ...merchant] });
       this.#acting = true;
       this.#actSpec = { tabIds: [...spec.tabIds], sendTo: [...spec.sendTo] };
       // The act tabs leave the floor: their sign-in's POST goes to its site (the act's own guard judges them).

@@ -96,6 +96,13 @@ function isHost(h) {
 }
 
 // One cookie of chrome.cookies in C2's form (as the sender builds it).
+// A pay act's domain (pay_cookies_copy, pay_merchant_block): a host with at least one dot and no IP literal, so that
+// a bare public suffix such as "com" never names every site of it (the receiver has no public suffix list: the
+// service sends only a registrable domain; the daemon lead's review of chrome-extension#54).
+function isPayDomain(d) {
+  return isHost(d) && d.includes(".") && !/^[0-9.]+$/.test(d) && !d.includes(":");
+}
+
 export function toPayloadCookie(c) {
   const out = {
     name: c.name, value: c.value, domain: c.domain, hostOnly: !!c.hostOnly, path: c.path,
@@ -279,7 +286,7 @@ export class Act {
   cookiesCopy(req) {
     return this.#run(async () => {
       const { tab, domain } = req;
-      if (!Number.isInteger(tab) || tab < 0 || !isHost(domain)) throw new Error(BAD_REQUEST);
+      if (!Number.isInteger(tab) || tab < 0 || !isPayDomain(domain)) throw new Error(BAD_REQUEST);
       if (!this.#r.map.isAct(tab)) throw new Error(NOT_ACT_TAB);
       let stores;
       try {
@@ -321,7 +328,7 @@ export class Act {
   merchantBlock(req) {
     return this.#run(async () => {
       const { tab, domain, on } = req;
-      if (!Number.isInteger(tab) || tab < 0 || !isHost(domain) || typeof on !== "boolean") throw new Error(BAD_REQUEST);
+      if (!Number.isInteger(tab) || tab < 0 || !isPayDomain(domain) || typeof on !== "boolean") throw new Error(BAD_REQUEST);
       if (!this.#r.map.isAct(tab)) throw new Error(NOT_ACT_TAB);
       try {
         return { rules: await this.#r.rules.setPayMerchant({ domain, on, actTabIds: this.#r.map.acts() }) };
