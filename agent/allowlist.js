@@ -52,6 +52,8 @@ export function mainOps(chrome) {
     // The act of the stored sign-ins (C4, C5; act.js).
     act_rules: (req) => receiver(chrome).act.rules(req),
     act_cookies: (req) => receiver(chrome).act.cookies(req),
+    pay_cookies_copy: (req) => receiver(chrome).act.cookiesCopy(req),
+    pay_merchant_block: (req) => receiver(chrome).act.merchantBlock(req),
     act_end: () => receiver(chrome).act.end(),
     // The end of PageFetch's fetch window (C4, C5; fetch-window.js).
     fetch_end: () => receiver(chrome).fetchWindow.end(),
