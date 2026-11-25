@@ -646,13 +646,26 @@ The receiver 0.3.16 (board ab-4wh.2) has this part, and C5 states its two rules 
   page, the frame rule of `"*"` judges the frame's own host: a page of the class loads no frame of a host outside the
   class, and a top-level document with no request (`about:blank`) loads a frame of a host of the class. A host outside
   the class stays blocked, as a host off a list. Only a receiver whose hello has the feature `blanket` takes the value,
-  and only for a local scope: a remote scope's `"*"` counts 1 in `refused` and applies as `null`. From stage 3 the
-  service sends it only to such a receiver, and only on the blanket Chrome's link. A receiver without the feature
-  applies `"*"` as `null` and counts it in `refused` (it is no valid name), so the scope has no list and fails closed.
-- The public host class. A host is of the class when it is a name of two labels or more (lowercase, punycode and with
-  no trailing dot, as C5 writes an entry) and it is none of these: an IP literal (IPv4 in each form that Chrome's URL
-  parser takes, such as `0x7f.1` or `2130706433`, and IPv6); `localhost` or a name under it; `local`, `internal` or
-  `home.arpa`, or a name under one of them.
+  and only for a local scope of a blanket-shaped `set_scopes`: `lists` an empty object, `default` `null`, `operator`
+  `null` or absent, exactly one scope (the one with `"*"`), and a good `exclude` or none (below). Any other `"*"` (a
+  remote scope's, or one in an object of another shape) counts 1 in `refused` and applies as `null`, so a `"*"` that
+  reaches a receiver of the shared profile by mistake fails closed. From stage 3 the service sends it only to such a
+  receiver, and only on the blanket Chrome's link. A receiver without the feature applies `"*"` as `null` and counts it
+  in `refused` (it is no valid name), so the scope has no list and fails closed.
+- The public host class. A host is of the class when it is a name of two labels or more, each label of `[a-z0-9_-]`
+  (lowercase, punycode and with no trailing dot, as C5 writes an entry), whose last label holds a letter or `_`, and it
+  is none of these: an IP literal (IPv4 in each form that Chrome's URL parser takes, such as `0x7f.1` or `2130706433`,
+  and IPv6); `localhost`, `local`, `internal`, `home.arpa` or `localdomain`, or a name under one of them; a name of
+  `exclude`, or a name under one of them.
+- `exclude` (board ab-4wh, review I1). One more field of a blanket-shaped `set_scopes`: a list of the host names that
+  the `"*"` scope may not open, each one with every name under it. From stage 3 the service sends the box's own names
+  there (its host name and its fully qualified name), because the box's resolver gives such a name a loopback address
+  (for example `127.0.1.1` from `/etc/hosts`). A name is written as C5 writes an entry (lowercase, punycode, no
+  trailing dot), one label allowed, each label 1 to 63 characters of `[a-z0-9_-]` that do not start or end with `-`,
+  at most 253 characters, and no IPv4 literal. At most 8 names, and at most 512 characters in all, so that the block
+  rule of C5's public rules stays under Chrome's size limit of a `regexFilter`. An absent `exclude` excludes no more
+  name. An `exclude` that breaks a rule (it is not a list, or a name breaks a rule) makes the object's `"*"` count 1 in
+  `refused` and apply as `null` (fail closed). An object with no `"*"` ignores `exclude`.
 - Today's lists cannot say "any host": an entry needs two labels and holds no `*` (C5), and `"*"` exists only for
   `operator`, the operator's marked tabs (rule 8).
 - The limits, stated plainly. The class judges a host's name, not its address: a public name that resolves to a private
@@ -740,16 +753,28 @@ The receiver 0.3.16 (board ab-4wh.2) has this part, and C5 states its two rules 
     `tabIds`. Their ids are 100 and up, two per list; the receiver picks them. A list with no open
     tab whose list it is, or with no entry, has no rule; a list that only marked tabs use has its
     two rules too.
-  - The public rules (C4, the blanket profile; board ab-4wh.2): the two scope rules of a scope whose value is `"*"`,
-    with the ids of the scope rules (100 and up). One rule with priority 2, `{"type":"allow"}`, `regexFilter`
-    `PUBLIC_HOST_FILTER` (`agent/dnr.js`), `excludedRequestDomains` `["localhost","local","internal","home.arpa"]`,
-    `resourceTypes: ["main_frame"]`, `tabIds` = the tabs of the scope; and one rule the same with `resourceTypes:
-    ["sub_frame", "object"]`. The pattern needs `http` or `https`, allows a userinfo part that never counts as the
-    host, and needs a host of two labels or more whose last label holds a letter or `_`, with an optional trailing dot,
-    then a port of digits or the path: so no IPv4 literal (Chrome's URL parser writes each IPv4 form in dotted decimal)
-    and no IPv6 literal (`[...]`). The excluded domains take out each name under them too. A main frame or a frame of a
-    host outside the class matches no allow rule of the tab, so static rules 1 and 3 block it. The guard, the closing
-    rule and the sweep judge such a tab by the same class (`isPublicHost` in `agent/scopes.js`). Its worker removal
+  - The public rules (C4, the blanket profile; board ab-4wh.2): the rules of a scope whose value is `"*"`. Two allow
+    rules, with the ids of the scope rules (100 and up): one rule with priority 2, `{"type":"allow"}`, `regexFilter`
+    `PUBLIC_HOST_FILTER` (`agent/dnr.js`),
+    `excludedRequestDomains` `["localhost","local","internal","home.arpa","localdomain"]` and then the names of the
+    object's `exclude`, `resourceTypes: ["main_frame"]`, `tabIds` = the tabs of the scope; and one rule the same with
+    `resourceTypes: ["sub_frame", "object"]`. The pattern needs `http` or
+    `https`, allows a userinfo part that never counts as the host, and needs a host of two labels or more of
+    `[a-z0-9_-]` whose last label holds a letter or `_`, with an optional trailing dot, then a port of digits or the
+    path: so no IPv4 literal (Chrome's URL parser writes each IPv4 form in dotted decimal) and no IPv6 literal
+    (`[...]`). The excluded domains take out each name under them too. And the block rule (review M1): session rule id
+    91, priority 3, `{"type":"block"}`, `regexFilter` `publicBlockFilter(exclude)` (`agent/dnr.js`), every resource type
+    (the main frame among them), `tabIds` = the tabs of the scope. Its pattern, as the fetch window's pattern of local
+    names: a scheme, a userinfo part, any names before, then `localhost`, `local`, `internal`, `home.arpa`,
+    `localdomain` or a name of `exclude`, each with an optional trailing dot, then a port of digits or the path. So the
+    block does not rest on how DNR reads a trailing dot in `excludedRequestDomains`, and it blocks each request of the
+    tab to such a name, also a subresource or a WebSocket. One scope at most has `"*"` (a blanket-shaped `set_scopes`),
+    so rule 91 is one rule; it comes and goes with the two allow rules. A main frame or a frame of a host outside the
+    class matches no allow rule of the tab, so static rules 1 and 3 block it. The guard, the closing rule and the sweep
+    judge such a tab by the same class (`isPublicHost` in `agent/scopes.js`). In the check of the worker removal (a
+    list that shrinks), the list of a `"*"` scope holds every host of the class minus its `exclude` names: a change
+    from `"*"` to a list shrinks; a change from a list to `"*"` shrinks only when the list holds a host outside the
+    class or under a name of `exclude`; a change of `exclude` shrinks when it gains a name. The worker removal itself
     counts no host as covered by `"*"` (the lists' union holds none), so a service worker of a public site that a tab of
     `"*"` showed goes at a removal: a stated limit. The live check of board ab-4wh.5 measures the rules on Chrome
     (`isRegexSupported`, `testMatchOutcome`); the unit tests check them against `isPublicHost`.

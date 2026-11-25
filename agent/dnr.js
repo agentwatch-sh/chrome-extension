@@ -53,7 +53,7 @@
 // when it runs. A failed scope update fails closed: a remove-only call takes
 // every scope rule out, and the next update is a full replace.
 
-import { ANY, PUBLIC_LIST, PUBLIC_NOT } from "./scopes.js";
+import { ANY, isPublicList, PUBLIC_NOT } from "./scopes.js";
 export { PUBLIC_NOT };
 import { RESTORE_MAX_MS } from "./tabmap.js";
 
@@ -165,28 +165,41 @@ const FRAMES = ["sub_frame", "object"];
 // domain is on the tab's list, so a page of a listed site still loads its
 // frames from any host (O11). topDomains needs Chrome 141.
 export function scopeRules(id, entries, tabIds) {
-  if (entries === PUBLIC_LIST) return publicRules(id, tabIds);
+  if (isPublicList(entries)) return publicRules(id, tabIds, entries.exclude);
   return [
     { id, priority: 2, action: { type: "allow" }, condition: { requestDomains: [...entries], resourceTypes: MAIN, tabIds: [...tabIds] } },
     { id: id + 1, priority: 2, action: { type: "allow" }, condition: { topDomains: [...entries], resourceTypes: FRAMES, tabIds: [...tabIds] } },
   ];
 }
 
-// The public rules (C4 and C5, the blanket profile; board ab-4wh.2): the two
-// scope rules of a scope with "*". The main frames, the frames and the
-// object documents of its tabs load a host of the public host class: a URL of
-// http or https whose host is a name of two labels or more with a letter or
-// "_" in its last label (so no IPv4 or IPv6 literal), with a userinfo part
-// that never counts as the host, minus localhost, local, internal, home.arpa
-// and every name under them. PUBLIC_RULES names them in the model and in
-// replaceLists: never "*", which is rule 8's name.
+// The public rules (C4 and C5, the blanket profile; board ab-4wh.2): the
+// rules of a scope with "*". Two allow rules, the scope rules' pair: the main
+// frames, the frames and the object documents of its tabs load a host of the
+// public host class, a URL of http or https whose host is a name of two
+// labels or more of [a-z0-9_-] with a letter or "_" in its last label (so no
+// IPv4 or IPv6 literal), with a userinfo part that never counts as the host,
+// minus the names of PUBLIC_NOT and of the object's exclude and every name
+// under them. And the block rule 91 (review M1), priority 3, every resource
+// type of those tabs: the same names, each also with a trailing dot, so the
+// block does not rest on how DNR reads a trailing dot. PUBLIC_RULES names
+// them in the model and in replaceLists: never "*", which is rule 8's name.
+// One scope at most has "*" (a blanket-shaped set_scopes), so rule 91 is one.
 export const PUBLIC_RULES = "*public";
+export const PUBLIC_BLOCK_RULE_ID = 91;
+export const PUBLIC_BLOCK_PRIORITY = 3;
 export const PUBLIC_HOST_FILTER = "^https?://([^/?#@]*@)?([a-z0-9_-]+\\.)+[a-z0-9_-]*[a-z_][a-z0-9_-]*\\.?(:[0-9]+)?/";
-export function publicRules(id, tabIds) {
-  const condition = (resourceTypes) => ({ regexFilter: PUBLIC_HOST_FILTER, excludedRequestDomains: [...PUBLIC_NOT], resourceTypes, tabIds: [...tabIds] });
+// The block rule's pattern: a scheme, a userinfo part, any names before, then
+// one of the names, an optional trailing dot, a port or the path.
+export function publicBlockFilter(exclude = []) {
+  const names = [...PUBLIC_NOT, ...exclude].map((n) => n.replaceAll(".", "\\."));
+  return `^[a-z]+://([^/?#@]*@)?([^/?#@:]*\\.)?(${names.join("|")})\\.?(:[0-9]+)?/`;
+}
+export function publicRules(id, tabIds, exclude = []) {
+  const condition = (resourceTypes) => ({ regexFilter: PUBLIC_HOST_FILTER, excludedRequestDomains: [...PUBLIC_NOT, ...exclude], resourceTypes, tabIds: [...tabIds] });
   return [
     { id, priority: 2, action: { type: "allow" }, condition: condition(MAIN) },
     { id: id + 1, priority: 2, action: { type: "allow" }, condition: condition(FRAMES) },
+    { id: PUBLIC_BLOCK_RULE_ID, priority: PUBLIC_BLOCK_PRIORITY, action: { type: "block" }, condition: { regexFilter: publicBlockFilter(exclude), resourceTypes: [...ALL_TYPES], tabIds: [...tabIds] } },
   ];
 }
 
@@ -475,7 +488,7 @@ export class SessionRules {
     let id = FIRST_SCOPE_RULE_ID;
     for (const name of [...model.keys()].sort()) {
       const { entries, tabIds } = model.get(name);
-      if ((entries !== PUBLIC_LIST && entries.length === 0) || tabIds.length === 0) continue;
+      if ((!isPublicList(entries) && entries.length === 0) || tabIds.length === 0) continue;
       ids.set(name, id);
       add.push(...scopeRules(id, entries, tabIds));
       id += 2;
@@ -499,7 +512,7 @@ export class SessionRules {
       if (Array.isArray(rules)) {
         for (const r of rules) if (!keep.includes(r.id)) remove.add(r.id);
       } else {
-        for (const i of [...IMPORT_IDS, MARKED_RULE_ID, ...ACT_IDS, ...FETCH_IDS]) if (!keep.includes(i)) remove.add(i);
+        for (const i of [...IMPORT_IDS, MARKED_RULE_ID, PUBLIC_BLOCK_RULE_ID, ...ACT_IDS, ...FETCH_IDS]) if (!keep.includes(i)) remove.add(i);
         for (let i = FIRST_SCOPE_RULE_ID; i < FIRST_SCOPE_RULE_ID + 2 * MAX_SESSION_RULES; i++) remove.add(i);
       }
     }
@@ -527,10 +540,10 @@ export class SessionRules {
         continue;
       }
       const old = ids.get(name);
-      if (old !== undefined) remove.push(old, old + 1);
+      if (old !== undefined) remove.push(old, old + 1, ...(name === PUBLIC_RULES ? [PUBLIC_BLOCK_RULE_ID] : []));
       ids.delete(name);
       const m = model.get(name);
-      if (!m || (m.entries !== PUBLIC_LIST && m.entries.length === 0) || m.tabIds.length === 0) continue;
+      if (!m || (!isPublicList(m.entries) && m.entries.length === 0) || m.tabIds.length === 0) continue;
       const id = old ?? this.#free(ids);
       ids.set(name, id);
       add.push(...scopeRules(id, m.entries, m.tabIds));
@@ -551,7 +564,7 @@ export class SessionRules {
 
   // The scope rules and rule 8 in force.
   #inForce() {
-    return [...[...this.#ids.values()].flatMap((id) => [id, id + 1]), ...(this.#rule8 ? [MARKED_RULE_ID] : [])];
+    return [...[...this.#ids.values()].flatMap((id) => [id, id + 1]), ...(this.#ids.has(PUBLIC_RULES) ? [PUBLIC_BLOCK_RULE_ID] : []), ...(this.#rule8 ? [MARKED_RULE_ID] : [])];
   }
 
   // One updateSessionRules call; it is all or nothing. A failure fails

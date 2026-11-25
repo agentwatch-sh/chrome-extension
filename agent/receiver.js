@@ -28,7 +28,7 @@ import { FetchWindow } from "./fetch-window.js";
 import { Guard } from "./guard.js";
 import { Popups } from "./popups.js";
 import { Removals } from "./removals.js";
-import { ANY, PUBLIC, PUBLIC_LIST } from "./scopes.js";
+import { ANY, PUBLIC } from "./scopes.js";
 import { TabMap } from "./tabmap.js";
 import { Workers } from "./workers.js";
 
@@ -99,7 +99,7 @@ export class Receiver {
     const cur = this.map.current;
     const out = new Map();
     const add = (name, tabId) => {
-      if (!out.has(name)) out.set(name, { entries: name === PUBLIC_RULES ? PUBLIC_LIST : cur.lists[name], tabIds: [] });
+      if (!out.has(name)) out.set(name, { entries: name === PUBLIC_RULES ? cur.publicList : cur.lists[name], tabIds: [] });
       out.get(name).tabIds.push(tabId);
     };
     for (const [tabId, scope] of this.map.entries()) {
