@@ -17,7 +17,8 @@
   "scopes",
   "act",
   "fetch",
-  "pay"
+  "pay",
+  "blanket"
  ],
  "actWindow": {
   "note": "The act window: incognito true and the mark act, with the caller's scope. The receiver checks its incognito access first (chrome.extension.isAllowedIncognitoAccess), ends a left act, refuses while another incognito tab is open, then opens the window. The act tab (31) gets the scope for the list rules, but bridge.tabScopes leaves it out, and the copy holds act:30, not tab:31.",

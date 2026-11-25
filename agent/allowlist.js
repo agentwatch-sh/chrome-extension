@@ -16,10 +16,9 @@
 // first failure after the tabs closed. After it, the removal at a marked
 // tab's leave checks its recorded origins against the new lists (workers.js).
 import { importState } from "./importer.js";
-import { covers } from "./lib/domains.js";
 import { receiver } from "./receiver.js";
 import { REMOVAL_WAIT_MS } from "./removals.js";
-import { ANY, parseScopes, shrinks } from "./scopes.js";
+import { listCovers, parseScopes, shrinks } from "./scopes.js";
 import { tabUrl } from "./tabs.js";
 import { removeWorkers } from "./workers.js";
 
@@ -98,9 +97,7 @@ function picks(r, next, t, swept) {
   // The tab's list: none for a tab of the orphan set, its scope's list, a
   // marked tab's operator value, or the union of the lists for any other tab
   // of no scope.
-  const list = r.tabList(id, by);
-  if (list === ANY) return false;
-  return list === null || !list.some((d) => covers(d, u.hostname));
+  return !listCovers(r.tabList(id, by), u.hostname);
 }
 
 // True when promise gives true within REMOVAL_WAIT_MS.

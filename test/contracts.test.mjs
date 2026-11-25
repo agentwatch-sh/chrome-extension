@@ -74,6 +74,15 @@ const normalized = (e) => {
   const r = normalizeEntry(e);
   return r.ok && r.entry === e;
 };
+// C4, the blanket profile (board ab-4wh, review M6 and I1): a local scope's "*" applies only in a blanket-shaped object
+// (lists an empty object, default null, operator null or absent, exactly one scope) whose exclude, when present, is a
+// list of at most 8 names of at most 512 characters in all, each as C5 writes an entry (one label allowed, no IP
+// literal, no trailing dot). Else the "*" counts 1 and applies as null.
+const EXCLUDE_LABEL = /^[a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?$/;
+const excludeName = (e) => typeof e === "string" && e.length <= 253 && e.split(".").every((l) => EXCLUDE_LABEL.test(l)) && !/^[0-9.]+$/.test(e);
+const goodExclude = (x) => x === undefined || (Array.isArray(x) && x.length <= 8 && x.join("").length <= 512 && x.every(excludeName));
+const blanketShape = (msg) => isObj(msg.lists) && Object.keys(msg.lists).length === 0 && msg.default === null && (msg.operator === undefined || msg.operator === null)
+  && isObj(msg.scopes) && Object.keys(msg.scopes).length === 1 && goodExclude(msg.exclude);
 function applySetScopes(msg) {
   let refused = 0;
   const lists = {};
@@ -92,6 +101,7 @@ function applySetScopes(msg) {
   if (isObj(msg.scopes)) {
     for (const [scope, v] of Object.entries(msg.scopes)) {
       if (!anyScope(scope)) refused += 1; // applies as absent
+      else if (v === "*" && NAME.test(scope) && blanketShape(msg)) scopes[scope] = "*"; // a local scope's "*": the public host class (board ab-4wh)
       else if (!(v === null || validName(v))) {
         refused += 1;
         scopes[scope] = null; // no list, no fall-back to default
@@ -113,6 +123,7 @@ function applySetScopes(msg) {
   // only: a remote scope that scopes does not name has no list (fail closed; board ab-v16.94.7.2).
   const listOf = (scope) => {
     const name = Object.hasOwn(scopes, scope) ? scopes[scope] : NAME.test(scope) ? def : null;
+    if (name === "*") return "*";
     return name !== null && Object.hasOwn(lists, name) ? name : null;
   };
   return { lists, scopes, default: def, operator, refused, listOf };
@@ -143,8 +154,9 @@ test("C4 states the set_scopes request and answer, and the receiver's hello with
   assert.ok(C4.includes('`{"rules":<scope rules in force>,"closed":<tabs closed>,"refused":<entries, list names and scopes refused>}`'));
   assert.ok(C4.includes("The daemon waits 10 s for `ping` and `set_scopes`"));
   assert.ok(C4.includes("`" + JSON.stringify({ ...helloV.hello, version: "<manifest version>" }) + "`"), "C4 shows the hello");
-  // The feature act: the act of the stored sign-ins (board ab-v16.97.3); the feature fetch: PageFetch's fetch window (board ab-v16.102).
-  assert.deepEqual(helloV.hello.features, ["scopes", "act", "fetch", "pay"]);
+  // The feature act: the act of the stored sign-ins (board ab-v16.97.3); the feature fetch: PageFetch's fetch window (board ab-v16.102);
+  // the feature blanket: a local scope's "*" (board ab-4wh.2).
+  assert.deepEqual(helloV.hello.features, ["scopes", "act", "fetch", "pay", "blanket"]);
   assert.deepEqual(helloV.hello.channels, CHANNELS);
   assert.ok(C4.includes("`test/vectors/hello.json`") && C4.includes("`test/vectors/scopes.json`"), "C4 names the vectors");
 });
@@ -1964,7 +1976,7 @@ test("C4 states the act's three requests with their shapes, their checks in orde
     "The shared vector: `test/vectors/act.json`",
   ]) assert.ok(says(act, s), `C4 says: ${s}`);
   assert.ok(says(C4, "The act's caller waits 10 s for `act_rules`, `act_cookies` and `act_end`, and 10 s for `pay_cookies_copy` and `pay_merchant_block`."));
-  assert.ok(says(C4, "(`features`: the allowlists, below, the act of the stored sign-ins, below, PageFetch's fetch window, below, and the card payment's pay act requests, below)"));
+  assert.ok(says(C4, "(`features`: the allowlists, below, the act of the stored sign-ins, below, PageFetch's fetch window, below, the card payment's pay act requests, below, and a local scope's `\"*\"` of the blanket profile, below)"));
   for (const e of actV.errors.main) assert.ok(act.includes("`" + e + "`"), `C4 names the error ${e}`);
   assert.deepEqual(actV.features, helloV.hello.features);
 });
@@ -2318,7 +2330,65 @@ test("the secure card checkout's pay act: C4's two requests, the feature pay, an
     "the act's caller ends the act at that error.",
     "reads no store of the default context for the act (the one exception is `pay_cookies_copy`, below, which answers no value)",
   ]) assert.ok(says(C4, t), t);
-  assert.ok(says(C4, '"features":["scopes","act","fetch","pay"]'));
+  assert.ok(says(C4, '"features":["scopes","act","fetch","pay","blanket"]'));
   assert.ok(says(C5, "Rule 90, the card payment's merchant rule (the secure card checkout; C4, `pay_merchant_block`): session rule id 90, priority 4"));
   assert.ok(says(C5, "rule 90 also blocks the merchant's requests of a worker of the act's own context: a stated limit."));
+});
+
+// Board goal ab-4wh, task ab-4wh.1: the blanket profile, today's cut for Linux
+// (agent-browser docs/superpowers/specs/2026-11-25-blanket-profile-design.md).
+// C4's new part states the receiver's feature blanket and a scope's value "*":
+// any http(s) host of the public host class. The receiver 0.3.16 (board
+// ab-4wh.2) adds the hello line's feature, the vectors and the code.
+test("the blanket profile (board ab-4wh): C4's part states the feature blanket, a scope's value \"*\", the public host class, who sends it, an older receiver's answer and the limits", async () => {
+  const heading = "**The blanket profile (board ab-4wh).**";
+  const at = flat(C4).indexOf(heading);
+  assert.ok(at > flat(C4).indexOf("**PageFetch's fetch window (board ab-v16.102).**"), "C4 has the part, after PageFetch's fetch window");
+  const part = flat(C4).slice(at);
+  for (const s of [
+    "The design is agent-browser `docs/superpowers/specs/2026-11-25-blanket-profile-design.md`, today's cut for Linux (aw-lead and ab-lead, 2026-11-25).",
+    "The receiver there is the same package with the same ID, and it does not know which profile it runs in.",
+    "From stage 3, on a box whose switch is on, only agent-browser's service sends the value of this part, and only on the blanket Chrome's link; the daemon never sends it.",
+    "The receiver 0.3.16 (board ab-4wh.2) has this part, and C5 states its three rules (the public rules).",
+    "The Mac comes later (a second profile with the operator's one Load unpacked).",
+    'A receiver with this part has the feature `"blanket"` in its hello\'s `features`. The hello line above and `test/vectors/hello.json` hold it.',
+    'In `set_scopes` a value of `scopes` may be `"*"`, as `operator` may be: the scope may open any `http(s)` host of the public host class (below).',
+    "Its tabs' main frames, frames and `<object>`/`<embed>` documents load a host of the class (C5, the public rules). Unlike a list's frame rule, which judges the top-level page, the frame rule of `\"*\"` judges the frame's own host: a page of the class loads no frame of a host outside the class, and a top-level document with no request (`about:blank`) loads a frame of a host of the class.",
+    "Only a receiver whose hello has the feature `blanket` takes the value, and only for a local scope of a blanket-shaped `set_scopes`: `lists` an empty object, `default` `null`, `operator` `null` or absent, exactly one scope (the one with `\"*\"`), and a good `exclude` or none (below).",
+    "Any other `\"*\"` (a remote scope's, or one in an object of another shape) counts 1 in `refused` and applies as `null`, so a `\"*\"` that reaches a receiver of the shared profile by mistake fails closed.",
+    "`exclude` (board ab-4wh, review I1). One more field of a blanket-shaped `set_scopes`: a list of the host names that the `\"*\"` scope may not open, each one with every name under it.",
+    "At most 8 names, and at most 512 characters in all, so that the block rule of C5's public rules stays under Chrome's size limit of a `regexFilter`.",
+    "An `exclude` that breaks a rule (it is not a list, or a name breaks a rule) makes the object's `\"*\"` count 1 in `refused` and apply as `null` (fail closed). An object with no `\"*\"` ignores `exclude`.",
+    'A receiver without the feature applies `"*"` as `null` and counts it in `refused` (it is no valid name), so the scope has no list and fails closed.',
+    "A host is of the class when it is a name of two labels or more, each label of `[a-z0-9_-]` (lowercase, punycode and with no trailing dot, as C5 writes an entry), whose last label holds a letter or `_`, and it is none of these: an IP literal (IPv4 in each form that Chrome's URL parser takes, such as `0x7f.1` or `2130706433`, and IPv6); `localhost`, `local`, `internal`, `home.arpa` or `localdomain`, or a name under one of them; a name of `exclude`, or a name under one of them.",
+    "Today's lists cannot say \"any host\": an entry needs two labels and holds no `*` (C5), and `\"*\"` exists only for `operator`, the operator's marked tabs (rule 8).",
+    "The class judges a host's name, not its address: a public name that resolves to a private address passes, and so does a name whose address changes to a private one after a check (DNS rebinding).",
+    'The shared vectors: `test/vectors/scopes.json` holds objects with `"*"` (also a remote scope\'s) and a sweep with `"*"`, and `test/vectors/hello.json` the feature.',
+  ]) assert.ok(says(part, s), `C4 says: ${s.slice(0, 120)}`);
+  // The receiver 0.3.16 (board ab-4wh.2): the hello line and its vector hold the feature; the old texts of T1 are gone.
+  assert.ok(says(C4, '"features":["scopes","act","fetch","pay","blanket"]') && says(C4, 'and a local scope\'s `"*"` of the blanket profile, below);'));
+  assert.deepEqual(helloV.hello.features, ["scopes", "act", "fetch", "pay", "blanket"]);
+  for (const old of ["get it with the receiver 0.3.16 (board ab-4wh.2)", "and C5 gets its rule with that build", "as a list's frame rule loads them", "board ab-4wh.2 adds the objects with"]) assert.ok(!says(C4, old), `the old text is gone: ${old}`);
+  // C5 states the public rules with the code's values.
+  for (const t of [
+    "The public rules (C4, the blanket profile; board ab-4wh.2): the rules of a scope whose value is `\"*\"`. Two allow rules, with the ids of the scope rules (100 and up)",
+    "`regexFilter` `PUBLIC_HOST_FILTER` (`agent/dnr.js`), `excludedRequestDomains` `[\"localhost\",\"local\",\"internal\",\"home.arpa\",\"localdomain\"]` and then the names of the object's `exclude`, `resourceTypes: [\"main_frame\"]`, `tabIds` = the tabs of the scope",
+    "And the block rule (review M1): session rule id 91, priority 3, `{\"type\":\"block\"}`, `regexFilter` `publicBlockFilter(exclude)` (`agent/dnr.js`), every resource type (the main frame among them), `tabIds` = the tabs of the scope.",
+    "So the block does not rest on how DNR reads a trailing dot in `excludedRequestDomains`, and it blocks each request of the tab to such a name, also a subresource or a WebSocket.",
+    "In the check of the worker removal (a list that shrinks), the list of a `\"*\"` scope holds every host of the class minus its `exclude` names: a change from `\"*\"` to a list shrinks; a change from a list to `\"*\"` shrinks only when the list holds a host outside the class or under a name of `exclude`; a change of `exclude` shrinks when it gains a name.",
+    "A main frame or a frame of a host outside the class matches no allow rule of the tab, so static rules 1 and 3 block it.",
+    "so a service worker of a public site that a tab of `\"*\"` showed goes at a removal: a stated limit.",
+  ]) assert.ok(says(C5, t), `C5 says: ${t.slice(0, 100)}`);
+  const { PUBLIC_NOT, publicRules, PUBLIC_BLOCK_RULE_ID } = await import("../agent/dnr.js");
+  const { MAX_EXCLUDE, MAX_EXCLUDE_CHARS } = await import("../agent/scopes.js");
+  assert.deepEqual([...PUBLIC_NOT], ["localhost", "local", "internal", "home.arpa", "localdomain"]);
+  assert.deepEqual(publicRules(100, [7]).map((r) => [r.id, r.priority, r.action.type]), [[100, 2, "allow"], [101, 2, "allow"], [PUBLIC_BLOCK_RULE_ID, 3, "block"]]);
+  assert.equal(PUBLIC_BLOCK_RULE_ID, 91);
+  assert.ok(MAX_EXCLUDE === 8 && MAX_EXCLUDE_CHARS === 512);
+  // Today a "*" in scopes is no valid name, so an older receiver applies it as null (C4's rule for a value of scopes).
+  assert.ok(says(C4, "A scope that matches one of them but whose value is neither a valid name nor `null` applies as `null` and counts 1 in `refused`"));
+  assert.ok(says(C5, "no scheme, port, path, `*` or IP address"), "an entry holds no *");
+  // No code span over a line break in the part.
+  const raw = C4.slice(C4.indexOf(heading));
+  assert.ok(raw.split("\n").every((l) => (l.match(/`/g) ?? []).length % 2 === 0), "no code span over a line break");
 });

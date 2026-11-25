@@ -23,12 +23,12 @@
 // window). The act's work and the fetch's work run in one chain (serial).
 import { Act, NOT_AGENT_WINDOW } from "./act.js";
 import { attachments, call } from "./attach.js";
-import { SessionRules } from "./dnr.js";
+import { PUBLIC_RULES, SessionRules } from "./dnr.js";
 import { FetchWindow } from "./fetch-window.js";
 import { Guard } from "./guard.js";
 import { Popups } from "./popups.js";
 import { Removals } from "./removals.js";
-import { ANY } from "./scopes.js";
+import { ANY, PUBLIC } from "./scopes.js";
 import { TabMap } from "./tabmap.js";
 import { Workers } from "./workers.js";
 
@@ -99,12 +99,12 @@ export class Receiver {
     const cur = this.map.current;
     const out = new Map();
     const add = (name, tabId) => {
-      if (!out.has(name)) out.set(name, { entries: cur.lists[name], tabIds: [] });
+      if (!out.has(name)) out.set(name, { entries: name === PUBLIC_RULES ? cur.publicList : cur.lists[name], tabIds: [] });
       out.get(name).tabIds.push(tabId);
     };
     for (const [tabId, scope] of this.map.entries()) {
       if (this.#joining.has(tabId)) continue; // its scope rule waits for the act's rules
-      const name = cur.listOf(scope);
+      const name = this.listName(scope);
       if (name !== null) add(name, tabId);
     }
     if (cur.operator !== null && cur.operator !== ANY) for (const tabId of this.map.marked()) add(cur.operator, tabId);
@@ -137,8 +137,11 @@ export class Receiver {
   }
 
   // The list of a tab's scope under the last set_scopes (for its two rules).
+  // A scope's "*" (C4, the blanket profile) has the three public rules, under
+  // their own name PUBLIC_RULES: the name "*" stays rule 8's, the operator's.
   listName(scope) {
-    return scope === undefined ? null : this.map.current.listOf(scope);
+    const name = scope === undefined ? null : this.map.current.listOf(scope);
+    return name === PUBLIC ? PUBLIC_RULES : name;
   }
 
   // The rules of the marked tabs under the last set_scopes, for
