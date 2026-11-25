@@ -629,62 +629,34 @@ is on, agent-browser's service. The daemon never sends it.
   window).
 
 **The blanket profile (board ab-4wh).** The design is agent-browser
-`docs/superpowers/specs/2026-11-25-blanket-profile-design.md`, with aw-lead's OK of the choice (mail m508d4f8). One
-session of a box can have the operator's blanket approval: it opens any public host, but only in the blanket profile, a
-second agent profile with its own Chrome, its own receiver and its own native link (agent-browser
-`docs/contracts/C12.md` and `docs/contracts/C11.md`, the blanket profile). The receiver in that profile
-is the same package with the same ID. Only the service sends the requests and the fields of this part, from stage 3,
-on a box whose switch is on; the daemon never sends them. Board ab-4wh.2 builds the receiver's part, and C5 and C10
-get its rule ids and its window rules with that build.
+`docs/superpowers/specs/2026-11-25-blanket-profile-design.md`, today's cut for Linux (aw-lead and ab-lead,
+2026-11-25). One session of a box can have the operator's blanket approval: it opens any public host, but only in the
+blanket Chrome, a second agent Chrome on an empty folder, with its own receiver and its own native link (agent-browser
+`docs/contracts/C12.md` and `docs/contracts/C11.md`, the blanket profile). The receiver there is the same package with
+the same ID, and it does not know which profile it runs in. From stage 3, on a box whose switch is on, only
+agent-browser's service sends the value of this part, and only on the blanket Chrome's link; the daemon never sends it.
+Board ab-4wh.2 builds the receiver's part in the receiver 0.3.16, and C5 gets its rule with that build. The Mac comes
+later (a second profile with the operator's one Load unpacked).
 
-- The link. The native host of the blanket profile (its own host manifest and wrapper, C12) sends
-  `{"t":"link","up":true,"profile":"blanket"}` after each connect. The host of the shared profile sends the link
-  message as above, with no `profile`. The receiver's profile is the `profile` of its latest link message: `blanket`,
-  or `main` when the message has no `profile`. From stage 3 the service knows the profile of a link from its socket and
-  from the shim's parent (C12), not from the receiver.
-- The hello. A receiver with this part has the feature `"blanket"` in its hello's `features` and one more field,
-  `"profile"`: `"main"` or `"blanket"`, the profile of its latest link message, for example
-  `{"t":"hello","v":2,"version":"<manifest version>","channels":["main","bridge"],"features":["scopes","act","fetch","pay","blanket"],"profile":"blanket"}`.
-  From stage 3 the service compares the field with the link's profile, as a cross-check only: on the main link a
-  hello with `"profile":"blanket"` drops the connection, and on the blanket link a hello with another `profile`, or
-  with none, fails the blanket Chrome. The hello line above and `test/vectors/hello.json` get the feature and the field with the
-  receiver's build (board ab-4wh.2).
-- `set_scopes` in the blanket profile. One more field, `"blanket":"<scope>"` or `"blanket":null`: the one scope of the
-  blanket Chrome, a local scope (C11's local scope pattern). In the blanket profile `lists`, `scopes`, `default` and
-  `operator` apply as empty or `null`: each list, each entry of `scopes`, and a `default` or an `operator` that is not
-  `null` count 1 in `refused`. A `blanket` that is neither `null` nor a string of C11's local scope pattern counts 1 in
-  `refused` and applies as `null`. With `null` no tab has a scope, and the sweep closes each tab of a scope (C5). The
-  answer is as above: `rules` also counts the floor's rules and the blanket scope's rule. In the main profile a
-  `blanket` that is not `null` counts 1 in `refused` and applies as absent, so no tab of the shared profile ever loads
-  every host.
-- The floor. In the blanket profile the receiver writes these rules with its first `set_scopes` and keeps them until
-  the browser stops: the blocks of the refused addresses (the patterns `REFUSED_ADDRESSES` of the fetch window's rules,
-  C5) for every request of every tab; a block of every request with no tab (a service worker's, a shared worker's, a
-  report upload); and a block of every WebSocket and WebTransport. Under the floor the blanket scope's tabs, their
-  frames and their `<object>`/`<embed>` documents load any `http(s)` host, as rule 78 lets a fetch tab do. A tab of no
-  scope stays blocked (the static rules). The receiver sends no `blocked` notice in the blanket profile: no list exists
-  to allow a host into. The merge guard's floor (C5) holds in each profile, for its own tabs.
-- `blanket_wipe`: `{"t":"req","id":"<id>","op":"blanket_wipe"}` ->
-  `{"closed":<tabs closed>,"removed":["<data type>"],"cookies_left":<count>}`. Only a receiver whose profile is
-  `blanket` runs it; another answers `not the blanket profile` and removes nothing. The steps, in this order: (1) it
-  closes every tab in one item of the removal queue (the receiver's close, no `beforeunload`), and keeps the browser's
-  last window with one `about:blank` tab (C10, removals and the last window); (2) it calls
-  `chrome.browsingData.remove({"since":0,"originTypes":{"unprotectedWeb":true,"protectedWeb":true}}, <types>)` with
-  the types `cache`, `cacheStorage`, `cookies`, `downloads`, `fileSystems`, `formData`, `history`, `indexedDB`,
-  `localStorage` and `serviceWorkers`; (3) it clears the six content-setting types of C11 (`contentSettings.clear`, as
-  the relay does at its first link up); (4) it reads every cookie store (`cookies.getAllCookieStores`) and the cookies
-  of each store, partitioned or not, and counts them. `closed` counts the tabs of step 1, `removed` lists the types of
-  step 2, and `cookies_left` counts the cookies of step 4. A Chrome call that fails answers `wipe failed (<step>)`,
-  where `<step>` is `tabs`, `browsing data`, `content settings` or `cookie read`, and the steps after it do not run.
-  The wipe's caller waits 30 s for the answer, and it checks it (C12).
-- The refusals in the blanket profile, on channel `main`: `import` gets `the blanket profile takes no import`;
-  `act_rules`, `act_cookies` and `act_end` get `the blanket profile has no sign-in act`; `pay_cookies_copy` and
-  `pay_merchant_block` get `the blanket profile has no card payment`; and `fetch_end` gets
-  `the blanket profile has no PageFetch`. C10's `windows.create` with the mark `act` or `fetch` gets `bad args` there.
-  Their callers never send these requests on the blanket link: these answers are a second layer.
-- No log line of the receiver holds a field of these requests or of their answers, other than the counts.
-- The shared vector: `test/vectors/blanket.json` (board ab-4wh.2): the link messages, the hellos, the `set_scopes`
-  objects of both profiles and what applies, and `blanket_wipe` with its answers.
+- The feature. A receiver with this part has the feature `"blanket"` in its hello's `features`. The hello line above
+  and `test/vectors/hello.json` get it with the receiver 0.3.16 (board ab-4wh.2).
+- `"*"` as a scope's value. In `set_scopes` a value of `scopes` may be `"*"`, as `operator` may be: the scope may open
+  any `http(s)` host of the public host class (below). Its tabs' main frames load such a host, and their frames and
+  `<object>`/`<embed>` documents load under such a page, as a list's frame rule loads them. A host outside the class
+  stays blocked, as a host off a list. Only a receiver whose hello has the feature `blanket` takes the value. From stage
+  3 the service sends it only to such a receiver, and only on the blanket Chrome's link. A receiver without the feature
+  applies `"*"` as `null` and counts it in `refused` (it is no valid name), so the scope has no list and fails closed.
+- The public host class. A host is of the class when it is a name of two labels or more (lowercase, punycode and with
+  no trailing dot, as C5 writes an entry) and it is none of these: an IP literal (IPv4 in each form that Chrome's URL
+  parser takes, such as `0x7f.1` or `2130706433`, and IPv6); `localhost` or a name under it; `local`, `internal` or
+  `home.arpa`, or a name under one of them.
+- Today's lists cannot say "any host": an entry needs two labels and holds no `*` (C5), and `"*"` exists only for
+  `operator`, the operator's marked tabs (rule 8).
+- The limits, stated plainly. The class judges a host's name, not its address: a public name that resolves to a private
+  address passes, and so does a name whose address changes to a private one after a check (DNS rebinding). Chrome's
+  Local Network Access check covers a public page's subresource requests to loopback and private ranges.
+- The shared vectors: board ab-4wh.2 adds the objects with `"*"` to `test/vectors/scopes.json` and the feature to
+  `test/vectors/hello.json`.
 
 ### C5. The allowlist and the block
 
