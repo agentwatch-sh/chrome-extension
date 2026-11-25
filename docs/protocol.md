@@ -628,6 +628,64 @@ is on, agent-browser's service. The daemon never sends it.
 - The shared vector: `test/vectors/fetch.json` (with C5's rules, their refused and allowed URLs, and C10's fetch
   window).
 
+**The blanket profile (board ab-4wh).** The design is agent-browser
+`docs/superpowers/specs/2026-11-25-blanket-profile-design.md`, with aw-lead's OK of the choice (mail m508d4f8). One
+session of a box can have the operator's blanket approval: it opens any public host, but only in the blanket profile, a
+second agent profile with its own Chrome, its own receiver and its own native link (agent-browser
+`docs/contracts/C12.md` and `docs/contracts/C11.md`, the blanket profile). The receiver in that profile
+is the same package with the same ID. Only the service sends the requests and the fields of this part, from stage 3,
+on a box whose switch is on; the daemon never sends them. Board ab-4wh.2 builds the receiver's part, and C5 and C10
+get its rule ids and its window rules with that build.
+
+- The link. The native host of the blanket profile (its own host manifest and wrapper, C12) sends
+  `{"t":"link","up":true,"profile":"blanket"}` after each connect. The host of the shared profile sends the link
+  message as above, with no `profile`. The receiver's profile is the `profile` of its latest link message: `blanket`,
+  or `main` when the message has no `profile`. From stage 3 the service knows the profile of a link from its socket and
+  from the shim's parent (C12), not from the receiver.
+- The hello. A receiver with this part has the feature `"blanket"` in its hello's `features` and one more field,
+  `"profile"`: `"main"` or `"blanket"`, the profile of its latest link message, for example
+  `{"t":"hello","v":2,"version":"<manifest version>","channels":["main","bridge"],"features":["scopes","act","fetch","pay","blanket"],"profile":"blanket"}`.
+  From stage 3 the service compares the field with the link's profile, as a cross-check only: on the main link a
+  hello with `"profile":"blanket"` drops the connection, and on the blanket link a hello with another `profile`, or
+  with none, fails the blanket Chrome. The hello line above and `test/vectors/hello.json` get the feature and the field with the
+  receiver's build (board ab-4wh.2).
+- `set_scopes` in the blanket profile. One more field, `"blanket":"<scope>"` or `"blanket":null`: the one scope of the
+  blanket Chrome, a local scope (C11's local scope pattern). In the blanket profile `lists`, `scopes`, `default` and
+  `operator` apply as empty or `null`: each list, each entry of `scopes`, and a `default` or an `operator` that is not
+  `null` count 1 in `refused`. A `blanket` that is neither `null` nor a string of C11's local scope pattern counts 1 in
+  `refused` and applies as `null`. With `null` no tab has a scope, and the sweep closes each tab of a scope (C5). The
+  answer is as above: `rules` also counts the floor's rules and the blanket scope's rule. In the main profile a
+  `blanket` that is not `null` counts 1 in `refused` and applies as absent, so no tab of the shared profile ever loads
+  every host.
+- The floor. In the blanket profile the receiver writes these rules with its first `set_scopes` and keeps them until
+  the browser stops: the blocks of the refused addresses (the patterns `REFUSED_ADDRESSES` of the fetch window's rules,
+  C5) for every request of every tab; a block of every request with no tab (a service worker's, a shared worker's, a
+  report upload); and a block of every WebSocket and WebTransport. Under the floor the blanket scope's tabs, their
+  frames and their `<object>`/`<embed>` documents load any `http(s)` host, as rule 78 lets a fetch tab do. A tab of no
+  scope stays blocked (the static rules). The receiver sends no `blocked` notice in the blanket profile: no list exists
+  to allow a host into. The merge guard's floor (C5) holds in each profile, for its own tabs.
+- `blanket_wipe`: `{"t":"req","id":"<id>","op":"blanket_wipe"}` ->
+  `{"closed":<tabs closed>,"removed":["<data type>"],"cookies_left":<count>}`. Only a receiver whose profile is
+  `blanket` runs it; another answers `not the blanket profile` and removes nothing. The steps, in this order: (1) it
+  closes every tab in one item of the removal queue (the receiver's close, no `beforeunload`), and keeps the browser's
+  last window with one `about:blank` tab (C10, removals and the last window); (2) it calls
+  `chrome.browsingData.remove({"since":0,"originTypes":{"unprotectedWeb":true,"protectedWeb":true}}, <types>)` with
+  the types `cache`, `cacheStorage`, `cookies`, `downloads`, `fileSystems`, `formData`, `history`, `indexedDB`,
+  `localStorage` and `serviceWorkers`; (3) it clears the six content-setting types of C11 (`contentSettings.clear`, as
+  the relay does at its first link up); (4) it reads every cookie store (`cookies.getAllCookieStores`) and the cookies
+  of each store, partitioned or not, and counts them. `closed` counts the tabs of step 1, `removed` lists the types of
+  step 2, and `cookies_left` counts the cookies of step 4. A Chrome call that fails answers `wipe failed (<step>)`,
+  where `<step>` is `tabs`, `browsing data`, `content settings` or `cookie read`, and the steps after it do not run.
+  The wipe's caller waits 30 s for the answer, and it checks it (C12).
+- The refusals in the blanket profile, on channel `main`: `import` gets `the blanket profile takes no import`;
+  `act_rules`, `act_cookies` and `act_end` get `the blanket profile has no sign-in act`; `pay_cookies_copy` and
+  `pay_merchant_block` get `the blanket profile has no card payment`; and `fetch_end` gets
+  `the blanket profile has no PageFetch`. C10's `windows.create` with the mark `act` or `fetch` gets `bad args` there.
+  Their callers never send these requests on the blanket link: these answers are a second layer.
+- No log line of the receiver holds a field of these requests or of their answers, other than the counts.
+- The shared vector: `test/vectors/blanket.json` (board ab-4wh.2): the link messages, the hellos, the `set_scopes`
+  objects of both profiles and what applies, and `blanket_wipe` with its answers.
+
 ### C5. The allowlist and the block
 
 - File `CONFIG_DIR/browser/allowlist.json` = `{"allow": ["example.com", ...]}` (agent-browser's

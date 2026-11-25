@@ -2322,3 +2322,57 @@ test("the secure card checkout's pay act: C4's two requests, the feature pay, an
   assert.ok(says(C5, "Rule 90, the card payment's merchant rule (the secure card checkout; C4, `pay_merchant_block`): session rule id 90, priority 4"));
   assert.ok(says(C5, "rule 90 also blocks the merchant's requests of a worker of the act's own context: a stated limit."));
 });
+
+// Board goal ab-4wh, task ab-4wh.1: the blanket profile (agent-browser
+// docs/superpowers/specs/2026-11-25-blanket-profile-design.md). C4's new part
+// states the link's profile, the hello's feature and field, set_scopes's field in
+// both profiles, the floor, blanket_wipe and the refusals. The receiver's build
+// (board ab-4wh.2) adds the hello line's feature, the vector and the code.
+test("the blanket profile (board ab-4wh): C4's part states the link's profile, the hello, set_scopes in both profiles, the floor, blanket_wipe and the refusals", async () => {
+  const heading = "**The blanket profile (board ab-4wh).**";
+  const at = flat(C4).indexOf(heading);
+  assert.ok(at > flat(C4).indexOf("**PageFetch's fetch window (board ab-v16.102).**"), "C4 has the part, after PageFetch's fetch window");
+  const part = flat(C4).slice(at);
+  for (const s of [
+    "The design is agent-browser `docs/superpowers/specs/2026-11-25-blanket-profile-design.md`, with aw-lead's OK of the choice (mail m508d4f8).",
+    "Only the service sends the requests and the fields of this part, from stage 3, on a box whose switch is on; the daemon never sends them.",
+    // The link.
+    '`{"t":"link","up":true,"profile":"blanket"}` after each connect. The host of the shared profile sends the link message as above, with no `profile`.',
+    "The receiver's profile is the `profile` of its latest link message: `blanket`, or `main` when the message has no `profile`.",
+    "From stage 3 the service knows the profile of a link from its socket and from the shim's parent (C12), not from the receiver.",
+    // The hello.
+    'A receiver with this part has the feature `"blanket"` in its hello\'s `features` and one more field, `"profile"`: `"main"` or `"blanket"`, the profile of its latest link message',
+    '`{"t":"hello","v":2,"version":"<manifest version>","channels":["main","bridge"],"features":["scopes","act","fetch","pay","blanket"],"profile":"blanket"}`',
+    'From stage 3 the service compares the field with the link\'s profile, as a cross-check only: on the main link a hello with `"profile":"blanket"` drops the connection, and on the blanket link a hello with another `profile`, or with none, fails the blanket Chrome.',
+    "The hello line above and `test/vectors/hello.json` get the feature and the field with the receiver's build (board ab-4wh.2).",
+    // set_scopes.
+    'One more field, `"blanket":"<scope>"` or `"blanket":null`: the one scope of the blanket Chrome, a local scope (C11\'s local scope pattern).',
+    "In the blanket profile `lists`, `scopes`, `default` and `operator` apply as empty or `null`: each list, each entry of `scopes`, and a `default` or an `operator` that is not `null` count 1 in `refused`.",
+    "In the main profile a `blanket` that is not `null` counts 1 in `refused` and applies as absent, so no tab of the shared profile ever loads every host.",
+    // The floor.
+    "the blocks of the refused addresses (the patterns `REFUSED_ADDRESSES` of the fetch window's rules, C5) for every request of every tab; a block of every request with no tab (a service worker's, a shared worker's, a report upload); and a block of every WebSocket and WebTransport.",
+    "The receiver sends no `blocked` notice in the blanket profile: no list exists to allow a host into.",
+    // The wipe.
+    '`{"t":"req","id":"<id>","op":"blanket_wipe"}` -> `{"closed":<tabs closed>,"removed":["<data type>"],"cookies_left":<count>}`.',
+    "Only a receiver whose profile is `blanket` runs it; another answers `not the blanket profile` and removes nothing.",
+    '`chrome.browsingData.remove({"since":0,"originTypes":{"unprotectedWeb":true,"protectedWeb":true}}, <types>)` with the types `cache`, `cacheStorage`, `cookies`, `downloads`, `fileSystems`, `formData`, `history`, `indexedDB`, `localStorage` and `serviceWorkers`;',
+    "A Chrome call that fails answers `wipe failed (<step>)`, where `<step>` is `tabs`, `browsing data`, `content settings` or `cookie read`, and the steps after it do not run.",
+    "The wipe's caller waits 30 s for the answer, and it checks it (C12).",
+    // The refusals.
+    "`import` gets `the blanket profile takes no import`; `act_rules`, `act_cookies` and `act_end` get `the blanket profile has no sign-in act`; `pay_cookies_copy` and `pay_merchant_block` get `the blanket profile has no card payment`; and `fetch_end` gets `the blanket profile has no PageFetch`.",
+    "C10's `windows.create` with the mark `act` or `fetch` gets `bad args` there. Their callers never send these requests on the blanket link: these answers are a second layer.",
+    "The shared vector: `test/vectors/blanket.json` (board ab-4wh.2)",
+  ]) assert.ok(says(part, s), `C4 says: ${s.slice(0, 120)}`);
+  // The part changes no existing field: the hello line and its vector stay until the receiver's build.
+  assert.ok(says(C4, '"features":["scopes","act","fetch","pay"]'));
+  assert.deepEqual(helloV.hello.features, ["scopes", "act", "fetch", "pay"]);
+  assert.ok(C4.includes('- native host -> receiver: `{"t":"link","up":true}` after each connect'), "the shared profile's link message stays");
+  // No code span over a line break in the part.
+  const raw = C4.slice(C4.indexOf(heading));
+  assert.ok(raw.split("\n").every((l) => (l.match(/`/g) ?? []).length % 2 === 0), "no code span over a line break");
+  // The facts that the part takes from the code: the fetch window's patterns, and the permissions that the wipe needs.
+  const { REFUSED_ADDRESSES } = await import("../agent/dnr.js");
+  assert.ok(Array.isArray(REFUSED_ADDRESSES) && REFUSED_ADDRESSES.length > 0);
+  const manifest = JSON.parse(read("agent/manifest.json"));
+  for (const perm of ["browsingData", "contentSettings", "cookies"]) assert.ok(manifest.permissions.includes(perm), `the receiver already holds ${perm}`);
+});
