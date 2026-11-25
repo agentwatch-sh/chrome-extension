@@ -137,7 +137,7 @@ export class Receiver {
   }
 
   // The list of a tab's scope under the last set_scopes (for its two rules).
-  // A scope's "*" (C4, the blanket profile) has the two public rules, under
+  // A scope's "*" (C4, the blanket profile) has the three public rules, under
   // their own name PUBLIC_RULES: the name "*" stays rule 8's, the operator's.
   listName(scope) {
     const name = scope === undefined ? null : this.map.current.listOf(scope);

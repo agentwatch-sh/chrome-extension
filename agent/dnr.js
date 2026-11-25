@@ -45,6 +45,10 @@
 //   requests. A request with no initiator counts as another site's (Chromium
 //   gives it an opaque origin), so the main frame stays out: the tab's session
 //   always holds it. Priority 6; written with rule 9, in the same call.
+// - the public rules of a scope whose value is "*" (C4 and C5, the blanket
+//   profile; board ab-4wh.2): two allow rules with the scope rules' ids (main
+//   frames; frames and <object>/<embed>), and the block rule 91 (priority 3)
+//   for the excluded names with an optional trailing dot.
 // Dynamic rule 5 sets Sec-Fetch-Site: none on the receiver's own top-level
 // requests. Dynamic rules 2 and 4 (one list for every tab, before part 1a)
 // are gone: the worker removes them at its start and at each set_scopes.

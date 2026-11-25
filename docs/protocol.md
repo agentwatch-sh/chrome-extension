@@ -635,7 +635,7 @@ blanket Chrome, a second agent Chrome on an empty folder, with its own receiver 
 `docs/contracts/C12.md` and `docs/contracts/C11.md`, the blanket profile). The receiver there is the same package with
 the same ID, and it does not know which profile it runs in. From stage 3, on a box whose switch is on, only
 agent-browser's service sends the value of this part, and only on the blanket Chrome's link; the daemon never sends it.
-The receiver 0.3.16 (board ab-4wh.2) has this part, and C5 states its two rules (the public rules). The Mac comes later
+The receiver 0.3.16 (board ab-4wh.2) has this part, and C5 states its three rules (the public rules). The Mac comes later
 (a second profile with the operator's one Load unpacked).
 
 - The feature. A receiver with this part has the feature `"blanket"` in its hello's `features`. The hello line above
@@ -662,7 +662,7 @@ The receiver 0.3.16 (board ab-4wh.2) has this part, and C5 states its two rules 
   there (its host name and its fully qualified name), because the box's resolver gives such a name a loopback address
   (for example `127.0.1.1` from `/etc/hosts`). A name is written as C5 writes an entry (lowercase, punycode, no
   trailing dot), one label allowed, each label 1 to 63 characters of `[a-z0-9_-]` that do not start or end with `-`,
-  at most 253 characters, and no IPv4 literal. At most 8 names, and at most 512 characters in all, so that the block
+  at most 253 characters. At most 8 names, and at most 512 characters in all, so that the block
   rule of C5's public rules stays under Chrome's size limit of a `regexFilter`. An absent `exclude` excludes no more
   name. An `exclude` that breaks a rule (it is not a list, or a name breaks a rule) makes the object's `"*"` count 1 in
   `refused` and apply as `null` (fail closed). An object with no `"*"` ignores `exclude`.
