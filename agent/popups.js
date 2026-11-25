@@ -47,8 +47,7 @@
 // No log line holds a URL or a host.
 import { call } from "./attach.js";
 import { HOLD_MAX_MS } from "./hold.js";
-import { covers } from "./lib/domains.js";
-import { ANY } from "./scopes.js";
+import { listCovers } from "./scopes.js";
 
 export const NEW_TAB_WAIT_MS = 50;
 export const RULE_QUIET_MS = 50;
@@ -355,7 +354,7 @@ export class Popups {
   // covered the blocked host, else the notice.
   #decide(p) {
     const host = p.block.msg.host;
-    const covered = p.entries !== null && (p.entries === ANY || p.entries.some((d) => covers(d, host))) && this.#stillIn(p);
+    const covered = listCovers(p.entries, host) && this.#stillIn(p);
     if (!covered) return this.#notice(p);
     // A blocked request that is not a GET (a form's POST) gets no reload.
     const method = this.#methodFor(p.tabId, p.block.url);

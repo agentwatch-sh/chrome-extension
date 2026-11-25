@@ -29,7 +29,7 @@ const MAX_WAITING = 100;
 // it; "pay" says that it has the pay act's requests of the secure card
 // checkout (pay_cookies_copy and pay_merchant_block, C4). A reader tests each
 // feature for membership.
-export const FEATURES = Object.freeze(["scopes", "act", "fetch", "pay"]);
+export const FEATURES = Object.freeze(["scopes", "act", "fetch", "pay", "blanket"]);
 
 // The daemon drops the link at a message over MAX_TO_DAEMON (wire.js). So a
 // bridge res over it goes in parts up to maxResult (C10), any other res over

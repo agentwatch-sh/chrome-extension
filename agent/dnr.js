@@ -53,7 +53,8 @@
 // when it runs. A failed scope update fails closed: a remove-only call takes
 // every scope rule out, and the next update is a full replace.
 
-import { ANY } from "./scopes.js";
+import { ANY, PUBLIC_LIST, PUBLIC_NOT } from "./scopes.js";
+export { PUBLIC_NOT };
 import { RESTORE_MAX_MS } from "./tabmap.js";
 
 const OLD_RULE_ID = 2;
@@ -164,9 +165,28 @@ const FRAMES = ["sub_frame", "object"];
 // domain is on the tab's list, so a page of a listed site still loads its
 // frames from any host (O11). topDomains needs Chrome 141.
 export function scopeRules(id, entries, tabIds) {
+  if (entries === PUBLIC_LIST) return publicRules(id, tabIds);
   return [
     { id, priority: 2, action: { type: "allow" }, condition: { requestDomains: [...entries], resourceTypes: MAIN, tabIds: [...tabIds] } },
     { id: id + 1, priority: 2, action: { type: "allow" }, condition: { topDomains: [...entries], resourceTypes: FRAMES, tabIds: [...tabIds] } },
+  ];
+}
+
+// The public rules (C4 and C5, the blanket profile; board ab-4wh.2): the two
+// scope rules of a scope with "*". The main frames, the frames and the
+// object documents of its tabs load a host of the public host class: a URL of
+// http or https whose host is a name of two labels or more with a letter or
+// "_" in its last label (so no IPv4 or IPv6 literal), with a userinfo part
+// that never counts as the host, minus localhost, local, internal, home.arpa
+// and every name under them. PUBLIC_RULES names them in the model and in
+// replaceLists: never "*", which is rule 8's name.
+export const PUBLIC_RULES = "*public";
+export const PUBLIC_HOST_FILTER = "^https?://([^/?#@]*@)?([a-z0-9_-]+\\.)+[a-z0-9_-]*[a-z_][a-z0-9_-]*\\.?(:[0-9]+)?/";
+export function publicRules(id, tabIds) {
+  const condition = (resourceTypes) => ({ regexFilter: PUBLIC_HOST_FILTER, excludedRequestDomains: [...PUBLIC_NOT], resourceTypes, tabIds: [...tabIds] });
+  return [
+    { id, priority: 2, action: { type: "allow" }, condition: condition(MAIN) },
+    { id: id + 1, priority: 2, action: { type: "allow" }, condition: condition(FRAMES) },
   ];
 }
 
@@ -455,7 +475,7 @@ export class SessionRules {
     let id = FIRST_SCOPE_RULE_ID;
     for (const name of [...model.keys()].sort()) {
       const { entries, tabIds } = model.get(name);
-      if (entries.length === 0 || tabIds.length === 0) continue;
+      if ((entries !== PUBLIC_LIST && entries.length === 0) || tabIds.length === 0) continue;
       ids.set(name, id);
       add.push(...scopeRules(id, entries, tabIds));
       id += 2;
@@ -510,7 +530,7 @@ export class SessionRules {
       if (old !== undefined) remove.push(old, old + 1);
       ids.delete(name);
       const m = model.get(name);
-      if (!m || m.entries.length === 0 || m.tabIds.length === 0) continue;
+      if (!m || (m.entries !== PUBLIC_LIST && m.entries.length === 0) || m.tabIds.length === 0) continue;
       const id = old ?? this.#free(ids);
       ids.set(name, id);
       add.push(...scopeRules(id, m.entries, m.tabIds));

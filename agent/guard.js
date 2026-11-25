@@ -31,7 +31,7 @@
 import { call } from "./attach.js";
 import { covers } from "./lib/domains.js";
 import { BLOCKED } from "./popups.js";
-import { ANY } from "./scopes.js";
+import { listCovers } from "./scopes.js";
 import { webUrl } from "./tabs.js";
 
 const isBlank = (url) => typeof url === "string" && /^about:blank([?#]|$)/.test(url);
@@ -64,9 +64,7 @@ export class Guard {
       const domain = r.att.restoreDomain(tabId);
       return domain !== null && covers(domain, host);
     }
-    const list = r.tabList(tabId, r.map.current);
-    if (list === ANY) return true;
-    return list !== null && list.some((d) => covers(d, host));
+    return listCovers(r.tabList(tabId, r.map.current), host);
   }
 
   // The tab's last listed host, or null.
