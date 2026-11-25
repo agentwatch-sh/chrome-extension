@@ -219,9 +219,9 @@ frames, the channels, the parts and the messages stay, and the shim sends the sa
 stage 3, and on a box whose switch is off, the daemon is the party, as below.
 
 - receiver -> daemon:
-  `{"t":"hello","v":2,"version":"<manifest version>","channels":["main","bridge"],"features":["scopes","act","fetch","pay"]}`
-  (`features`: the allowlists, below, the act of the stored sign-ins, below, PageFetch's fetch window, below, and
-  the card payment's pay act requests, below);
+  `{"t":"hello","v":2,"version":"<manifest version>","channels":["main","bridge"],"features":["scopes","act","fetch","pay","blanket"]}`
+  (`features`: the allowlists, below, the act of the stored sign-ins, below, PageFetch's fetch window, below, the
+  card payment's pay act requests, below, and a local scope's `"*"` of the blanket profile, below);
   `{"t":"res","id":"<id>","ok":true,"data":{...}}` or `{"t":"res","id":"<id>","ok":false,"error":"<text>"}`
   (a res on the bridge channel also has `"ch":"bridge"`, and its `data` can also be a list or `null`:
   C10);
@@ -635,16 +635,19 @@ blanket Chrome, a second agent Chrome on an empty folder, with its own receiver 
 `docs/contracts/C12.md` and `docs/contracts/C11.md`, the blanket profile). The receiver there is the same package with
 the same ID, and it does not know which profile it runs in. From stage 3, on a box whose switch is on, only
 agent-browser's service sends the value of this part, and only on the blanket Chrome's link; the daemon never sends it.
-Board ab-4wh.2 builds the receiver's part in the receiver 0.3.16, and C5 gets its rule with that build. The Mac comes
-later (a second profile with the operator's one Load unpacked).
+The receiver 0.3.16 (board ab-4wh.2) has this part, and C5 states its two rules (the public rules). The Mac comes later
+(a second profile with the operator's one Load unpacked).
 
 - The feature. A receiver with this part has the feature `"blanket"` in its hello's `features`. The hello line above
-  and `test/vectors/hello.json` get it with the receiver 0.3.16 (board ab-4wh.2).
+  and `test/vectors/hello.json` hold it.
 - `"*"` as a scope's value. In `set_scopes` a value of `scopes` may be `"*"`, as `operator` may be: the scope may open
-  any `http(s)` host of the public host class (below). Its tabs' main frames load such a host, and their frames and
-  `<object>`/`<embed>` documents load under such a page, as a list's frame rule loads them. A host outside the class
-  stays blocked, as a host off a list. Only a receiver whose hello has the feature `blanket` takes the value. From stage
-  3 the service sends it only to such a receiver, and only on the blanket Chrome's link. A receiver without the feature
+  any `http(s)` host of the public host class (below). Its tabs' main frames, frames and `<object>`/`<embed>`
+  documents load a host of the class (C5, the public rules). Unlike a list's frame rule, which judges the top-level
+  page, the frame rule of `"*"` judges the frame's own host: a page of the class loads no frame of a host outside the
+  class, and a top-level document with no request (`about:blank`) loads a frame of a host of the class. A host outside
+  the class stays blocked, as a host off a list. Only a receiver whose hello has the feature `blanket` takes the value,
+  and only for a local scope: a remote scope's `"*"` counts 1 in `refused` and applies as `null`. From stage 3 the
+  service sends it only to such a receiver, and only on the blanket Chrome's link. A receiver without the feature
   applies `"*"` as `null` and counts it in `refused` (it is no valid name), so the scope has no list and fails closed.
 - The public host class. A host is of the class when it is a name of two labels or more (lowercase, punycode and with
   no trailing dot, as C5 writes an entry) and it is none of these: an IP literal (IPv4 in each form that Chrome's URL
@@ -655,8 +658,8 @@ later (a second profile with the operator's one Load unpacked).
 - The limits, stated plainly. The class judges a host's name, not its address: a public name that resolves to a private
   address passes, and so does a name whose address changes to a private one after a check (DNS rebinding). Chrome's
   Local Network Access check covers a public page's subresource requests to loopback and private ranges.
-- The shared vectors: board ab-4wh.2 adds the objects with `"*"` to `test/vectors/scopes.json` and the feature to
-  `test/vectors/hello.json`.
+- The shared vectors: `test/vectors/scopes.json` holds objects with `"*"` (also a remote scope's) and a sweep with
+  `"*"`, and `test/vectors/hello.json` the feature.
 
 ### C5. The allowlist and the block
 
@@ -737,6 +740,19 @@ later (a second profile with the operator's one Load unpacked).
     `tabIds`. Their ids are 100 and up, two per list; the receiver picks them. A list with no open
     tab whose list it is, or with no entry, has no rule; a list that only marked tabs use has its
     two rules too.
+  - The public rules (C4, the blanket profile; board ab-4wh.2): the two scope rules of a scope whose value is `"*"`,
+    with the ids of the scope rules (100 and up). One rule with priority 2, `{"type":"allow"}`, `regexFilter`
+    `PUBLIC_HOST_FILTER` (`agent/dnr.js`), `excludedRequestDomains` `["localhost","local","internal","home.arpa"]`,
+    `resourceTypes: ["main_frame"]`, `tabIds` = the tabs of the scope; and one rule the same with `resourceTypes:
+    ["sub_frame", "object"]`. The pattern needs `http` or `https`, allows a userinfo part that never counts as the
+    host, and needs a host of two labels or more whose last label holds a letter or `_`, with an optional trailing dot,
+    then a port of digits or the path: so no IPv4 literal (Chrome's URL parser writes each IPv4 form in dotted decimal)
+    and no IPv6 literal (`[...]`). The excluded domains take out each name under them too. A main frame or a frame of a
+    host outside the class matches no allow rule of the tab, so static rules 1 and 3 block it. The guard, the closing
+    rule and the sweep judge such a tab by the same class (`isPublicHost` in `agent/scopes.js`). Its worker removal
+    counts no host as covered by `"*"` (the lists' union holds none), so a service worker of a public site that a tab of
+    `"*"` showed goes at a removal: a stated limit. The live check of board ab-4wh.5 measures the rules on Chrome
+    (`isRegexSupported`, `testMatchOutcome`); the unit tests check them against `isPublicHost`.
   - The import's rules (C6): session rule id 6, priority 2, `{"type":"allow"}`,
     `requestDomains` = [the import's `domain`], `resourceTypes: ["main_frame"]`, `tabIds` = [the
     restore tab]; and session rule id 7, priority 2, `{"type":"allow"}`, `topDomains` = [the same

@@ -92,6 +92,7 @@ function applySetScopes(msg) {
   if (isObj(msg.scopes)) {
     for (const [scope, v] of Object.entries(msg.scopes)) {
       if (!anyScope(scope)) refused += 1; // applies as absent
+      else if (v === "*" && NAME.test(scope)) scopes[scope] = "*"; // a local scope's "*": the public host class (board ab-4wh)
       else if (!(v === null || validName(v))) {
         refused += 1;
         scopes[scope] = null; // no list, no fall-back to default
@@ -113,6 +114,7 @@ function applySetScopes(msg) {
   // only: a remote scope that scopes does not name has no list (fail closed; board ab-v16.94.7.2).
   const listOf = (scope) => {
     const name = Object.hasOwn(scopes, scope) ? scopes[scope] : NAME.test(scope) ? def : null;
+    if (name === "*") return "*";
     return name !== null && Object.hasOwn(lists, name) ? name : null;
   };
   return { lists, scopes, default: def, operator, refused, listOf };
@@ -143,8 +145,9 @@ test("C4 states the set_scopes request and answer, and the receiver's hello with
   assert.ok(C4.includes('`{"rules":<scope rules in force>,"closed":<tabs closed>,"refused":<entries, list names and scopes refused>}`'));
   assert.ok(C4.includes("The daemon waits 10 s for `ping` and `set_scopes`"));
   assert.ok(C4.includes("`" + JSON.stringify({ ...helloV.hello, version: "<manifest version>" }) + "`"), "C4 shows the hello");
-  // The feature act: the act of the stored sign-ins (board ab-v16.97.3); the feature fetch: PageFetch's fetch window (board ab-v16.102).
-  assert.deepEqual(helloV.hello.features, ["scopes", "act", "fetch", "pay"]);
+  // The feature act: the act of the stored sign-ins (board ab-v16.97.3); the feature fetch: PageFetch's fetch window (board ab-v16.102);
+  // the feature blanket: a local scope's "*" (board ab-4wh.2).
+  assert.deepEqual(helloV.hello.features, ["scopes", "act", "fetch", "pay", "blanket"]);
   assert.deepEqual(helloV.hello.channels, CHANNELS);
   assert.ok(C4.includes("`test/vectors/hello.json`") && C4.includes("`test/vectors/scopes.json`"), "C4 names the vectors");
 });
@@ -1964,7 +1967,7 @@ test("C4 states the act's three requests with their shapes, their checks in orde
     "The shared vector: `test/vectors/act.json`",
   ]) assert.ok(says(act, s), `C4 says: ${s}`);
   assert.ok(says(C4, "The act's caller waits 10 s for `act_rules`, `act_cookies` and `act_end`, and 10 s for `pay_cookies_copy` and `pay_merchant_block`."));
-  assert.ok(says(C4, "(`features`: the allowlists, below, the act of the stored sign-ins, below, PageFetch's fetch window, below, and the card payment's pay act requests, below)"));
+  assert.ok(says(C4, "(`features`: the allowlists, below, the act of the stored sign-ins, below, PageFetch's fetch window, below, the card payment's pay act requests, below, and a local scope's `\"*\"` of the blanket profile, below)"));
   for (const e of actV.errors.main) assert.ok(act.includes("`" + e + "`"), `C4 names the error ${e}`);
   assert.deepEqual(actV.features, helloV.hello.features);
 });
@@ -2318,7 +2321,7 @@ test("the secure card checkout's pay act: C4's two requests, the feature pay, an
     "the act's caller ends the act at that error.",
     "reads no store of the default context for the act (the one exception is `pay_cookies_copy`, below, which answers no value)",
   ]) assert.ok(says(C4, t), t);
-  assert.ok(says(C4, '"features":["scopes","act","fetch","pay"]'));
+  assert.ok(says(C4, '"features":["scopes","act","fetch","pay","blanket"]'));
   assert.ok(says(C5, "Rule 90, the card payment's merchant rule (the secure card checkout; C4, `pay_merchant_block`): session rule id 90, priority 4"));
   assert.ok(says(C5, "rule 90 also blocks the merchant's requests of a worker of the act's own context: a stated limit."));
 });
@@ -2328,7 +2331,7 @@ test("the secure card checkout's pay act: C4's two requests, the feature pay, an
 // C4's new part states the receiver's feature blanket and a scope's value "*":
 // any http(s) host of the public host class. The receiver 0.3.16 (board
 // ab-4wh.2) adds the hello line's feature, the vectors and the code.
-test("the blanket profile (board ab-4wh): C4's part states the feature blanket, a scope's value \"*\", the public host class, who sends it, an older receiver's answer and the limits", () => {
+test("the blanket profile (board ab-4wh): C4's part states the feature blanket, a scope's value \"*\", the public host class, who sends it, an older receiver's answer and the limits", async () => {
   const heading = "**The blanket profile (board ab-4wh).**";
   const at = flat(C4).indexOf(heading);
   assert.ok(at > flat(C4).indexOf("**PageFetch's fetch window (board ab-v16.102).**"), "C4 has the part, after PageFetch's fetch window");
@@ -2337,21 +2340,32 @@ test("the blanket profile (board ab-4wh): C4's part states the feature blanket, 
     "The design is agent-browser `docs/superpowers/specs/2026-11-25-blanket-profile-design.md`, today's cut for Linux (aw-lead and ab-lead, 2026-11-25).",
     "The receiver there is the same package with the same ID, and it does not know which profile it runs in.",
     "From stage 3, on a box whose switch is on, only agent-browser's service sends the value of this part, and only on the blanket Chrome's link; the daemon never sends it.",
-    "Board ab-4wh.2 builds the receiver's part in the receiver 0.3.16, and C5 gets its rule with that build.",
+    "The receiver 0.3.16 (board ab-4wh.2) has this part, and C5 states its two rules (the public rules).",
     "The Mac comes later (a second profile with the operator's one Load unpacked).",
-    'A receiver with this part has the feature `"blanket"` in its hello\'s `features`.',
+    'A receiver with this part has the feature `"blanket"` in its hello\'s `features`. The hello line above and `test/vectors/hello.json` hold it.',
     'In `set_scopes` a value of `scopes` may be `"*"`, as `operator` may be: the scope may open any `http(s)` host of the public host class (below).',
-    "Its tabs' main frames load such a host, and their frames and `<object>`/`<embed>` documents load under such a page, as a list's frame rule loads them.",
-    "Only a receiver whose hello has the feature `blanket` takes the value.",
+    "Its tabs' main frames, frames and `<object>`/`<embed>` documents load a host of the class (C5, the public rules). Unlike a list's frame rule, which judges the top-level page, the frame rule of `\"*\"` judges the frame's own host: a page of the class loads no frame of a host outside the class, and a top-level document with no request (`about:blank`) loads a frame of a host of the class.",
+    "Only a receiver whose hello has the feature `blanket` takes the value, and only for a local scope: a remote scope's `\"*\"` counts 1 in `refused` and applies as `null`.",
     'A receiver without the feature applies `"*"` as `null` and counts it in `refused` (it is no valid name), so the scope has no list and fails closed.',
     "A host is of the class when it is a name of two labels or more (lowercase, punycode and with no trailing dot, as C5 writes an entry) and it is none of these: an IP literal (IPv4 in each form that Chrome's URL parser takes, such as `0x7f.1` or `2130706433`, and IPv6); `localhost` or a name under it; `local`, `internal` or `home.arpa`, or a name under one of them.",
     "Today's lists cannot say \"any host\": an entry needs two labels and holds no `*` (C5), and `\"*\"` exists only for `operator`, the operator's marked tabs (rule 8).",
     "The class judges a host's name, not its address: a public name that resolves to a private address passes, and so does a name whose address changes to a private one after a check (DNS rebinding).",
-    'The shared vectors: board ab-4wh.2 adds the objects with `"*"` to `test/vectors/scopes.json` and the feature to `test/vectors/hello.json`.',
+    'The shared vectors: `test/vectors/scopes.json` holds objects with `"*"` (also a remote scope\'s) and a sweep with `"*"`, and `test/vectors/hello.json` the feature.',
   ]) assert.ok(says(part, s), `C4 says: ${s.slice(0, 120)}`);
-  // The part changes no existing field: the hello line and its vector stay until the receiver's build.
-  assert.ok(says(C4, '"features":["scopes","act","fetch","pay"]'));
-  assert.deepEqual(helloV.hello.features, ["scopes", "act", "fetch", "pay"]);
+  // The receiver 0.3.16 (board ab-4wh.2): the hello line and its vector hold the feature; the old texts of T1 are gone.
+  assert.ok(says(C4, '"features":["scopes","act","fetch","pay","blanket"]') && says(C4, 'and a local scope\'s `"*"` of the blanket profile, below);'));
+  assert.deepEqual(helloV.hello.features, ["scopes", "act", "fetch", "pay", "blanket"]);
+  for (const old of ["get it with the receiver 0.3.16 (board ab-4wh.2)", "and C5 gets its rule with that build", "as a list's frame rule loads them", "board ab-4wh.2 adds the objects with"]) assert.ok(!says(C4, old), `the old text is gone: ${old}`);
+  // C5 states the public rules with the code's values.
+  for (const t of [
+    "The public rules (C4, the blanket profile; board ab-4wh.2): the two scope rules of a scope whose value is `\"*\"`, with the ids of the scope rules (100 and up).",
+    "`regexFilter` `PUBLIC_HOST_FILTER` (`agent/dnr.js`), `excludedRequestDomains` `[\"localhost\",\"local\",\"internal\",\"home.arpa\"]`, `resourceTypes: [\"main_frame\"]`, `tabIds` = the tabs of the scope",
+    "A main frame or a frame of a host outside the class matches no allow rule of the tab, so static rules 1 and 3 block it.",
+    "so a service worker of a public site that a tab of `\"*\"` showed goes at a removal: a stated limit.",
+  ]) assert.ok(says(C5, t), `C5 says: ${t.slice(0, 100)}`);
+  const { PUBLIC_NOT, publicRules } = await import("../agent/dnr.js");
+  assert.deepEqual([...PUBLIC_NOT], ["localhost", "local", "internal", "home.arpa"]);
+  assert.equal(publicRules(100, [7])[0].priority, 2);
   // Today a "*" in scopes is no valid name, so an older receiver applies it as null (C4's rule for a value of scopes).
   assert.ok(says(C4, "A scope that matches one of them but whose value is neither a valid name nor `null` applies as `null` and counts 1 in `refused`"));
   assert.ok(says(C5, "no scheme, port, path, `*` or IP address"), "an entry holds no *");

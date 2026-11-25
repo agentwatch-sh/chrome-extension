@@ -16,7 +16,8 @@
   "scopes",
   "act",
   "fetch",
-  "pay"
+  "pay",
+  "blanket"
  ],
  "fetchWindow": {
   "note": "The fetch window: incognito true and the mark fetch. The scope md-gone has no list: the window opens all the same, and the fetch tab (61) gets no scope. The receiver checks its incognito access first, ends a left fetch window, refuses while another incognito tab is open, opens the window, writes the fetch window's rules for tab 61 and confirms them by a read. The copy holds fetch:60, not tab:61.",
