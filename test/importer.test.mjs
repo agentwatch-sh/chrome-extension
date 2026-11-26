@@ -295,6 +295,60 @@ test("a cookie that fails names the cookie in errors and the import goes on", as
   noSecret(result);
 });
 
+// Board ab-dkr: the cookies of other sites in the store, also partitioned ones, a look-alike
+// domain (xapp.localhost) and a cookie of another site in the domain's partition.
+const OTHER_SITES = [
+  { name: "o_dom", value: SECRET + "-o1", domain: ".other.localhost", hostOnly: false, path: "/", secure: true },
+  { name: "o_host", value: SECRET + "-o2", domain: "www.other.localhost", hostOnly: true, path: "/", secure: true },
+  {
+    name: "o_part", value: SECRET + "-o3", domain: "www.other.localhost", hostOnly: true, path: "/", secure: true,
+    partitionKey: { topLevelSite: "https://other.localhost", hasCrossSiteAncestor: false },
+  },
+  {
+    name: "o_in_app", value: SECRET + "-o4", domain: "www.other.localhost", hostOnly: true, path: "/", secure: true,
+    partitionKey: { topLevelSite: "https://app.localhost", hasCrossSiteAncestor: true },
+  },
+  { name: "x_host", value: SECRET + "-o5", domain: "www.xapp.localhost", hostOnly: true, path: "/", secure: true },
+];
+const APP_COOKIES = [
+  { name: "old", value: SECRET + "-old", domain: ".app.localhost", hostOnly: false, path: "/", secure: true },
+  {
+    name: "chip", value: SECRET + "-chip", domain: "www.app.localhost", hostOnly: true, path: "/", secure: true,
+    partitionKey: { topLevelSite: "https://app.localhost", hasCrossSiteAncestor: false },
+  },
+];
+
+test("a read that gives other domains' cookies too: the import removes only its domain's, and each other cookie stays and is an errors entry (board ab-dkr)", async () => {
+  const f = makeFakeChrome();
+  // The read with partitionKey {} gives every cookie of the store, of every domain.
+  f.cookieDomains = "partitioned-all";
+  f.cookies_ = [...OTHER_SITES.slice(0, 2), ...APP_COOKIES, ...OTHER_SITES.slice(2)];
+  f.pageResult = { local: 1, session: 1, idb_databases: 1, idb_records: 1, cache_entries: 0, errors: [] };
+  const result = await importState(f.chrome, makeState(), opts());
+  assert.deepEqual(f.callsTo("cookies.remove").map(([d]) => d.name), ["old", "chip"], "no cookie of another domain is removed");
+  assert.equal(result.cookies_removed, 2);
+  assert.equal(result.cookies_set, 2);
+  assert.deepEqual(result.errors, [
+    "cookie o_dom: out of scope, not removed",
+    "cookie o_host: out of scope, not removed",
+    "cookie o_part: out of scope, not removed",
+    "cookie o_in_app: out of scope, not removed",
+    "cookie x_host: out of scope, not removed",
+  ]);
+  noSecret(result);
+});
+
+test("Chrome's domain filter on both reads (Chromium 156, measured): the import reads and removes its domain's cookies only, with no errors entry (board ab-dkr)", async () => {
+  const f = makeFakeChrome();
+  f.cookieDomains = "chrome";
+  f.cookies_ = [...OTHER_SITES, ...APP_COOKIES];
+  f.pageResult = { local: 1, session: 1, idb_databases: 1, idb_records: 1, cache_entries: 0, errors: [] };
+  const result = await importState(f.chrome, makeState(), opts());
+  assert.deepEqual(f.callsTo("cookies.remove").map(([d]) => d.name), ["old", "chip"]);
+  assert.equal(result.cookies_removed, 2);
+  assert.deepEqual(result.errors, []);
+});
+
 test("a cookie removal that throws is reported and does not count", async () => {
   const f = makeFakeChrome();
   f.cookies_ = [

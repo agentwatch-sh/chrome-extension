@@ -306,6 +306,22 @@ test("act_cookies: the cookies of the host in the act tab's store, in C2's form;
   assert.deepEqual(await s.main({ ...V.cookiesReq, id: "ns" }), { t: "res", id: "ns", ok: false, error: "no cookie store" });
 });
 
+test("act_cookies: a read that gives other domains' cookies too answers the host's cookies only (board ab-dkr)", async () => {
+  const s = await setup();
+  await s.openAct();
+  s.f.cookieStores_ = structuredClone(V.cookieStores);
+  s.f.cookies_ = [
+    ...structuredClone(V.cookies),
+    { name: "o_host", value: "made-up-o1", domain: "www.other.example", hostOnly: true, path: "/", secure: true, storeId: "1", session: true },
+    { name: "o_part", value: "made-up-o2", domain: "www.other.example", hostOnly: true, path: "/", secure: true, storeId: "1", session: true,
+      partitionKey: { topLevelSite: "https://example.com", hasCrossSiteAncestor: true } },
+    { name: "o_parent", value: "made-up-o3", domain: ".example.com", hostOnly: false, path: "/", secure: true, storeId: "1", session: true },
+  ];
+  // The read with partitionKey {} gives every cookie of the store, of every domain.
+  s.f.cookieDomains = "partitioned-all";
+  assert.deepEqual(await s.main(V.cookiesReq), V.cookiesRes);
+});
+
 // ---- the act's end ----
 
 test("act_end: every act tab closes (also a popup in another window) before the act's rules go; the key leaves the copy", async () => {
@@ -892,6 +908,24 @@ test("pay_cookies_copy: the default store's cookies of the domain go into the ac
   assert.equal(sets[1].expirationDate, 2000000000);
   // Only the default store is read, and only for the domain.
   assert.deepEqual(s.f.callsTo("cookies.getAll").filter(([f]) => f.domain).map(([f]) => f.storeId), ["0", "0"]);
+});
+
+test("pay_cookies_copy: a read that gives other domains' cookies too copies the domain's cookies only (board ab-dkr)", async () => {
+  const s = await setup();
+  await s.openAct();
+  s.f.cookieStores_ = [{ id: "0", tabIds: [7] }, { id: "1", tabIds: [ACT_TAB] }];
+  s.f.cookies_ = [
+    { name: "cart", value: "made-up-cart-1", domain: "shop.example", hostOnly: true, path: "/", secure: true, httpOnly: true, session: true, sameSite: "lax" },
+    { name: "other", value: "made-up-other", domain: "other.example", hostOnly: true, path: "/", secure: true, httpOnly: false, session: true },
+    { name: "o_part", value: "made-up-o2", domain: "www.other.example", hostOnly: true, path: "/", secure: true, session: true,
+      partitionKey: { topLevelSite: "https://shop.example", hasCrossSiteAncestor: true } },
+    { name: "x_shop", value: "made-up-x", domain: "xshop.example", hostOnly: true, path: "/", secure: true, session: true },
+  ];
+  // The read with partitionKey {} gives every cookie of the store, of every domain.
+  s.f.cookieDomains = "partitioned-all";
+  const res = await s.main({ t: "req", id: "pc9", op: "pay_cookies_copy", tab: ACT_TAB, domain: "shop.example" });
+  assert.deepEqual(res, { t: "res", id: "pc9", ok: true, data: { count: 1 } });
+  assert.deepEqual(s.f.callsTo("cookies.set").map(([d]) => [d.name, d.storeId]), [["cart", "1"]]);
 });
 
 test("pay_cookies_copy refuses a tab that is not an act tab, a bad domain, and an act tab whose store is the default store", async () => {
