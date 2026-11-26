@@ -26,7 +26,7 @@
 // No log line holds a cookie, a URL, a host or a value of the page.
 import { call } from "./attach.js";
 import { MAX_SEND_TO } from "./dnr.js";
-import { dedupe } from "./lib/cookies.js";
+import { dedupe, inScope } from "./lib/cookies.js";
 
 export const ACT_MARK = "act";
 export const ACT_KEY = "act:";
@@ -93,6 +93,20 @@ function isHost(h) {
   } catch {
     return false;
   }
+}
+
+// The cookies of the two reads (plain and every partition) that the domain
+// and its subdomains hold, each once. A cookie of another domain that a getAll
+// gives (a Chrome that does not filter one of the reads by domain) stays out,
+// on every Chrome (board ab-dkr).
+function ofDomain(plain, parted, domain) {
+  return dedupe([...(plain ?? []), ...(parted ?? [])]).filter((c) => {
+    try {
+      return inScope(c, domain);
+    } catch {
+      return false;
+    }
+  });
 }
 
 // One cookie of chrome.cookies in C2's form (as the sender builds it).
@@ -270,7 +284,7 @@ export class Act {
       try {
         const plain = await this.#chrome.cookies.getAll({ domain, storeId: store.id });
         const parted = await this.#chrome.cookies.getAll({ domain, storeId: store.id, partitionKey: {} });
-        return { cookies: dedupe([...(plain ?? []), ...(parted ?? [])]).map(toPayloadCookie) };
+        return { cookies: ofDomain(plain, parted, domain).map(toPayloadCookie) };
       } catch {
         throw new Error(COOKIES_FAILED);
       }
@@ -301,7 +315,7 @@ export class Act {
       try {
         const plain = await this.#chrome.cookies.getAll({ domain, storeId: DEFAULT_STORE });
         const parted = await this.#chrome.cookies.getAll({ domain, storeId: DEFAULT_STORE, partitionKey: {} });
-        for (const c of dedupe([...(plain ?? []), ...(parted ?? [])])) {
+        for (const c of ofDomain(plain, parted, domain)) {
           const host = String(c.domain ?? "").replace(/^\./, "");
           const details = {
             url: (c.secure ? "https://" : "http://") + host + (c.path || "/"),
