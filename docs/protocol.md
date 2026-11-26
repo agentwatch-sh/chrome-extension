@@ -631,12 +631,14 @@ is on, agent-browser's service. The daemon never sends it.
 **The blanket profile (board ab-4wh).** The design is agent-browser
 `docs/superpowers/specs/2026-11-25-blanket-profile-design.md`, today's cut for Linux (aw-lead and ab-lead,
 2026-11-25). One session of a box can have the operator's blanket approval: it opens any public host, but only in the
-blanket Chrome, a second agent Chrome on an empty folder, with its own receiver and its own native link (agent-browser
+blanket Chrome, a second agent Chrome on a new folder, with its own receiver and its own native link (agent-browser
 `docs/contracts/C12.md` and `docs/contracts/C11.md`, the blanket profile). The receiver there is the same package with
 the same ID, and it does not know which profile it runs in. From stage 3, on a box whose switch is on, only
 agent-browser's service sends the value of this part, and only on the blanket Chrome's link; the daemon never sends it.
-The receiver 0.3.16 (board ab-4wh.2) has this part, and C5 states its three rules (the public rules). The Mac comes later
-(a second profile with the operator's one Load unpacked).
+The receiver 0.3.16 (board ab-4wh.2) has this part, and C5 states its three rules (the public rules). On the Mac (board
+ab-4wh.16) the blanket Chrome's receiver is the same package, loaded unpacked from a folder of its own: the operator
+loads it once into the blanket template, and each blanket folder starts with a copy of the template's preference
+files. The receiver needs no change for the Mac.
 
 - The feature. A receiver with this part has the feature `"blanket"` in its hello's `features`. The hello line above
   and `test/vectors/hello.json` hold it.
