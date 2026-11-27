@@ -306,12 +306,13 @@ test("act_cookies: the cookies of the host in the act tab's store, in C2's form;
   assert.deepEqual(await s.main({ ...V.cookiesReq, id: "ns" }), { t: "res", id: "ns", ok: false, error: "no cookie store" });
 });
 
-test("act_cookies: a read that gives other domains' cookies too answers the host's cookies only (board ab-dkr)", async () => {
+test("act_cookies: a read that gives other domains' cookies too answers the host's cookies only, a subdomain's too (board ab-dkr)", async () => {
   const s = await setup();
   await s.openAct();
   s.f.cookieStores_ = structuredClone(V.cookieStores);
   s.f.cookies_ = [
     ...structuredClone(V.cookies),
+    { name: "sub_www", value: "made-up-sub", domain: "www.staging.example.com", hostOnly: true, path: "/", secure: true, storeId: "1", session: true },
     { name: "o_host", value: "made-up-o1", domain: "www.other.example", hostOnly: true, path: "/", secure: true, storeId: "1", session: true },
     { name: "o_part", value: "made-up-o2", domain: "www.other.example", hostOnly: true, path: "/", secure: true, storeId: "1", session: true,
       partitionKey: { topLevelSite: "https://example.com", hasCrossSiteAncestor: true } },
@@ -319,7 +320,27 @@ test("act_cookies: a read that gives other domains' cookies too answers the host
   ];
   // The read with partitionKey {} gives every cookie of the store, of every domain.
   s.f.cookieDomains = "partitioned-all";
-  assert.deepEqual(await s.main(V.cookiesReq), V.cookiesRes);
+  const res = await s.main(V.cookiesReq);
+  assert.equal(res.ok, true);
+  assert.deepEqual(res.data.cookies.map((c) => [c.name, c.domain]), [
+    ["test_session", "staging.example.com"], ["test_pref", ".staging.example.com"], ["sub_www", "www.staging.example.com"], ["test_chips", "staging.example.com"],
+  ]);
+  for (const c of V.cookiesRes.data.cookies) assert.deepEqual(res.data.cookies.find((x) => x.name === c.name), c, c.name);
+});
+
+test("act_cookies with a domain of a leading dot answers what Chrome's filter gives, the host's cookies (board ab-dkr)", async () => {
+  const s = await setup();
+  await s.openAct();
+  s.f.cookieStores_ = structuredClone(V.cookieStores);
+  s.f.cookies_ = [
+    ...structuredClone(V.cookies),
+    { name: "sub_www", value: "made-up-sub", domain: "www.staging.example.com", hostOnly: true, path: "/", secure: true, storeId: "1", session: true },
+  ];
+  // Chrome reads ".staging.example.com" as "staging.example.com".
+  s.f.cookieDomains = "chrome";
+  const res = await s.main({ ...V.cookiesReq, id: "dot", domain: ".staging.example.com" });
+  assert.equal(res.ok, true);
+  assert.deepEqual(res.data.cookies.map((c) => c.name), ["test_session", "test_pref", "sub_www", "test_chips"]);
 });
 
 // ---- the act's end ----
@@ -910,12 +931,17 @@ test("pay_cookies_copy: the default store's cookies of the domain go into the ac
   assert.deepEqual(s.f.callsTo("cookies.getAll").filter(([f]) => f.domain).map(([f]) => f.storeId), ["0", "0"]);
 });
 
-test("pay_cookies_copy: a read that gives other domains' cookies too copies the domain's cookies only (board ab-dkr)", async () => {
+const PAY_COOKIES = [
+  { name: "cart", value: "made-up-cart-1", domain: "shop.example", hostOnly: true, path: "/", secure: true, httpOnly: true, session: true, sameSite: "lax" },
+  { name: "www_cart", value: "made-up-cart-2", domain: "www.shop.example", hostOnly: true, path: "/", secure: true, httpOnly: false, session: true },
+];
+
+test("pay_cookies_copy: a read that gives other domains' cookies too copies the domain's cookies only, a subdomain's too (board ab-dkr)", async () => {
   const s = await setup();
   await s.openAct();
   s.f.cookieStores_ = [{ id: "0", tabIds: [7] }, { id: "1", tabIds: [ACT_TAB] }];
   s.f.cookies_ = [
-    { name: "cart", value: "made-up-cart-1", domain: "shop.example", hostOnly: true, path: "/", secure: true, httpOnly: true, session: true, sameSite: "lax" },
+    ...structuredClone(PAY_COOKIES),
     { name: "other", value: "made-up-other", domain: "other.example", hostOnly: true, path: "/", secure: true, httpOnly: false, session: true },
     { name: "o_part", value: "made-up-o2", domain: "www.other.example", hostOnly: true, path: "/", secure: true, session: true,
       partitionKey: { topLevelSite: "https://shop.example", hasCrossSiteAncestor: true } },
@@ -924,8 +950,23 @@ test("pay_cookies_copy: a read that gives other domains' cookies too copies the 
   // The read with partitionKey {} gives every cookie of the store, of every domain.
   s.f.cookieDomains = "partitioned-all";
   const res = await s.main({ t: "req", id: "pc9", op: "pay_cookies_copy", tab: ACT_TAB, domain: "shop.example" });
-  assert.deepEqual(res, { t: "res", id: "pc9", ok: true, data: { count: 1 } });
-  assert.deepEqual(s.f.callsTo("cookies.set").map(([d]) => [d.name, d.storeId]), [["cart", "1"]]);
+  assert.deepEqual(res, { t: "res", id: "pc9", ok: true, data: { count: 2 } });
+  assert.deepEqual(s.f.callsTo("cookies.set").map(([d]) => [d.name, d.storeId]), [["cart", "1"], ["www_cart", "1"]]);
+});
+
+test("pay_cookies_copy with a domain of a leading dot copies what Chrome's filter gives, the domain's cookies (board ab-dkr)", async () => {
+  const s = await setup();
+  await s.openAct();
+  s.f.cookieStores_ = [{ id: "0", tabIds: [7] }, { id: "1", tabIds: [ACT_TAB] }];
+  s.f.cookies_ = [
+    ...structuredClone(PAY_COOKIES),
+    { name: "other", value: "made-up-other", domain: "other.example", hostOnly: true, path: "/", secure: true, httpOnly: false, session: true },
+  ];
+  // Chrome reads ".shop.example" as "shop.example".
+  s.f.cookieDomains = "chrome";
+  const res = await s.main({ t: "req", id: "pc10", op: "pay_cookies_copy", tab: ACT_TAB, domain: ".shop.example" });
+  assert.deepEqual(res, { t: "res", id: "pc10", ok: true, data: { count: 2 } });
+  assert.deepEqual(s.f.callsTo("cookies.set").map(([d]) => [d.name, d.storeId]), [["cart", "1"], ["www_cart", "1"]]);
 });
 
 test("pay_cookies_copy refuses a tab that is not an act tab, a bad domain, and an act tab whose store is the default store", async () => {

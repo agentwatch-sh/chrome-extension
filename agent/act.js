@@ -98,11 +98,13 @@ function isHost(h) {
 // The cookies of the two reads (plain and every partition) that the domain
 // and its subdomains hold, each once. A cookie of another domain that a getAll
 // gives (a Chrome that does not filter one of the reads by domain) stays out,
-// on every Chrome (board ab-dkr).
+// on every Chrome (board ab-dkr). A leading dot of the domain counts as none,
+// as in Chrome's own filter (".shop.example" reads as "shop.example").
 function ofDomain(plain, parted, domain) {
+  const bare = domain.replace(/^\./, "");
   return dedupe([...(plain ?? []), ...(parted ?? [])]).filter((c) => {
     try {
-      return inScope(c, domain);
+      return inScope(c, bare);
     } catch {
       return false;
     }

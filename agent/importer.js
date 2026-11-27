@@ -93,9 +93,10 @@ function scopedTo(c, domain) {
 //
 // The removal takes only a cookie that the import's own scope holds (the set
 // step's rule, inScope). A cookie of another domain that a getAll gives (a
-// Chrome that does not filter one of the two reads by domain) stays, and it is
-// an errors entry "cookie <name>: out of scope, not removed" (board ab-dkr:
-// an import must never clear the rest of the cookie store).
+// Chrome that does not filter one of the two reads by domain) stays, and
+// outOfScope counts it: no errors entry and no name, since the import itself
+// is right (board ab-dkr: an import must never clear the rest of the cookie
+// store; the count is 0 when Chrome's reads filter by domain).
 async function replaceCookies(chrome, state, signal) {
   const goOn = () => {
     if (signal.aborted) throw new Error("aborted");
@@ -107,9 +108,10 @@ async function replaceCookies(chrome, state, signal) {
   const partitioned = await chrome.cookies.getAll({ domain: state.domain, partitionKey: {} });
   const found = [...unpartitioned, ...partitioned];
   let removed = 0;
+  let outOfScope = 0;
   for (const c of dedupe(found)) {
     if (!scopedTo(c, state.domain)) {
-      errors.push("cookie " + cookieName(c) + ": out of scope, not removed");
+      outOfScope += 1;
       continue;
     }
     goOn();
@@ -136,7 +138,7 @@ async function replaceCookies(chrome, state, signal) {
     if (ok) set += 1;
     else errors.push("cookie " + name + ": not set");
   }
-  return { removed, set, errors };
+  return { removed, outOfScope, set, errors };
 }
 
 function count(x) {
@@ -380,6 +382,7 @@ async function runImport(chrome, state, opts) {
 
     return {
       cookies_removed: cookies.removed,
+      cookies_out_of_scope: cookies.outOfScope,
       cookies_set: cookies.set,
       tabs_closed: tabsClosed,
       local: page.local,
