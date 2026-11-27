@@ -248,7 +248,9 @@ stage 3, and on a box whose switch is off, the daemon is the party, as below.
   -> `{"rules":<scope rules in force>,"closed":<tabs closed>,"refused":<entries, list names and scopes refused>}`
   (the allowlists, below);
   `{"t":"req","id":"<id>","op":"import","state":<C2 payload>}` ->
-  `{"cookies_removed":0,"cookies_set":0,"tabs_closed":0,"local":0,"session":0,"idb_databases":0,"idb_records":0,"cache_entries":0,"errors":["<store or cookie name>: <reason>"]}`;
+  `{"cookies_removed":0,"cookies_out_of_scope":0,"cookies_set":0,"tabs_closed":0,"local":0,"session":0,"idb_databases":0,"idb_records":0,"cache_entries":0,"errors":["<store or cookie name>: <reason>"]}`
+  (`cookies_out_of_scope`: the cookies outside `domain` that the reads of C6 step 1 gave and that stayed, a
+  count with no name; 0 while Chrome's reads filter by domain; board ab-dkr);
   the three requests of the act of the stored sign-ins (below): `act_rules`, `act_cookies` and
   `act_end`; the two requests of the card payment's pay act (below): `pay_cookies_copy` and
   `pay_merchant_block`; and the request of PageFetch's fetch window (below): `fetch_end`.
@@ -548,7 +550,9 @@ before that only agent-browser's own tests of the act. The daemon never sends th
   whose `tabIds` hold the tab (`cookies.getAllCookieStores`; else `no cookie store`). A store with the id `"0"`,
   the default context's store, also gets `no cookie store` (review-ce44 N10). Then it reads
   `cookies.getAll({domain, storeId})` and `cookies.getAll({domain, storeId, partitionKey: {}})`: the cookies of
-  the host and its subdomains (Chrome's domain filter), partitioned or not, each cookie once. It answers each
+  the host and its subdomains (Chrome's domain filter), partitioned or not, each cookie once. The receiver
+  answers only a cookie whose domain without a leading dot is covered by `domain` (a leading dot of `domain`
+  counts as none, as in Chrome's filter), also when a read of Chrome gives more (board ab-dkr). It answers each
   cookie in C2's form, as the sender builds it. A Chrome call that fails answers `cookies failed`. The receiver
   reads no store of the default context for the act (the one exception is `pay_cookies_copy`, below, which answers
   no value): a tab that is no act tab gets `not an act tab`. A cookie
@@ -564,9 +568,10 @@ before that only agent-browser's own tests of the act. The daemon never sends th
   gets `no cookie store`).
   Then it reads the default context's store `"0"` for the domain and its subdomains, partitioned or not, httpOnly
   included, and writes each cookie into the act tab's store (`cookies.set` with that store's id; a host-only cookie
-  stays host-only). This is the one read of the default store that the receiver makes for an act, a narrow
-  exception to review-ce44 N10 for the card payment's pay act: the answer holds the count only, never a name or a
-  value, and no log line holds one. A Chrome call that fails answers `cookies failed`.
+  stays host-only). It writes only the cookies of the domain and its subdomains, as `act_cookies` answers them,
+  also when a read of Chrome gives more (board ab-dkr). This is the one read of the default store that the
+  receiver makes for an act, a narrow exception to review-ce44 N10 for the card payment's pay act: the answer
+  holds the count only, never a name or a value, and no log line holds one. A Chrome call that fails answers `cookies failed`.
 - `pay_merchant_block` (the hello's feature `pay`):
   `{"t":"req","id":"<id>","op":"pay_merchant_block","tab":<act tab>,"domain":"<registrable domain>","on":<bool>}` ->
   `{"rules":[<ids>]}`. With `on` true the receiver adds C5's rule 90 for the domain, with the act tabs in force
@@ -1555,7 +1560,10 @@ files. The receiver needs no change for the Mac.
    (`getAll({domain})` and `getAll({domain, partitionKey: {}})`), then `cookies.set` each sent
    cookie (C2 -> set details: `url` = `https://` if secure else `http://`, the domain without a
    leading dot, the path; `domain` only when not `hostOnly`; `expirationDate` only when not
-   `session`; `sameSite` and `partitionKey` as sent).
+   `session`; `sameSite` and `partitionKey` as sent). The removal takes only a cookie whose domain without a
+   leading dot is covered by `domain` (C2's rule for a sent cookie), also when a read of Chrome gives more: such a
+   cookie stays, and the answer's `cookies_out_of_scope` counts it (measured on Chromium 156.0.8078.108: both
+   reads give only the cookies of `domain` and its subdomains, so the count is 0; board ab-dkr).
 2. `tabs.create({url: "about:blank", active: true})`, and while an incognito tab is open (in step 1's
    second read) also `windowId`: the window of the last tab of the default context in that read (else
    Chrome can open the tab in the incognito window when that window has the focus; board
