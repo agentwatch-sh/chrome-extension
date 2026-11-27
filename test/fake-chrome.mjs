@@ -70,6 +70,7 @@ export function makeFakeChrome() {
     ports: [],
     tabs_: [],
     cookies_: [],
+    cookieDomains: null, // the domain filter of cookies.getAll: null, "chrome" or "partitioned-all" (see cookies.getAll)
     impl: {},
     autoNavigate: true,
     paused: new Map(), // requestId -> {tabId, url}
@@ -249,12 +250,25 @@ export function makeFakeChrome() {
     cookies: {
       // Without partitionKey: unpartitioned cookies only. With partitionKey {}:
       // every cookie, so the two reads overlap (as in Chrome). Without storeId:
-      // the default store's.
+      // the default store's. The domain filter (board ab-dkr) follows
+      // fake.cookieDomains: null (the default) ignores it; "chrome" keeps a
+      // cookie whose domain (without its leading dot) is the filter's domain or
+      // a subdomain of it, in both reads (as Chromium 156 does, measured);
+      // "partitioned-all" does so in the read without partitionKey only, and
+      // the read with partitionKey {} gives every cookie of the store, of every
+      // domain (a Chrome that does not filter that read by domain).
       getAll: rec("cookies.getAll", async (filter) => {
         if ((filter.storeId ?? "0") === "1" && !fake.tabs_.some((t) => t.incognito === true) && fake.otrLingering_ === null) {
           throw new Error('Invalid cookie store id: "1".');
         }
-        return fake.cookies_.filter((c) => (filter.partitionKey ? true : !c.partitionKey) && (c.storeId ?? "0") === (filter.storeId ?? "0")).map((c) => ({ ...c }));
+        const filtered = typeof filter.domain === "string" && (fake.cookieDomains === "chrome" || (fake.cookieDomains === "partitioned-all" && !filter.partitionKey));
+        const want = String(filter.domain).replace(/^\./, "").toLowerCase();
+        const ofDomain = (c) => {
+          const d = String(c.domain).replace(/^\./, "").toLowerCase();
+          return d === want || d.endsWith("." + want);
+        };
+        return fake.cookies_.filter((c) => (filter.partitionKey ? true : !c.partitionKey) && (c.storeId ?? "0") === (filter.storeId ?? "0") &&
+          (!filtered || ofDomain(c))).map((c) => ({ ...c }));
       }),
       getAllCookieStores: rec("cookies.getAllCookieStores", async () =>
         structuredClone(fake.cookieStores_.filter((x) => x.id === "0" || fake.tabs_.some((t) => t.incognito === true)))),

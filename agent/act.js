@@ -26,7 +26,7 @@
 // No log line holds a cookie, a URL, a host or a value of the page.
 import { call } from "./attach.js";
 import { MAX_SEND_TO } from "./dnr.js";
-import { dedupe } from "./lib/cookies.js";
+import { dedupe, inScope } from "./lib/cookies.js";
 
 export const ACT_MARK = "act";
 export const ACT_KEY = "act:";
@@ -95,12 +95,32 @@ function isHost(h) {
   }
 }
 
+// The cookies of the two reads (plain and every partition) that the domain
+// and its subdomains hold, each once. A cookie of another domain that a getAll
+// gives (a Chrome that does not filter one of the reads by domain) stays out,
+// on every Chrome (board ab-dkr). A leading dot of the domain counts as none,
+// as in Chrome's own filter (".shop.example" reads as "shop.example").
+function ofDomain(plain, parted, domain) {
+  const bare = domain.replace(/^\./, "");
+  return dedupe([...(plain ?? []), ...(parted ?? [])]).filter((c) => {
+    try {
+      return inScope(c, bare);
+    } catch {
+      return false;
+    }
+  });
+}
+
 // One cookie of chrome.cookies in C2's form (as the sender builds it).
 // A pay act's domain (pay_cookies_copy, pay_merchant_block): a host with at least one dot and no IP literal, so that
 // a bare public suffix such as "com" never names every site of it (the receiver has no public suffix list: the
 // service sends only a registrable domain; the daemon lead's review of chrome-extension#54).
+// The rule holds for the domain without one leading dot (".shop.example" reads as "shop.example", as in the cookie
+// filter), so ".com" is a bare suffix too, and a second leading dot is refused (board ab-dkr).
 function isPayDomain(d) {
-  return isHost(d) && d.includes(".") && !/^[0-9.]+$/.test(d) && !d.includes(":");
+  if (typeof d !== "string") return false;
+  const bare = d.replace(/^\./, "");
+  return !bare.startsWith(".") && isHost(bare) && bare.includes(".") && !/^[0-9.]+$/.test(bare) && !bare.includes(":");
 }
 
 export function toPayloadCookie(c) {
@@ -270,7 +290,7 @@ export class Act {
       try {
         const plain = await this.#chrome.cookies.getAll({ domain, storeId: store.id });
         const parted = await this.#chrome.cookies.getAll({ domain, storeId: store.id, partitionKey: {} });
-        return { cookies: dedupe([...(plain ?? []), ...(parted ?? [])]).map(toPayloadCookie) };
+        return { cookies: ofDomain(plain, parted, domain).map(toPayloadCookie) };
       } catch {
         throw new Error(COOKIES_FAILED);
       }
@@ -301,7 +321,7 @@ export class Act {
       try {
         const plain = await this.#chrome.cookies.getAll({ domain, storeId: DEFAULT_STORE });
         const parted = await this.#chrome.cookies.getAll({ domain, storeId: DEFAULT_STORE, partitionKey: {} });
-        for (const c of dedupe([...(plain ?? []), ...(parted ?? [])])) {
+        for (const c of ofDomain(plain, parted, domain)) {
           const host = String(c.domain ?? "").replace(/^\./, "");
           const details = {
             url: (c.secure ? "https://" : "http://") + host + (c.path || "/"),

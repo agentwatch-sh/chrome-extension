@@ -135,11 +135,11 @@ test("the import follows C6 in order and sums the counts", async () => {
   const result = await importState(f.chrome, state, opts());
 
   assert.deepEqual(result, {
-    cookies_removed: 2, cookies_set: 2, tabs_closed: 0, local: 1, session: 1,
+    cookies_removed: 2, cookies_out_of_scope: 0, cookies_set: 2, tabs_closed: 0, local: 1, session: 1,
     idb_databases: 1, idb_records: 1, cache_entries: 0, errors: [],
   });
   assert.deepEqual(Object.keys(result), [
-    "cookies_removed", "cookies_set", "tabs_closed", "local", "session", "idb_databases", "idb_records",
+    "cookies_removed", "cookies_out_of_scope", "cookies_set", "tabs_closed", "local", "session", "idb_databases", "idb_records",
     "cache_entries", "errors",
   ]);
 
@@ -295,6 +295,62 @@ test("a cookie that fails names the cookie in errors and the import goes on", as
   noSecret(result);
 });
 
+// Board ab-dkr: the cookies of other sites in the store, also partitioned ones, a look-alike
+// domain (xapp.localhost) and a cookie of another site in the domain's partition.
+const OTHER_SITES = [
+  { name: "o_dom", value: SECRET + "-o1", domain: ".other.localhost", hostOnly: false, path: "/", secure: true },
+  { name: "o_host", value: SECRET + "-o2", domain: "www.other.localhost", hostOnly: true, path: "/", secure: true },
+  {
+    name: "o_part", value: SECRET + "-o3", domain: "www.other.localhost", hostOnly: true, path: "/", secure: true,
+    partitionKey: { topLevelSite: "https://other.localhost", hasCrossSiteAncestor: false },
+  },
+  {
+    name: "o_in_app", value: SECRET + "-o4", domain: "www.other.localhost", hostOnly: true, path: "/", secure: true,
+    partitionKey: { topLevelSite: "https://app.localhost", hasCrossSiteAncestor: true },
+  },
+  { name: "x_host", value: SECRET + "-o5", domain: "www.xapp.localhost", hostOnly: true, path: "/", secure: true },
+];
+const APP_COOKIES = [
+  { name: "old", value: SECRET + "-old", domain: ".app.localhost", hostOnly: false, path: "/", secure: true },
+  {
+    name: "chip", value: SECRET + "-chip", domain: "www.app.localhost", hostOnly: true, path: "/", secure: true,
+    partitionKey: { topLevelSite: "https://app.localhost", hasCrossSiteAncestor: false },
+  },
+  // A partitioned cookie of the domain under another top-level site: in the scope, so it goes.
+  {
+    name: "chip_in_other", value: SECRET + "-chip2", domain: "www.app.localhost", hostOnly: true, path: "/", secure: true,
+    partitionKey: { topLevelSite: "https://other.localhost", hasCrossSiteAncestor: true },
+  },
+];
+
+test("a read that gives other domains' cookies too: the import removes only its domain's (also one in another site's partition); each other cookie stays and counts in cookies_out_of_scope, with no errors entry and no name (board ab-dkr)", async () => {
+  const f = makeFakeChrome();
+  // The read with partitionKey {} gives every cookie of the store, of every domain.
+  f.cookieDomains = "partitioned-all";
+  f.cookies_ = [...OTHER_SITES.slice(0, 2), ...APP_COOKIES, ...OTHER_SITES.slice(2)];
+  f.pageResult = { local: 1, session: 1, idb_databases: 1, idb_records: 1, cache_entries: 0, errors: [] };
+  const result = await importState(f.chrome, makeState(), opts());
+  assert.deepEqual(f.callsTo("cookies.remove").map(([d]) => d.name), ["old", "chip", "chip_in_other"], "no cookie of another domain is removed");
+  assert.deepEqual(result, {
+    cookies_removed: 3, cookies_out_of_scope: 5, cookies_set: 2, tabs_closed: 0, local: 1, session: 1,
+    idb_databases: 1, idb_records: 1, cache_entries: 0, errors: [],
+  });
+  for (const c of OTHER_SITES) assert.ok(!JSON.stringify(result).includes(c.name), "no name of another site's cookie: " + c.name);
+  noSecret(result);
+});
+
+test("Chrome's domain filter on both reads (Chromium 156, measured): the import reads and removes its domain's cookies only; cookies_out_of_scope is 0 (board ab-dkr)", async () => {
+  const f = makeFakeChrome();
+  f.cookieDomains = "chrome";
+  f.cookies_ = [...OTHER_SITES, ...APP_COOKIES];
+  f.pageResult = { local: 1, session: 1, idb_databases: 1, idb_records: 1, cache_entries: 0, errors: [] };
+  const result = await importState(f.chrome, makeState(), opts());
+  assert.deepEqual(f.callsTo("cookies.remove").map(([d]) => d.name), ["old", "chip", "chip_in_other"]);
+  assert.equal(result.cookies_removed, 3);
+  assert.equal(result.cookies_out_of_scope, 0);
+  assert.deepEqual(result.errors, []);
+});
+
 test("a cookie removal that throws is reported and does not count", async () => {
   const f = makeFakeChrome();
   f.cookies_ = [
@@ -331,7 +387,7 @@ test("page errors (an unsupported record) pass through after the cookie errors",
   };
   const result = await importState(f.chrome, makeState(), opts());
   assert.deepEqual(result, {
-    cookies_removed: 0, cookies_set: 1, tabs_closed: 0, local: 2, session: 1, idb_databases: 1, idb_records: 4,
+    cookies_removed: 0, cookies_out_of_scope: 0, cookies_set: 1, tabs_closed: 0, local: 2, session: 1, idb_databases: 1, idb_records: 4,
     cache_entries: 3, errors: ["cookie pref: not set", "idb db/s: 1 records skipped"],
   });
 });

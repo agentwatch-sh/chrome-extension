@@ -78,10 +78,25 @@ function cookieName(c) {
   return c !== null && typeof c === "object" && typeof c.name === "string" ? c.name : "?";
 }
 
+function scopedTo(c, domain) {
+  try {
+    return inScope(c, domain);
+  } catch {
+    return false;
+  }
+}
+
 // C6 step 1: remove every cookie of the domain and its subdomains (also the
 // partitioned ones), then set each sent cookie. One failed cookie is an
 // errors entry; the import goes on. When the step has failed (its deadline),
 // signal.aborted stops the work before its next chrome call.
+//
+// The removal takes only a cookie that the import's own scope holds (the set
+// step's rule, inScope). A cookie of another domain that a getAll gives (a
+// Chrome that does not filter one of the two reads by domain) stays, and
+// outOfScope counts it: no errors entry and no name, since the import itself
+// is right (board ab-dkr: an import must never clear the rest of the cookie
+// store; the count is 0 when Chrome's reads filter by domain).
 async function replaceCookies(chrome, state, signal) {
   const goOn = () => {
     if (signal.aborted) throw new Error("aborted");
@@ -93,7 +108,12 @@ async function replaceCookies(chrome, state, signal) {
   const partitioned = await chrome.cookies.getAll({ domain: state.domain, partitionKey: {} });
   const found = [...unpartitioned, ...partitioned];
   let removed = 0;
+  let outOfScope = 0;
   for (const c of dedupe(found)) {
+    if (!scopedTo(c, state.domain)) {
+      outOfScope += 1;
+      continue;
+    }
     goOn();
     try {
       if (await chrome.cookies.remove(toRemoveDetails(c))) removed += 1;
@@ -104,13 +124,7 @@ async function replaceCookies(chrome, state, signal) {
   let set = 0;
   for (const c of state.cookies) {
     const name = cookieName(c);
-    let scoped = false;
-    try {
-      scoped = inScope(c, state.domain);
-    } catch {
-      scoped = false;
-    }
-    if (!scoped) {
+    if (!scopedTo(c, state.domain)) {
       errors.push("cookie " + name + ": out of scope");
       continue;
     }
@@ -124,7 +138,7 @@ async function replaceCookies(chrome, state, signal) {
     if (ok) set += 1;
     else errors.push("cookie " + name + ": not set");
   }
-  return { removed, set, errors };
+  return { removed, outOfScope, set, errors };
 }
 
 function count(x) {
@@ -368,6 +382,7 @@ async function runImport(chrome, state, opts) {
 
     return {
       cookies_removed: cookies.removed,
+      cookies_out_of_scope: cookies.outOfScope,
       cookies_set: cookies.set,
       tabs_closed: tabsClosed,
       local: page.local,

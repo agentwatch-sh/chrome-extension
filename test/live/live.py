@@ -31,6 +31,8 @@ PAGE_TOP = 87
 # The scope of every tab that the harness opens (server.py: LIVE_SCOPE). tabs.create and
 # windows.create take it as their second arg (C10).
 SCOPE = "live"
+# Board ab-dkr: the other site whose cookies the agent Chromium holds before the send of s1.localhost.
+KEEP = "keep.localhost"
 
 
 class Ctl:
@@ -266,6 +268,42 @@ class Live:
         self.agent.goto(self.site("s1", "/agent-old"))
         ev = self.ctl.wait(m, 20, kind="page", page_kind="agent-old-done", host="www.s1.localhost")
         self.r.add("agent signs in on its own first (old state to replace)", ev is not None, "page log of the agent tab")
+
+    def keep_before(self) -> None:
+        """Board ab-dkr: another site's state in the agent Chromium (the 11 cookie kinds of /setup, also
+        the partitioned one), which the send of s1.localhost must keep. The names go to the run folder."""
+        a = self.allow(sorted(set(self.ctl(op="daemon_state")["allow"]) | {"s1.localhost", KEEP}))
+        m = self.ctl.mark()
+        self.agent.goto(self.site("keep", "/setup"))
+        done = self.ctl.wait(m, 30, kind="page", page_kind="setup-done", host="www." + KEEP)
+        rep = self.ctl.wait(m, 30, kind="report", host="www." + KEEP)
+        summary = (rep or {}).get("summary") or {}
+        names = {k: summary.get(k) or [] for k in ("nav_cookie", "doc_cookie")}
+        with open(os.path.join(self.run, "keep-before.json"), "w", encoding="utf-8") as f:
+            json.dump(names, f)
+        self.r.add("another site's cookies in the agent Chromium before the send (board ab-dkr)",
+                   a.get("ok") is True and bool(done and rep) and bool(names["nav_cookie"]),
+                   "page log and the report page of www.keep.localhost (agent side): cookie names only",
+                   nav_cookie=names["nav_cookie"], doc_cookie=names["doc_cookie"])
+
+    def keep_after(self) -> None:
+        """Board ab-dkr: after the send of s1.localhost, the agent's report page of www.keep.localhost
+        sees the same cookie names as before it (the import removed no cookie of another site)."""
+        path = os.path.join(self.run, "keep-before.json")
+        before = None
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                before = json.load(f)
+        self.allow(sorted(set(self.ctl(op="daemon_state")["allow"]) | {"s1.localhost", KEEP}))
+        m = self.ctl.mark()
+        self.agent.goto(self.site("keep", "/report"))
+        rep = self.ctl.wait(m, 30, kind="report", host="www." + KEEP)
+        summary = (rep or {}).get("summary") or {}
+        after = {k: summary.get(k) or [] for k in ("nav_cookie", "doc_cookie")}
+        self.r.add("a send of s1.localhost keeps every cookie of another site, the partitioned one too (board ab-dkr)",
+                   bool(before and before["nav_cookie"]) and rep is not None and after == before,
+                   "the report page of www.keep.localhost (agent side) before and after the send: Cookie header and "
+                   "document.cookie names", before=before, after=after)
 
     def operator_list(self) -> None:
         """A swapped operator list and scope list must fail in both tab types."""
@@ -981,7 +1019,7 @@ class Live:
 
 
 CASES = ["link", "stub_refusals", "static_block", "agent_old_state", "operator_list", "add_box", "operator_setup", "popup_before_login",
-         "box_login", "send_s1", "nav_cases", "allowlist_change", "service_worker", "sw_removed", "big30", "big33",
+         "box_login", "keep_before", "send_s1", "keep_after", "nav_cases", "allowlist_change", "service_worker", "sw_removed", "big30", "big33",
          "bridge_info", "nav_header", "frame_rule", "hold", "hold_import", "act"]
 
 

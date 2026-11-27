@@ -2052,6 +2052,15 @@ test("C6 states that the import leaves the act's context out: step 1 closes tabs
   ]) assert.ok(says(C6, s), `C6 says: ${s}`);
 });
 
+test("C4 and C6 state that the receiver removes, answers and copies only the cookies of the domain and its subdomains, also when Chrome's read gives more, and the import's count cookies_out_of_scope (board ab-dkr)", () => {
+  assert.ok(says(C4, '`{"cookies_removed":0,"cookies_out_of_scope":0,"cookies_set":0,"tabs_closed":0,"local":0,"session":0,"idb_databases":0,"idb_records":0,"cache_entries":0,"errors":["<store or cookie name>: <reason>"]}` (`cookies_out_of_scope`: the cookies outside `domain` that the reads of C6 step 1 gave and that stayed, a count with no name; 0 while Chrome\'s reads filter by domain; board ab-dkr);'));
+  for (const s of [
+    "The receiver answers only a cookie whose domain without a leading dot is covered by `domain` (a leading dot of `domain` counts as none, as in Chrome's filter), also when a read of Chrome gives more (board ab-dkr).",
+    "It writes only the cookies of the domain and its subdomains, as `act_cookies` answers them, also when a read of Chrome gives more (board ab-dkr).",
+  ]) assert.ok(says(C4, s), `C4 says: ${s}`);
+  assert.ok(says(C6, "The removal takes only a cookie whose domain without a leading dot is covered by `domain` (C2's rule for a sent cookie), also when a read of Chrome gives more: such a cookie stays, and the answer's `cookies_out_of_scope` counts it (measured on Chromium 156.0.8078.108: both reads give only the cookies of `domain` and its subdomains, so the count is 0; board ab-dkr)."));
+});
+
 test("C10 states the act window: the mark and the pair rule, the steps of windows.create, the act tab's scope, the exclusions, windows.get, what still reaches the relay, the end and the limits", () => {
   const part = C10.slice(C10.indexOf("**The act window (board ab-v16.97.3).**"), C10.indexOf("**Removals and the last window (board ab-v16.41).**"));
   assert.ok(part.length > 1000, "C10 has the part");

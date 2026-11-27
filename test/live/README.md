@@ -223,6 +223,26 @@ do this):
 Start the stub server, the native host and the driver as `run.sh up` does, and replace only the
 Chromium start of the agent. The sender (operator) side stays on Chromium.
 
+## Another site's cookies across a send: `keep_before` and `keep_after` (board ab-dkr)
+
+An import removes the cookies of its own domain only (C6 step 1): every other cookie of the agent
+profile stays. Before `send_s1`, the case `keep_before` adds `keep.localhost` to the lists and opens
+`www.keep.localhost/setup` in the agent Chromium, which sets the 11 cookie kinds of `/setup` (the
+partitioned one too) and its page storage. The driver writes the cookie names that the report page
+sees (its Cookie header and `document.cookie`) to `<run>/keep-before.json`. After `send_s1`, the
+case `keep_after` opens `www.keep.localhost/report` again and checks that the page sees the same
+names.
+
+Run of 2026-11-27 on the Linux server, Chromium 156.0.8078.108, receiver 0.3.17 (unpacked `agent/`),
+`run.sh test` with the cases `link agent_old_state add_box operator_setup box_login keep_before
+send_s1 keep_after` (`LIVE_DISPLAY=180`, under the shared heavy lock): **26 checks, 24 passed, 2
+failed**. Both new checks pass: before and after the send, the agent's report page of
+`www.keep.localhost` sees the same 10 names in the Cookie header (`c_part` among them) and the same
+9 in `document.cookie`, and the import answers `cookies_removed` 3 (the old agent cookies of
+`s1.localhost`). The two failures are not of this task: the accepted partitioned-cookie check (CHIPS
+on an http `*.localhost` site, below), and the `link` case's hello check, which still expects the
+features `["scopes", "act", "fetch", "pay"]` while the receiver says `blanket` too (since 0.3.16).
+
 ## The worker removal of the recorded origins: `workers.py`
 
 `workers.py` is the live check of board task ab-v16.74 (C5, the worker removal of the recorded
