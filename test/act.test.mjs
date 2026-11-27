@@ -1008,7 +1008,7 @@ test("pay_merchant_block: off removes rule 90; a tab that is not an act tab and 
 test("the pay act's requests refuse a domain with no dot and an IP literal (bad request): a bare suffix never names every site of it", async () => {
   const s = await setup();
   await s.openAct();
-  for (const [i, domain] of ["com", "localhost", "127.0.0.1", "10.0.0.1"].entries()) {
+  for (const [i, domain] of ["com", "localhost", "127.0.0.1", "10.0.0.1", ".com", "..shop.example", ".10.0.0.1"].entries()) {
     assert.deepEqual(await s.main({ t: "req", id: "pd" + i, op: "pay_cookies_copy", tab: ACT_TAB, domain }), { t: "res", id: "pd" + i, ok: false, error: "bad request" }, domain);
     assert.deepEqual(await s.main({ t: "req", id: "pb" + i, op: "pay_merchant_block", tab: ACT_TAB, domain, on: true }), { t: "res", id: "pb" + i, ok: false, error: "bad request" }, domain);
   }
