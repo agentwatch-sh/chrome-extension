@@ -128,8 +128,8 @@ up() {  # [all]
   mkdir -p "$HERE/.run"
   run="$HERE/.run/$(date +%Y%m%d-%H%M%S)"
   mkdir "$run"
-  # From here on, a failed step (set -e also ends the $(up) subshell of
-  # "all") stops whatever this run started. A successful up clears the trap.
+  # From here on, a failed step stops whatever this run started. A successful
+  # up clears the trap.
   trap 'down "$run"' EXIT
   trap 'exit 130' INT TERM
   mkdir "$run/home" "$run/logs" "$run/shots" "$run/x" "$run/pids"
@@ -266,7 +266,10 @@ case "${1:-all}" in
     a=$(free_display "$FIRST_DISPLAY") && o=$(free_display $((a + 1))) && echo "$a $o"
     ;;
   all)
-    run=$(up all)
+    # Not run=$(up all): that subshell is a process of the run, so after a
+    # failed step the guard stops it inside its own down, and run.sh exits 130
+    # (board ab-v16.92). up sets run here; its stdout holds only the run folder.
+    up all >/dev/null
     trap 'down "$run"' EXIT INT TERM
     python3 "$HERE/live.py" "$run"
     ;;
