@@ -83,7 +83,10 @@ start time). In `all` mode, `up` runs in the script itself, not in a subshell, a
 script's EXIT trap, in the driver itself: its `sleep` starts after the SIGTERM, so the guard stops no
 process of `down`. After a successful `up`, `run.sh` exits with the live run's own code (board
 ab-v16.89). When a step of `up` fails, `run.sh` exits with that step's own code (board ab-v16.92),
-also after `run.sh up` alone.
+also after `run.sh up` alone. Two exceptions: when `down` itself fails (the guard still runs after
+30 s), `run.sh` exits 1, and a SIGINT or SIGTERM in `up` after the guard's answer ends it with 130.
+A SIGTERM while the guard waits for the lock ends `run.sh` at once; in `all` mode its guard then
+ends too, because its driver is gone.
 
 `run.sh` never takes the X displays 0, 90 (agentwatch's agent browser on the Linux server, the operator's),
 147, 190, 191 or 192, whatever `LIVE_DISPLAY` is (`RESERVED_DISPLAYS`, the same list as in

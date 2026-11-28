@@ -128,10 +128,7 @@ up() {  # [all]
   mkdir -p "$HERE/.run"
   run="$HERE/.run/$(date +%Y%m%d-%H%M%S)"
   mkdir "$run"
-  # From here on, a failed step stops whatever this run started. A successful
-  # up clears the trap.
   trap 'down "$run"' EXIT
-  trap 'exit 130' INT TERM
   mkdir "$run/home" "$run/logs" "$run/shots" "$run/x" "$run/pids"
   # The harness lock and the guard, before the displays are chosen. The guard
   # reads each pid file of $run/pids and stops those processes (and their
@@ -150,6 +147,10 @@ up() {  # [all]
       return 2
       ;;
   esac
+  # Not before the guard's answer: dash runs a trapped signal only after a
+  # $(...) ends, so a SIGTERM in the lock wait would wait up to
+  # HARNESS_LOCK_WAIT (board ab-v16.92).
+  trap 'exit 130' INT TERM
   sock=$(mktemp -d /tmp/aw-live.XXXXXX)
 
   a=$(free_display "$FIRST_DISPLAY")
@@ -267,8 +268,8 @@ case "${1:-all}" in
     ;;
   all)
     # Not run=$(up all): that subshell is a process of the run, so after a
-    # failed step the guard stops it inside its own down, and run.sh exits 130
-    # (board ab-v16.92). up sets run here; its stdout holds only the run folder.
+    # failed step the guard would stop it inside its own down (board
+    # ab-v16.92). up sets run; its stdout holds only the run folder.
     up all >/dev/null
     trap 'down "$run"' EXIT INT TERM
     python3 "$HERE/live.py" "$run"

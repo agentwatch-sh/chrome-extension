@@ -357,18 +357,17 @@ sleep 0.15`, ({ pid, stopped, log }) => {
   });
 });
 
-/** A free loopback port for run.sh's port check (LIVE_PORT). */
 const freePort = () => new Promise((resolve, reject) => {
   const s = createServer().once("error", reject).listen(0, "127.0.0.1", () => { const { port } = s.address(); s.close(() => resolve(port)); });
 });
 
-/** run.sh, with the steps of up after its guard (from its mktemp on) replaced by `steps`, as test/live/run.sh of a
- *  stand-in checkout in `dir`: the real guard through a link, and a docs/protocol.md with two made-up extension IDs. */
 function upFailingRunSh(dir, steps) {
   const sh = readFileSync(RUN_SH, "utf8");
-  const from = sh.indexOf("\n  sock=$(mktemp -d ");
+  const guard = sh.indexOf('answer=$(python3 -I -B "$HERE/harness_guard.py"');
+  const from = sh.indexOf("\n  sock=$(mktemp -d ", guard);
   const to = sh.indexOf('\n  echo "$run"\n}\n', from);
-  assert.ok(from > sh.indexOf('"$HERE/harness_guard.py"') && to > from, "run.sh's up: its mktemp after the guard, and its end");
+  assert.ok(guard > 0 && from > guard && to > from, "run.sh's up: its guard, its mktemp, and its end");
+  assert.match(sh.slice(sh.indexOf("\n  esac\n", guard), from), /^\n {2}esac(?:\n {2}(?:trap |#)[^\n]*)*$/, "between the guard's answer and the cut, only traps run for real");
   mkdirSync(join(dir, "test/live"), { recursive: true });
   mkdirSync(join(dir, "docs"));
   writeFileSync(join(dir, "docs/protocol.md"), `- Sender extension ID: \`${"a".repeat(32)}\`\n- Receiver extension ID: \`${"b".repeat(32)}\`\n`);
@@ -378,14 +377,27 @@ function upFailingRunSh(dir, steps) {
   return file;
 }
 
+/** The pids of this user's guards whose argv names a folder below `prefix`. */
+function guardsBelow(prefix) {
+  const out = [];
+  for (const row of execFileSync("ps", ["-e", "-o", "pid="], { encoding: "utf8" }).split("\n")) {
+    const pid = Number(row.trim());
+    try {
+      const argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+      if (argv.some((a) => a.endsWith("/harness_guard.py")) && argv.some((a) => a.startsWith(prefix))) out.push(pid);
+    } catch { /* ended */ }
+  }
+  return out;
+}
+
 for (const mode of ["all", "up"]) {
   const form = mode === "all" ? "run.sh (all mode)" : "run.sh up alone";
   test(`${form}: a failed step of up ends run.sh with that step's own exit code; the guard stops the run's processes, and no process of down (board ab-v16.92)`, { skip }, async () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), "ce-guard-")));
     const pids = [];
     try {
-      // After the guard: an "Xvfb", and a "Chromium" with a helper, each named by a pid file; then a step fails with 7.
-      // down's sleep 0.1 lasts 1 s here, so the guard's look at the driver's tree after the SIGTERM surely finds it.
+      // down's sleep 0.1 lasts 1 s here: in all mode, the guard's look at the driver's tree after the SIGTERM then
+      // surely finds it.
       const file = upFailingRunSh(dir, `  sleep 618 & echo $! >"$run/pids/xvfb.1"
   sh -c 'sleep 619 & echo $! >"$1/helper"; wait' sh "$run" & echo $! >"$run/pids/chromium-agent"
   sleep 1
@@ -400,7 +412,7 @@ for (const mode of ["all", "up"]) {
       let out = "", err = "";
       child.stdout.on("data", (b) => { out += b; });
       child.stderr.on("data", (b) => { err += b; });
-      const code = await Promise.race([new Promise((r) => child.once("exit", (c, s) => r(c ?? s))), new Promise((r) => setTimeout(r, 40_000, "still running after 40 s").unref())]);
+      const code = await Promise.race([new Promise((r) => child.once("close", (c, s) => r(c ?? s))), new Promise((r) => setTimeout(r, 40_000, "still running after 40 s").unref())]);
       const runs = existsSync(join(dir, "test/live/.run")) ? readdirSync(join(dir, "test/live/.run")) : [];
       assert.equal(runs.length, 1, `one run folder: ${err}`);
       const run = join(dir, "test/live/.run", runs[0]);
@@ -421,6 +433,36 @@ for (const mode of ["all", "up"]) {
     } finally { stopOwn(pids); rmSync(dir, { recursive: true, force: true }); }
   });
 }
+
+test("run.sh (all mode): a SIGTERM while its guard waits for the harness lock ends run.sh at once, and its guard with it", { skip }, async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "ce-guard-")));
+  const pids = [];
+  try {
+    const holder = await upRun(dir, "holder");
+    pids.push(holder.guard, holder.pid);
+    const file = upFailingRunSh(dir, `  say "a step after the guard ran"`);
+    const child = spawn("/bin/sh", [file], {
+      env: { ...process.env, HARNESS_LOCK: join(dir, "harness.lock"), HARNESS_GUARD_HELD: "", HARNESS_LOCK_WAIT: "30", LIVE_PORT: String(await freePort()) },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    own.push(child.pid);
+    let err = "";
+    child.stderr.on("data", (b) => { err += b; });
+    const closed = new Promise((r) => child.once("close", (c, s) => r(c ?? s)));
+    assert.ok(await logged(() => err, /waits for the harness lock .*name=holder/, 10_000), err);
+    const waiting = guardsBelow(join(dir, "test/live/.run/"));
+    pids.push(...waiting);
+    assert.equal(waiting.length, 1, `the run's guard waits: ${err}`);
+    child.kill("SIGTERM");
+    const end = await Promise.race([closed, sleep(5000).then(() => "still running 5 s after the SIGTERM")]);
+    assert.notEqual(end, "still running 5 s after the SIGTERM", err);
+    assert.deepEqual(running(waiting), [], "the run's guard ended with run.sh");
+    assert.doesNotMatch(err, /a step after the guard ran/);
+    assert.deepEqual(running([holder.guard, holder.pid]).sort(), [holder.guard, holder.pid].sort(), "the lock's holder is untouched");
+    process.kill(holder.guard, "SIGTERM");
+    assert.deepEqual(await goneWithin([holder.guard, holder.pid], GONE_MS), []);
+  } finally { stopOwn(pids); rmSync(dir, { recursive: true, force: true }); }
+});
 
 test("a record whose pid another process took since (another start time) gets no signal; a record with its own start time does", { skip }, () => {
   const r = spawnSync("python3", ["-I", "-B", "-c", `import sys; sys.path.insert(0, ${JSON.stringify(LIVE)})
