@@ -79,11 +79,14 @@ guard SIGTERM and waits until the guard has stopped the run and ended. When the 
 already stopped the run, at the driver's end or at the limit), `down` signals nothing, because a pid
 file of the run can name a process that took that pid later. After the SIGTERM, the guard takes a
 new process of the driver's tree into the run only if that process started before the SIGTERM (by its
-start time). In `all` mode, after a successful `up`, `down` runs in the script's EXIT trap, inside the
-driver's tree, so the guard stops no process of `down` itself (its `sleep`), and `run.sh` exits with
-the live run's own code (board ab-v16.89). When a step of `up` fails, `down` runs in the subshell of
-`up`, which is itself a process of the run: the guard stops that subshell and its `sleep`, and
-`run.sh` exits 130, not with the code of `up`.
+start time). In `all` mode, `up` runs in the script itself, not in a subshell, and `down` runs in the
+script's EXIT trap, in the driver itself: its `sleep` starts after the SIGTERM, so the guard stops no
+process of `down`. After a successful `up`, `run.sh` exits with the live run's own code (board
+ab-v16.89). When a step of `up` fails, `run.sh` exits with that step's own code (board ab-v16.92),
+also after `run.sh up` alone. Two exceptions: when `down` itself fails (the guard still runs after
+30 s), `run.sh` exits 1, and a SIGINT or SIGTERM in `up` after the guard's answer ends it with 130.
+A SIGTERM while the guard waits for the lock ends `run.sh` at once; in `all` mode its guard then
+ends too, because its driver is gone.
 
 `run.sh` never takes the X displays 0, 90 (agentwatch's agent browser on the Linux server, the operator's),
 147, 190, 191 or 192, whatever `LIVE_DISPLAY` is (`RESERVED_DISPLAYS`, the same list as in
@@ -92,7 +95,8 @@ would take it. `run.sh displays` prints the two displays that `up` would take no
 refuses a reserved `DISPLAY_N` (exit 2, before it makes its run folder).
 
 `test/harness-guard.test.mjs` checks both forms with stand-in processes, and `run.sh displays` and
-`run.sh down` themselves.
+`run.sh down` themselves. It also runs a copy of `run.sh` whose steps of `up` after the guard are
+stand-ins, one of which fails.
 
 ## Run it
 

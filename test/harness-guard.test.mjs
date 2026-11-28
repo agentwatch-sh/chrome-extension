@@ -8,7 +8,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -185,7 +186,7 @@ test("run.sh and workers.py take the harness guard before their Xvfb, and give i
   assert.match(up, /--pid-dir "\$run\/pids"/);
   assert.match(sh, /echo \$! >"\$1\/pids\/xvfb\.\$2"/);
   assert.match(sh, /echo \$! >"\$run\/pids\/chromium-\$name"/);
-  assert.match(sh, /all\)\n\s+run=\$\(up all\)/, "the all mode's driver is the script");
+  assert.match(sh, /\n {2}all\)\n(?: {4}#.*\n)* {4}up all >\/dev\/null\n/, "the all mode's driver is the script, and up runs in it, not in a subshell");
   const py = readFileSync(join(LIVE, "workers.py"), "utf8");
   const st = py.slice(py.indexOf("\ndef start():"), py.indexOf("\ndef stop():"));
   assert.ok(st.indexOf("start_guard(") > 0 && st.indexOf("start_guard(") < st.indexOf('subprocess.Popen(["Xvfb"'), "workers.py: the guard before its Xvfb");
@@ -354,6 +355,113 @@ test("run.sh all's down: a process of the run that started just before the SIGTE
 sleep 0.15`, ({ pid, stopped, log }) => {
     assert.deepEqual(stopped, [pid.xvfb, pid.live].sort(), `the run's two processes, none of down's: ${log}`);
   });
+});
+
+const freePort = () => new Promise((resolve, reject) => {
+  const s = createServer().once("error", reject).listen(0, "127.0.0.1", () => { const { port } = s.address(); s.close(() => resolve(port)); });
+});
+
+function upFailingRunSh(dir, steps) {
+  const sh = readFileSync(RUN_SH, "utf8");
+  const guard = sh.indexOf('answer=$(python3 -I -B "$HERE/harness_guard.py"');
+  const from = sh.indexOf("\n  sock=$(mktemp -d ", guard);
+  const to = sh.indexOf('\n  echo "$run"\n}\n', from);
+  assert.ok(guard > 0 && from > guard && to > from, "run.sh's up: its guard, its mktemp, and its end");
+  assert.match(sh.slice(sh.indexOf("\n  esac\n", guard), from), /^\n {2}esac(?:\n {2}(?:trap |#)[^\n]*)*$/, "between the guard's answer and the cut, only traps run for real");
+  mkdirSync(join(dir, "test/live"), { recursive: true });
+  mkdirSync(join(dir, "docs"));
+  writeFileSync(join(dir, "docs/protocol.md"), `- Sender extension ID: \`${"a".repeat(32)}\`\n- Receiver extension ID: \`${"b".repeat(32)}\`\n`);
+  symlinkSync(GUARD, join(dir, "test/live/harness_guard.py"));
+  const file = join(dir, "test/live/run.sh");
+  writeFileSync(file, `${sh.slice(0, from)}\n${steps}${sh.slice(to)}`, { mode: 0o755 });
+  return file;
+}
+
+/** The pids of this user's guards whose argv names a folder below `prefix`. */
+function guardsBelow(prefix) {
+  const out = [];
+  for (const row of execFileSync("ps", ["-e", "-o", "pid="], { encoding: "utf8" }).split("\n")) {
+    const pid = Number(row.trim());
+    try {
+      const argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+      if (argv.some((a) => a.endsWith("/harness_guard.py")) && argv.some((a) => a.startsWith(prefix))) out.push(pid);
+    } catch { /* ended */ }
+  }
+  return out;
+}
+
+for (const mode of ["all", "up"]) {
+  const form = mode === "all" ? "run.sh (all mode)" : "run.sh up alone";
+  test(`${form}: a failed step of up ends run.sh with that step's own exit code; the guard stops the run's processes, and no process of down (board ab-v16.92)`, { skip }, async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "ce-guard-")));
+    const pids = [];
+    try {
+      // down's sleep 0.1 lasts 1 s here: in all mode, the guard's look at the driver's tree after the SIGTERM then
+      // surely finds it.
+      const file = upFailingRunSh(dir, `  sleep 618 & echo $! >"$run/pids/xvfb.1"
+  sh -c 'sleep 619 & echo $! >"$1/helper"; wait' sh "$run" & echo $! >"$run/pids/chromium-agent"
+  sleep 1
+  sleep() { if [ "$1" = 0.1 ]; then command sleep 1; else command sleep "$@"; fi; }
+  sh -c 'exit 7'
+  say "the step after the failed one ran"`);
+      const child = spawn("/bin/sh", mode === "all" ? [file] : [file, "up"], {
+        env: { ...process.env, HARNESS_LOCK: join(dir, "harness.lock"), HARNESS_GUARD_HELD: "", LIVE_PORT: String(await freePort()), LIVE_UP_LIMIT: "60" },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      own.push(child.pid);
+      let out = "", err = "";
+      child.stdout.on("data", (b) => { out += b; });
+      child.stderr.on("data", (b) => { err += b; });
+      const code = await Promise.race([new Promise((r) => child.once("close", (c, s) => r(c ?? s))), new Promise((r) => setTimeout(r, 40_000, "still running after 40 s").unref())]);
+      const runs = existsSync(join(dir, "test/live/.run")) ? readdirSync(join(dir, "test/live/.run")) : [];
+      assert.equal(runs.length, 1, `one run folder: ${err}`);
+      const run = join(dir, "test/live/.run", runs[0]);
+      const pidOf = (f) => { try { return Number(readFileSync(join(run, f), "utf8")); } catch { return 0; } };
+      const pid = { guard: pidOf("guard.pid"), xvfb: pidOf("pids/xvfb.1"), chromium: pidOf("pids/chromium-agent"), helper: pidOf("helper") };
+      pids.push(...Object.values(pid).filter(Boolean));
+      const log = () => { try { return readFileSync(join(run, "logs/guard.log"), "utf8"); } catch { return ""; } };
+      assert.equal(code, 7, `the failed step's own exit code, not 130 of a stopped shell of up: ${err}${log()}`);
+      assert.equal(out, "", "a failed up prints no run folder");
+      assert.doesNotMatch(err, /the step after the failed one ran/);
+      assert.match(err, new RegExp(`run\\.sh: stopped the processes of ${run} \\(through its guard ${pid.guard}\\)`));
+      assert.ok(Object.values(pid).every((p) => p > 0), JSON.stringify(pid));
+      assert.deepEqual(running(Object.values(pid)), [], `down returned after the guard and every process of the run were gone: ${log()}`);
+      const stopped = /the guard got SIGTERM; it stops (\d+) processes of the harness: (.*)/.exec(log());
+      assert.ok(stopped, log());
+      assert.deepEqual(stopped[2].split(", ").map((x) => Number(x.split(" ")[1])).sort(), [pid.xvfb, pid.chromium, pid.helper].sort(),
+        `only the run's processes, no shell of up and no process of down: ${log()}`);
+    } finally { stopOwn(pids); rmSync(dir, { recursive: true, force: true }); }
+  });
+}
+
+test("run.sh (all mode): a SIGTERM while its guard waits for the harness lock ends run.sh at once, and its guard with it", { skip }, async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "ce-guard-")));
+  const pids = [];
+  try {
+    const holder = await upRun(dir, "holder");
+    pids.push(holder.guard, holder.pid);
+    const file = upFailingRunSh(dir, `  say "a step after the guard ran"`);
+    const child = spawn("/bin/sh", [file], {
+      env: { ...process.env, HARNESS_LOCK: join(dir, "harness.lock"), HARNESS_GUARD_HELD: "", HARNESS_LOCK_WAIT: "30", LIVE_PORT: String(await freePort()) },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    own.push(child.pid);
+    let err = "";
+    child.stderr.on("data", (b) => { err += b; });
+    const closed = new Promise((r) => child.once("close", (c, s) => r(c ?? s)));
+    assert.ok(await logged(() => err, /waits for the harness lock .*name=holder/, 10_000), err);
+    const waiting = guardsBelow(join(dir, "test/live/.run/"));
+    pids.push(...waiting);
+    assert.equal(waiting.length, 1, `the run's guard waits: ${err}`);
+    child.kill("SIGTERM");
+    const end = await Promise.race([closed, sleep(5000).then(() => "still running 5 s after the SIGTERM")]);
+    assert.notEqual(end, "still running 5 s after the SIGTERM", err);
+    assert.deepEqual(running(waiting), [], "the run's guard ended with run.sh");
+    assert.doesNotMatch(err, /a step after the guard ran/);
+    assert.deepEqual(running([holder.guard, holder.pid]).sort(), [holder.guard, holder.pid].sort(), "the lock's holder is untouched");
+    process.kill(holder.guard, "SIGTERM");
+    assert.deepEqual(await goneWithin([holder.guard, holder.pid], GONE_MS), []);
+  } finally { stopOwn(pids); rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("a record whose pid another process took since (another start time) gets no signal; a record with its own start time does", { skip }, () => {
